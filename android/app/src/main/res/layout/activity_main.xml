@@ -21,6 +21,83 @@
             android:textColor="@color/text_primary"
             android:layout_marginBottom="16dp" />
 
+        <!-- Model Selection Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            app:cardElevation="2dp"
+            app:cardCornerRadius="8dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Model"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/radioGroupModel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <RadioButton
+                            android:id="@+id/radioMobilenetV2"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="MobileNetV2"
+                            android:checked="true" />
+
+                        <RadioButton
+                            android:id="@+id/radioMobilenetV2Quant"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="MobileNetV2 (INT8)" />
+
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <RadioButton
+                            android:id="@+id/radioYolov8n"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="YOLOv8n" />
+
+                        <RadioButton
+                            android:id="@+id/radioYolov8nQuant"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="YOLOv8n (INT8)" />
+
+                    </LinearLayout>
+
+                </RadioGroup>
+
+            </LinearLayout>
+
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Execution Path Card -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
@@ -38,7 +115,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Execution Path"
+                    android:text="Delegate Mode"
                     android:textSize="14sp"
                     android:textColor="@color/text_secondary"
                     android:layout_marginBottom="8dp" />
@@ -50,26 +127,26 @@
                     android:orientation="horizontal">
 
                     <RadioButton
-                        android:id="@+id/radioNpuOnly"
+                        android:id="@+id/radioNpuGpuCpu"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="NPU-only" />
-
-                    <RadioButton
-                        android:id="@+id/radioNpuFallback"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="NPU+FB"
+                        android:text="NPU+GPU"
                         android:checked="true" />
 
                     <RadioButton
-                        android:id="@+id/radioGpuOnly"
+                        android:id="@+id/radioGpuCpu"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="GPU-only" />
+                        android:text="GPU" />
+
+                    <RadioButton
+                        android:id="@+id/radioCpuOnly"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="CPU" />
 
                 </RadioGroup>
 

@@ -1,24 +1,11 @@
 package com.example.kpilab
 
 /**
- * Execution path for inference
- */
-enum class ExecutionPath(val value: Int, val displayName: String) {
-    NPU_ONLY(0, "NPU-only"),
-    NPU_FALLBACK(1, "NPU+FB"),
-    GPU_ONLY(2, "GPU-only");
-
-    companion object {
-        fun fromValue(value: Int): ExecutionPath =
-            entries.find { it.value == value } ?: NPU_FALLBACK
-    }
-}
-
-/**
  * Benchmark configuration
  */
 data class BenchmarkConfig(
-    val executionPath: ExecutionPath = ExecutionPath.NPU_FALLBACK,
+    val modelType: ModelType = ModelType.MOBILENET_V2,
+    val delegateMode: DelegateMode = DelegateMode.NPU_GPU_CPU,
     val frequencyHz: Int = 5,
     val warmUpEnabled: Boolean = false,
     val durationMinutes: Int = 5
@@ -40,17 +27,23 @@ data class BenchmarkConfig(
      */
     fun generateSessionId(): String {
         val timestamp = System.currentTimeMillis()
-        val pathStr = when (executionPath) {
-            ExecutionPath.NPU_ONLY -> "npu"
-            ExecutionPath.NPU_FALLBACK -> "fb"
-            ExecutionPath.GPU_ONLY -> "gpu"
+        val modelStr = when (modelType) {
+            ModelType.MOBILENET_V2 -> "mnv2"
+            ModelType.MOBILENET_V2_QUANTIZED -> "mnv2_q"
+            ModelType.YOLOV8N -> "yolo"
+            ModelType.YOLOV8N_QUANTIZED -> "yolo_q"
+        }
+        val modeStr = when (delegateMode) {
+            DelegateMode.NPU_GPU_CPU -> "npu_gpu"
+            DelegateMode.GPU_CPU -> "gpu"
+            DelegateMode.CPU_ONLY -> "cpu"
         }
         val warmStr = if (warmUpEnabled) "w" else "nw"
-        return "${pathStr}_${frequencyHz}hz_${warmStr}_${timestamp}"
+        return "${modelStr}_${modeStr}_${frequencyHz}hz_${warmStr}_${timestamp}"
     }
 
     override fun toString(): String {
-        return "BenchmarkConfig(path=${executionPath.displayName}, freq=${frequencyHz}Hz, " +
-                "warmUp=$warmUpEnabled, duration=${durationMinutes}min)"
+        return "BenchmarkConfig(model=${modelType.displayName}, mode=${delegateMode.displayName}, " +
+                "freq=${frequencyHz}Hz, warmUp=$warmUpEnabled, duration=${durationMinutes}min)"
     }
 }

@@ -1,55 +1,69 @@
 # Models
 
-모델 변환 및 분석 스크립트
+벤치마킹용 TFLite 모델 다운로드
 
-## 디렉토리 구조
+## 지원 모델
 
-```
-models/
-├── original/       # 원본 ONNX 모델
-├── converted/      # QNN DLC 변환 모델
-├── optimized/      # 그래프 최적화 모델
-└── scripts/        # 변환/분석 스크립트
-```
+| 모델 | 입력 크기 | 출력 | 데이터 타입 | 용도 |
+|------|----------|------|------------|------|
+| MobileNetV2 FP32 | 224x224x3 | 1001 classes | FP32 | 이미지 분류 |
+| MobileNetV2 INT8 | 224x224x3 | 1001 classes | INT8 | 이미지 분류 (NPU 최적화) |
+| YOLOv8n FP32 | 640x640x3 | Detection boxes | FP32 | 객체 탐지 |
+| YOLOv8n INT8 | 640x640x3 | Detection boxes | INT8 | 객체 탐지 (NPU 최적화) |
 
-## 스크립트 사용법
+## 모델 다운로드
 
-### 1. 모델 다운로드 및 변환
-
-```bash
-# MobileNetV3-Small 다운로드 및 DLC 변환
-python scripts/convert_to_dlc.py --download-mobilenetv3
-
-# 수동 변환
-python scripts/convert_to_dlc.py -i original/model.onnx -o converted/model.dlc
-```
-
-### 2. Op 분석
+### 전체 다운로드
 
 ```bash
-# NPU 호환성 분석
-python scripts/analyze_ops.py original/mobilenetv3_small.onnx
-
-# JSON 출력
-python scripts/analyze_ops.py original/model.onnx --json analysis.json
+cd models
+python scripts/convert_to_tflite.py --download-all
 ```
 
-### 3. 그래프 변환
+### 개별 다운로드
 
 ```bash
-# 모든 최적화 적용
-python scripts/graph_transform.py original/model.onnx -o optimized/model.onnx --all
+# MobileNetV2 (TensorFlow Hub에서 직접 다운로드)
+python scripts/convert_to_tflite.py --download-mobilenetv2-fp32
+python scripts/convert_to_tflite.py --download-mobilenetv2-int8
 
-# 개별 최적화
-python scripts/graph_transform.py original/model.onnx \
-    --fix-batch 1 \
-    --replace-hardswish \
-    --remove-identity \
-    --validate
+# YOLOv8n (Ultralytics에서 다운로드 후 TFLite 변환)
+pip install ultralytics
+python scripts/convert_to_tflite.py --download-yolov8n-fp32
+python scripts/convert_to_tflite.py --download-yolov8n-int8
 ```
 
-## 필수 패키지
+### 다운로드 상태 확인
 
 ```bash
-pip install onnx numpy onnxruntime
+python scripts/convert_to_tflite.py --status
+python scripts/convert_to_tflite.py --list
 ```
+
+## 모델 파일 위치
+
+다운로드된 모델은 자동으로 Android assets 폴더에 저장됩니다:
+
+```
+android/app/src/main/assets/
+├── mobilenetv2_fp32.tflite   # MobileNetV2 FP32 (약 14MB)
+├── mobilenetv2_int8.tflite   # MobileNetV2 INT8 (약 3.5MB)
+├── yolov8n_fp32.tflite       # YOLOv8n FP32 (약 12MB)
+└── yolov8n_int8.tflite       # YOLOv8n INT8 (약 3MB)
+```
+
+## FP32 vs INT8
+
+| 항목 | FP32 | INT8 (Quantized) |
+|------|------|------------------|
+| NPU 성능 | 보통 | 최고 (2-4x 빠름) |
+| 모델 크기 | 큼 | 작음 (약 1/4) |
+| 정확도 | 높음 | 약간 낮음 |
+| 메모리 사용 | 높음 | 낮음 |
+
+NPU에서 최대 성능을 측정하려면 **INT8** 모델을 사용하세요.
+
+## 모델 소스
+
+- **MobileNetV2**: [TensorFlow Hub](https://tfhub.dev/tensorflow/lite-model/mobilenet_v2_1.0_224/1/default/1)
+- **YOLOv8n**: [Ultralytics](https://docs.ultralytics.com/models/yolov8/) - PyTorch에서 TFLite로 변환

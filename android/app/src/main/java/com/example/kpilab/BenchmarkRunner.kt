@@ -3,6 +3,7 @@ package com.example.kpilab
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
@@ -47,10 +48,10 @@ data class BenchmarkProgress(
 }
 
 /**
- * Runs benchmark with configured settings
+ * Runs benchmark with configured settings using TFLite
  */
 class BenchmarkRunner(
-    private val nativeRunner: NativeRunner,
+    private val tfliteRunner: TFLiteRunner,
     private val kpiCollector: KpiCollector
 ) {
     companion object {
@@ -76,7 +77,6 @@ class BenchmarkRunner(
      */
     fun start(
         config: BenchmarkConfig,
-        modelPath: String,
         scope: CoroutineScope
     ) {
         if (isRunning) {
@@ -89,7 +89,7 @@ class BenchmarkRunner(
 
         benchmarkJob = scope.launch(Dispatchers.Default) {
             try {
-                runBenchmark(config, modelPath)
+                runBenchmark(config)
             } catch (e: CancellationException) {
                 Log.i(TAG, "Benchmark cancelled")
             } catch (e: Exception) {
@@ -110,7 +110,7 @@ class BenchmarkRunner(
         systemMetricsJob?.cancel()
     }
 
-    private suspend fun runBenchmark(config: BenchmarkConfig, modelPath: String) {
+    private suspend fun runBenchmark(config: BenchmarkConfig) {
         // Initialize
         _progress.value = BenchmarkProgress(
             state = BenchmarkState.INITIALIZING,
@@ -118,35 +118,35 @@ class BenchmarkRunner(
         )
 
         val initialized = withContext(Dispatchers.IO) {
-            nativeRunner.initialize(
-                modelPath,
-                config.executionPath.value,
+            tfliteRunner.initialize(
+                config.modelType,
+                config.delegateMode,
                 config.warmUpEnabled
             )
         }
 
         if (!initialized) {
-            Log.e(TAG, "Failed to initialize native runner")
+            Log.e(TAG, "Failed to initialize TFLite runner")
             _progress.value = BenchmarkProgress(state = BenchmarkState.IDLE)
             return
         }
 
         // Start session
         val sessionId = config.generateSessionId()
-        nativeRunner.startSession(sessionId)
+        tfliteRunner.startSession(sessionId)
         Log.i(TAG, "Session started: $sessionId")
 
         // Update state
         if (config.warmUpEnabled) {
             _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
-            // Warm-up is handled in native code during initialize
+            // Warm-up is handled in TFLiteRunner.initialize()
         }
 
         _progress.value = _progress.value.copy(state = BenchmarkState.RUNNING)
         startTimeMs = System.currentTimeMillis()
 
         // Start system metrics collection in parallel
-        val metricsScope = CoroutineScope(coroutineContext)
+        val metricsScope = CoroutineScope(currentCoroutineContext())
         systemMetricsJob = metricsScope.launch {
             collectSystemMetrics(config.durationMs)
         }
@@ -155,7 +155,7 @@ class BenchmarkRunner(
         var inferenceCount = 0
         val intervalMs = config.intervalMs
 
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             val elapsed = System.currentTimeMillis() - startTimeMs
             if (elapsed >= config.durationMs) {
                 break
@@ -165,7 +165,7 @@ class BenchmarkRunner(
 
             // Run inference
             val latencyMs = withContext(Dispatchers.IO) {
-                nativeRunner.runInference()
+                tfliteRunner.runInference()
             }
 
             if (latencyMs >= 0) {
@@ -189,14 +189,14 @@ class BenchmarkRunner(
         }
 
         // End session
-        nativeRunner.endSession()
+        tfliteRunner.endSession()
         Log.i(TAG, "Benchmark completed: $inferenceCount inferences")
     }
 
     private suspend fun collectSystemMetrics(durationMs: Long) {
         var lastMemoryTime = 0L
 
-        while (isActive) {
+        while (currentCoroutineContext().isActive) {
             val elapsed = System.currentTimeMillis() - startTimeMs
             if (elapsed >= durationMs) {
                 break
@@ -205,16 +205,18 @@ class BenchmarkRunner(
             // Collect thermal and power every second
             val metrics = kpiCollector.collectAll()
 
-            // Log to native
-            nativeRunner.logSystemMetrics(
+            // Log to TFLiteRunner
+            val memoryMb = if (elapsed - lastMemoryTime >= MEMORY_METRICS_INTERVAL_MS) {
+                lastMemoryTime = elapsed
+                metrics.memoryMb
+            } else {
+                0
+            }
+
+            tfliteRunner.logSystemMetrics(
                 metrics.thermalC,
                 metrics.powerMw,
-                if (elapsed - lastMemoryTime >= MEMORY_METRICS_INTERVAL_MS) {
-                    lastMemoryTime = elapsed
-                    metrics.memoryMb
-                } else {
-                    -1  // Skip memory this time
-                }
+                memoryMb
             )
 
             // Update progress
@@ -240,14 +242,21 @@ class BenchmarkRunner(
      * Export collected data as CSV
      */
     fun exportCsv(): String {
-        return nativeRunner.exportCsv()
+        return tfliteRunner.exportCsv()
     }
 
     /**
      * Get record count
      */
     fun getRecordCount(): Int {
-        return nativeRunner.getRecordCount()
+        return tfliteRunner.getRecordCount()
+    }
+
+    /**
+     * Get device info
+     */
+    fun getDeviceInfo(): String {
+        return tfliteRunner.getDeviceInfo()
     }
 
     /**
@@ -255,6 +264,6 @@ class BenchmarkRunner(
      */
     fun release() {
         stop()
-        nativeRunner.release()
+        tfliteRunner.release()
     }
 }

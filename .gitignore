@@ -1,8 +1,14 @@
+# Claude Code
+.claude/
+
 # Android
 *.iml
 .gradle/
 local.properties
-/.idea/
+.idea/
+android/.idea/
+android/.gradle/
+android/local.properties
 .DS_Store
 android/build/
 android/app/build/
@@ -11,6 +17,8 @@ android/app/.cxx/
 *.aab
 *.ap_
 *.dex
+*.hprof
+captures/
 
 # Native
 *.so

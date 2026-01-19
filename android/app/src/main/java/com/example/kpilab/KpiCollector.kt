@@ -1,7 +1,10 @@
 package com.example.kpilab
 
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.Build
 import android.util.Log
 import java.io.BufferedReader
 import java.io.File
@@ -10,7 +13,7 @@ import java.io.FileReader
 /**
  * Collects system KPI metrics: thermal, power, memory
  */
-class KpiCollector(context: Context) {
+class KpiCollector(private val context: Context) {
 
     companion object {
         private const val TAG = "KpiCollector"
@@ -24,6 +27,46 @@ class KpiCollector(context: Context) {
 
         // Memory info path
         private const val PROC_STATUS = "/proc/self/status"
+
+        /**
+         * Get SoC model name (e.g., "SM8550" for Snapdragon 8 Gen 2)
+         */
+        fun getSocModel(): String = Build.SOC_MODEL
+
+        /**
+         * Get SoC manufacturer
+         */
+        fun getSocManufacturer(): String = Build.SOC_MANUFACTURER
+
+        /**
+         * Get device model
+         */
+        fun getDeviceModel(): String = "${Build.MANUFACTURER} ${Build.MODEL}"
+
+        /**
+         * Get full device info string
+         */
+        fun getFullDeviceInfo(): String = buildString {
+            appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("SoC: ${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}")
+            appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            appendLine("Board: ${Build.BOARD}")
+            appendLine("Hardware: ${Build.HARDWARE}")
+        }
+
+        /**
+         * Get device info as map for CSV header
+         */
+        fun getDeviceInfoMap(): Map<String, String> = mapOf(
+            "device_manufacturer" to Build.MANUFACTURER,
+            "device_model" to Build.MODEL,
+            "soc_manufacturer" to Build.SOC_MANUFACTURER,
+            "soc_model" to Build.SOC_MODEL,
+            "android_version" to Build.VERSION.RELEASE,
+            "api_level" to Build.VERSION.SDK_INT.toString(),
+            "board" to Build.BOARD,
+            "hardware" to Build.HARDWARE
+        )
     }
 
     private val batteryManager: BatteryManager =
@@ -79,12 +122,13 @@ class KpiCollector(context: Context) {
                 BatteryManager.BATTERY_PROPERTY_CURRENT_NOW
             )
 
-            // Get voltage in microvolts
-            val voltageMicroVolts = batteryManager.getIntProperty(
-                BatteryManager.BATTERY_PROPERTY_VOLTAGE_NOW
-            )
+            // Get voltage - use broadcast intent for compatibility (works on all API levels)
+            val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { filter ->
+                context.registerReceiver(null, filter)
+            }
+            val voltageMv = batteryStatus?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
 
-            if (currentMicroAmps == Int.MIN_VALUE || voltageMicroVolts == Int.MIN_VALUE) {
+            if (currentMicroAmps == Int.MIN_VALUE || voltageMv <= 0) {
                 Log.w(TAG, "Battery properties unavailable")
                 return -1f
             }
@@ -92,8 +136,8 @@ class KpiCollector(context: Context) {
             // Some devices report current as negative when discharging
             val absCurrent = kotlin.math.abs(currentMicroAmps)
 
-            // Power (mW) = |Current (μA)| × Voltage (μV) / 10^9
-            val powerMw = (absCurrent.toLong() * voltageMicroVolts.toLong()) / 1_000_000_000f
+            // Power (mW) = |Current (μA)| × Voltage (mV) / 10^6
+            val powerMw = (absCurrent.toLong() * voltageMv.toLong()) / 1_000_000f
 
             powerMw
         } catch (e: Exception) {

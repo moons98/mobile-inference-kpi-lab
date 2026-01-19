@@ -18,12 +18,11 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
-        private const val MODEL_NAME = "mobilenetv3_small.dlc"
     }
 
     private lateinit var binding: ActivityMainBinding
 
-    private lateinit var nativeRunner: NativeRunner
+    private lateinit var tfliteRunner: TFLiteRunner
     private lateinit var kpiCollector: KpiCollector
     private lateinit var benchmarkRunner: BenchmarkRunner
 
@@ -41,9 +40,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initializeComponents() {
-        nativeRunner = NativeRunner()
+        tfliteRunner = TFLiteRunner(this)
         kpiCollector = KpiCollector(this)
-        benchmarkRunner = BenchmarkRunner(nativeRunner, kpiCollector)
+        benchmarkRunner = BenchmarkRunner(tfliteRunner, kpiCollector)
     }
 
     private fun setupUI() {
@@ -126,10 +125,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setControlsEnabled(enabled: Boolean) {
+        binding.radioGroupModel.isEnabled = enabled
+        binding.radioMobilenetV2.isEnabled = enabled
+        binding.radioMobilenetV2Quant.isEnabled = enabled
+        binding.radioYolov8n.isEnabled = enabled
+        binding.radioYolov8nQuant.isEnabled = enabled
         binding.radioGroupPath.isEnabled = enabled
-        binding.radioNpuOnly.isEnabled = enabled
-        binding.radioNpuFallback.isEnabled = enabled
-        binding.radioGpuOnly.isEnabled = enabled
+        binding.radioNpuGpuCpu.isEnabled = enabled
+        binding.radioGpuCpu.isEnabled = enabled
+        binding.radioCpuOnly.isEnabled = enabled
         binding.radioGroupFrequency.isEnabled = enabled
         binding.radioFreq1.isEnabled = enabled
         binding.radioFreq5.isEnabled = enabled
@@ -141,11 +145,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildConfig(): BenchmarkConfig {
-        val executionPath = when (binding.radioGroupPath.checkedRadioButtonId) {
-            R.id.radioNpuOnly -> ExecutionPath.NPU_ONLY
-            R.id.radioNpuFallback -> ExecutionPath.NPU_FALLBACK
-            R.id.radioGpuOnly -> ExecutionPath.GPU_ONLY
-            else -> ExecutionPath.NPU_FALLBACK
+        val modelType = when (binding.radioGroupModel.checkedRadioButtonId) {
+            R.id.radioMobilenetV2 -> ModelType.MOBILENET_V2
+            R.id.radioMobilenetV2Quant -> ModelType.MOBILENET_V2_QUANTIZED
+            R.id.radioYolov8n -> ModelType.YOLOV8N
+            R.id.radioYolov8nQuant -> ModelType.YOLOV8N_QUANTIZED
+            else -> ModelType.MOBILENET_V2
+        }
+
+        val delegateMode = when (binding.radioGroupPath.checkedRadioButtonId) {
+            R.id.radioNpuGpuCpu -> DelegateMode.NPU_GPU_CPU
+            R.id.radioGpuCpu -> DelegateMode.GPU_CPU
+            R.id.radioCpuOnly -> DelegateMode.CPU_ONLY
+            else -> DelegateMode.NPU_GPU_CPU
         }
 
         val frequencyHz = when (binding.radioGroupFrequency.checkedRadioButtonId) {
@@ -162,7 +174,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         return BenchmarkConfig(
-            executionPath = executionPath,
+            modelType = modelType,
+            delegateMode = delegateMode,
             frequencyHz = frequencyHz,
             warmUpEnabled = binding.checkWarmup.isChecked,
             durationMinutes = durationMinutes
@@ -173,11 +186,7 @@ class MainActivity : AppCompatActivity() {
         val config = buildConfig()
         Log.i(TAG, "Starting benchmark with config: $config")
 
-        // Model path - in production this would be extracted from assets
-        // For now, use a placeholder path
-        val modelPath = File(filesDir, MODEL_NAME).absolutePath
-
-        benchmarkRunner.start(config, modelPath, lifecycleScope)
+        benchmarkRunner.start(config, lifecycleScope)
 
         Toast.makeText(this, "Benchmark started", Toast.LENGTH_SHORT).show()
     }
@@ -228,14 +237,14 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         isForeground = true
-        nativeRunner.setForeground(true)
+        tfliteRunner.setForeground(true)
         Log.d(TAG, "App resumed (foreground)")
     }
 
     override fun onPause() {
         super.onPause()
         isForeground = false
-        nativeRunner.setForeground(false)
+        tfliteRunner.setForeground(false)
         Log.d(TAG, "App paused (background)")
     }
 
