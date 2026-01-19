@@ -1,0 +1,64 @@
+# Android
+*.iml
+.gradle/
+local.properties
+/.idea/
+.DS_Store
+android/build/
+android/app/build/
+android/app/.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Native
+*.so
+*.a
+*.o
+*.obj
+
+# QNN/Model files
+*.dlc
+*.bin
+*.tflite
+models/original/*.onnx
+models/converted/
+models/optimized/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.env
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_meta
+
+# Analysis data
+analysis/data/*.csv
+analysis/data/*.json
+*.png
+*.pdf
+
+# IDE
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary
+tmp/
+temp/
+*.tmp

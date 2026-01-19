@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python scripts/setup_qnn.py:*)",
+      "Bash(python3:*)",
+      "Bash(tree:*)"
+    ]
+  }
+}

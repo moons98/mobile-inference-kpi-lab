@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Inference KPI Lab</string>
+    <string name="start_benchmark">START BENCHMARK</string>
+    <string name="stop_benchmark">STOP</string>
+    <string name="export_csv">EXPORT CSV</string>
+    <string name="status_idle">Idle</string>
+    <string name="status_running">Running</string>
+    <string name="status_warmup">Warming up...</string>
+</resources>

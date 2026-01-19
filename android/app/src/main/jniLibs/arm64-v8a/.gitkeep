@@ -1,0 +1,16 @@
+# QNN SDK Libraries
+# Copy from $QNN_SDK_ROOT/lib/aarch64-android/
+
+# Required files:
+# - libQnnHtp.so (HTP/NPU backend)
+# - libQnnGpu.so (GPU backend)
+# - libQnnSystem.so
+# - libQnnHtpPrepare.so
+# - libQnnHtpV{XX}Stub.so (for your target device's HTP version)
+#
+# HTP versions by chipset:
+# - V75: Snapdragon 8 Gen 3
+# - V73: Snapdragon 8 Gen 2
+# - V69: Snapdragon 8 Gen 1
+# - V68: Snapdragon 888
+# - V66: Snapdragon 865
