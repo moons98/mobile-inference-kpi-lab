@@ -40,6 +40,28 @@ class KpiMetrics:
     duration_seconds: float
 
 
+def load_metadata(file_path: str) -> dict:
+    """
+    Extract metadata from comment lines in a KPI log CSV file.
+
+    Args:
+        file_path: Path to the CSV file
+
+    Returns:
+        Dict with metadata key-value pairs
+    """
+    metadata = {}
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.startswith('# '):
+                parts = line[2:].strip().split(',', 1)
+                if len(parts) == 2:
+                    metadata[parts[0]] = parts[1]
+            elif not line.startswith('#'):
+                break  # Stop at data rows
+    return metadata
+
+
 def load_log(file_path: str) -> pd.DataFrame:
     """
     Load a KPI log CSV file.
@@ -50,7 +72,8 @@ def load_log(file_path: str) -> pd.DataFrame:
     Returns:
         DataFrame with parsed log data
     """
-    df = pd.read_csv(file_path)
+    # Skip comment lines starting with '#' (metadata)
+    df = pd.read_csv(file_path, comment='#')
 
     # Convert timestamp to datetime
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -202,16 +225,19 @@ def load_all_logs(directory: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) < 2:
-        print("Usage: python parse_logs.py <log_file.csv>")
-        sys.exit(1)
-
-    file_path = sys.argv[1]
-
+def print_single_report(file_path: str):
+    """Print detailed report for a single log file."""
     print(f"Loading: {file_path}")
+
+    # Load metadata
+    metadata = load_metadata(file_path)
+    if metadata:
+        print("\n=== Metadata ===")
+        print(f"  Device: {metadata.get('device_manufacturer', 'N/A')} {metadata.get('device_model', 'N/A')}")
+        print(f"  SoC: {metadata.get('soc_model', 'N/A')}")
+        print(f"  EP: {metadata.get('execution_provider', 'N/A')}")
+        print(f"  Model: {metadata.get('model', 'N/A')}")
+
     df = load_log(file_path)
 
     print(f"\nTotal records: {len(df)}")
@@ -224,6 +250,8 @@ if __name__ == "__main__":
     print(f"  P50: {metrics.latency_p50:.2f} ms")
     print(f"  P95: {metrics.latency_p95:.2f} ms")
     print(f"  Mean: {metrics.latency_mean:.2f} ms (±{metrics.latency_std:.2f})")
+    print(f"  Min: {metrics.latency_min:.2f} ms")
+    print(f"  Max: {metrics.latency_max:.2f} ms")
     print(f"  Count: {metrics.inference_count}")
 
     print(f"\nThermal:")
@@ -238,3 +266,69 @@ if __name__ == "__main__":
     print(f"\nMemory:")
     print(f"  Peak: {metrics.memory_peak} MB")
     print(f"  Mean: {metrics.memory_mean:.1f} MB")
+
+    return metadata, metrics
+
+
+def print_comparison_table(file_paths: list):
+    """Print comparison table for multiple log files."""
+    print("=" * 110)
+    print("Comparison Report")
+    print("=" * 110)
+
+    # Header
+    print(f"\n{'File':<25} {'EP':<12} {'Model':<15} {'Mean':<10} {'P50':<10} {'P95':<10} {'Thermal':<10} {'Power':<10}")
+    print("-" * 110)
+
+    for file_path in file_paths:
+        metadata = load_metadata(file_path)
+        df = load_log(file_path)
+        metrics = calculate_metrics(df)
+
+        name = Path(file_path).stem[-23:]
+        ep = metadata.get('execution_provider', 'N/A')[:10]
+        model = metadata.get('model', 'N/A')[:13]
+
+        print(f"{name:<25} {ep:<12} {model:<15} "
+              f"{metrics.latency_mean:<10.2f} "
+              f"{metrics.latency_p50:<10.2f} "
+              f"{metrics.latency_p95:<10.2f} "
+              f"{metrics.thermal_slope:<10.2f} "
+              f"{metrics.power_mean:<10.1f}")
+
+    print()
+
+
+if __name__ == "__main__":
+    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Parse and analyze KPI log files")
+    parser.add_argument("paths", nargs="+", help="Log files or directories to analyze")
+    parser.add_argument("--compare", "-c", action="store_true", help="Show comparison table")
+
+    args = parser.parse_args()
+
+    # Collect all log files
+    log_files = []
+    for p in args.paths:
+        path = Path(p)
+        if path.is_dir():
+            # Support both old (kpi_log_*) and new (kpi_Model_EP_*) filename formats
+            log_files.extend(sorted(path.glob("kpi_*.csv")))
+        elif path.exists():
+            log_files.append(path)
+        else:
+            print(f"Warning: {p} not found")
+
+    if not log_files:
+        print("No log files found")
+        sys.exit(1)
+
+    print(f"Found {len(log_files)} log file(s)\n")
+
+    # Compare mode or single report mode
+    if args.compare or len(log_files) > 1:
+        print_comparison_table([str(f) for f in log_files])
+    else:
+        print_single_report(str(log_files[0]))
