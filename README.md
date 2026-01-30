@@ -125,7 +125,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 | 옵션 | 선택지 | 설명 |
 |------|--------|------|
 | Model | 6종 (아래 표 참조) | 추론 모델 |
-| Execution Provider | NPU / GPU / CPU | 추론 실행 경로 |
+| Execution Provider | NPU / GPU / CPU | 추론 실행 경로 (아래 참조) |
 | Frequency | 1Hz / 5Hz / 10Hz | 추론 빈도 |
 | Warm-up | On / Off | 워밍업 실행 여부 (10회 추론) |
 | NPU FP16 | On / Off | FP32 모델을 FP16으로 변환 (NPU에서 더 빠름) |
@@ -144,6 +144,20 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 | YOLOv8n (INT8 QDQ) | `yolov8n_int8_qdq.onnx` | 1x3x640x640 | INT8 QDQ |
 
 > **Note**: INT8 모델도 FLOAT 입력을 받습니다. 양자화/역양자화는 모델 내부에서 처리됩니다.
+
+### Execution Provider 동작 방식
+
+ONNX Runtime은 세션 생성 시 그래프를 분할(partitioning)하여 각 Op을 실행할 EP를 결정합니다:
+
+| 선택 | 동작 |
+|------|------|
+| **NPU** | QNN HTP 백엔드 사용. 미지원 Op은 자동으로 CPU fallback |
+| **GPU** | QNN GPU 백엔드 사용. 미지원 Op은 자동으로 CPU fallback |
+| **CPU** | CPU만 사용 (fallback 없음) |
+
+- Fallback은 **세션 생성 시 결정**되며, 런타임에 변경되지 않음
+- CSV export의 `execution_provider` 필드에 실제 사용된 EP가 기록됨
+- Logcat에서 `OrtRunner` 태그로 어떤 Op이 어디서 실행되는지 확인 가능
 
 ### 측정 KPI
 
@@ -164,6 +178,72 @@ adb install app/build/outputs/apk/debug/app-debug.apk
    ```bash
    adb pull /sdcard/Android/data/com.example.kpilab/files/Documents/ ./logs/
    ```
+
+## Batch Mode (배치 모드)
+
+여러 실험을 연속으로 자동 실행하는 기능입니다. 각 실험 완료 후 자동으로 CSV가 저장되며, 실험 간 30초 쿨다운이 적용됩니다.
+
+### 사용 방법
+
+1. **Batch Mode 체크박스** 활성화
+2. **Experiment Set** 드롭다운에서 실행할 실험 세트 선택
+3. **START** 버튼 클릭
+4. 모든 실험 완료까지 자동 실행 (중간에 STOP 가능)
+
+### 사전 정의된 실험 세트
+
+| 파일 | 실험 세트 | 설명 |
+|------|----------|------|
+| `experiment_sets_mobilenet.json` | EP 비교 | NPU / GPU / CPU 비교 |
+| | 양자화 비교 (NPU) | FP32 / INT8 Dynamic / INT8 QDQ |
+| | INT8 EP 비교 | INT8 QDQ 모델의 NPU / GPU / CPU 비교 |
+| | 주파수 비교 | 1Hz / 5Hz / 10Hz |
+| | Warmup 효과 | Warmup On / Off |
+| | 전체 비교 | 5개 실험 (모든 모델 × NPU) |
+| `experiment_sets_yolo.json` | EP 비교 | NPU / GPU / CPU 비교 |
+| | 양자화 비교 (NPU) | FP32 / INT8 Dynamic / INT8 QDQ |
+| | INT8 EP 비교 | INT8 QDQ 모델의 NPU / GPU / CPU 비교 |
+| | 주파수 비교 | 1Hz / 5Hz / 10Hz |
+| | 전체 비교 | 5개 실험 (모든 모델 × NPU) |
+
+### 자동 Export
+
+- 각 실험 완료 시 자동으로 CSV 파일 저장
+- 실험 간 30초 쿨다운 (열 발산 대기)
+- 완료된 파일 목록이 UI에 표시됨
+
+### 커스텀 실험 세트
+
+`assets/` 또는 외부 저장소에 `experiment_sets_*.json` 파일을 추가하여 커스텀 실험 세트를 정의할 수 있습니다:
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "frequencyHz": 10,
+    "durationMinutes": 5,
+    "warmUpEnabled": true,
+    "useNpuFp16": true,
+    "useContextCache": false
+  },
+  "experimentSets": [
+    {
+      "id": "my_custom_set",
+      "name": "커스텀 실험",
+      "experiments": [
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU" },
+        { "model": "MOBILENET_V2", "executionProvider": "CPU", "frequencyHz": 5 }
+      ]
+    }
+  ]
+}
+```
+
+**모델명**: `MOBILENET_V2`, `MOBILENET_V2_INT8_DYNAMIC`, `MOBILENET_V2_INT8_QDQ`, `YOLOV8N`, `YOLOV8N_INT8_DYNAMIC`, `YOLOV8N_INT8_QDQ`
+
+**Execution Provider**: `QNN_NPU`, `QNN_GPU`, `CPU`
+
+**우선순위**: 외부 저장소 (`Documents/`) > assets (동일 ID는 외부 우선)
 
 ## CSV 포맷
 

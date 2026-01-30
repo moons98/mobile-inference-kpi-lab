@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "defaults": {
+    "frequencyHz": 10,
+    "durationMinutes": 5,
+    "warmUpEnabled": true,
+    "useNpuFp16": true,
+    "useContextCache": false
+  },
+  "experimentSets": [
+    {
+      "id": "mobilenet_ep_comparison",
+      "name": "[MobileNet] EP 비교",
+      "experiments": [
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU" },
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_GPU" },
+        { "model": "MOBILENET_V2", "executionProvider": "CPU" }
+      ]
+    },
+    {
+      "id": "mobilenet_quantization",
+      "name": "[MobileNet] 양자화 비교 (NPU)",
+      "experiments": [
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU" },
+        { "model": "MOBILENET_V2_INT8_DYNAMIC", "executionProvider": "QNN_NPU" },
+        { "model": "MOBILENET_V2_INT8_QDQ", "executionProvider": "QNN_NPU" }
+      ]
+    },
+    {
+      "id": "mobilenet_int8_ep_comparison",
+      "name": "[MobileNet] INT8 EP 비교",
+      "experiments": [
+        { "model": "MOBILENET_V2_INT8_QDQ", "executionProvider": "QNN_NPU" },
+        { "model": "MOBILENET_V2_INT8_QDQ", "executionProvider": "QNN_GPU" },
+        { "model": "MOBILENET_V2_INT8_QDQ", "executionProvider": "CPU" }
+      ]
+    },
+    {
+      "id": "mobilenet_frequency",
+      "name": "[MobileNet] 주파수 비교",
+      "experiments": [
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "frequencyHz": 1 },
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "frequencyHz": 5 },
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "frequencyHz": 10 }
+      ]
+    },
+    {
+      "id": "mobilenet_warmup",
+      "name": "[MobileNet] Warmup 효과",
+      "experiments": [
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "warmUpEnabled": false },
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "warmUpEnabled": true }
+      ]
+    },
+    {
+      "id": "mobilenet_full_matrix",
+      "name": "[MobileNet] 전체 비교",
+      "experiments": [
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU" },
+        { "model": "MOBILENET_V2", "executionProvider": "QNN_GPU" },
+        { "model": "MOBILENET_V2", "executionProvider": "CPU" },
+        { "model": "MOBILENET_V2_INT8_DYNAMIC", "executionProvider": "QNN_NPU" },
+        { "model": "MOBILENET_V2_INT8_QDQ", "executionProvider": "QNN_NPU" }
+      ]
+    }
+  ]
+}

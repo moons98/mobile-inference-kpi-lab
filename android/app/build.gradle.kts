@@ -56,6 +56,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
+    // JSON parsing for batch mode
+    implementation("com.google.code.gson:gson:2.10.1")
+
     // ONNX Runtime with QNN Execution Provider (NPU)
     implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.22.0")
 }

@@ -1,12 +1,20 @@
 package com.example.kpilab
 
 import android.content.Context
+import android.os.Environment
 import android.util.Log
+import com.example.kpilab.batch.BatchProgress
+import com.example.kpilab.batch.ExperimentDefaults
+import com.example.kpilab.batch.ExperimentSet
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.File
+import java.io.FileWriter
+import java.text.SimpleDateFormat
+import java.util.*
 
 /**
  * Benchmark state
@@ -67,20 +75,32 @@ class BenchmarkRunner(
         private const val TAG = "BenchmarkRunner"
         private const val SYSTEM_METRICS_INTERVAL_MS = 1000L  // 1 second
         private const val MEMORY_METRICS_INTERVAL_MS = 5000L  // 5 seconds
+        private const val COOLDOWN_SECONDS = 30  // Cooldown between batch experiments
     }
 
     private val _progress = MutableStateFlow(BenchmarkProgress())
     val progress: StateFlow<BenchmarkProgress> = _progress.asStateFlow()
 
+    private val _batchProgress = MutableStateFlow(BatchProgress())
+    val batchProgress: StateFlow<BatchProgress> = _batchProgress.asStateFlow()
+
     private var ortRunner: OrtRunner? = null
     private var benchmarkJob: Job? = null
     private var systemMetricsJob: Job? = null
+    private var batchJob: Job? = null
     private var startTimeMs: Long = 0
     private var config: BenchmarkConfig? = null
+
+    /** Current model being benchmarked */
+    var currentModel: OnnxModelType? = null
+        private set
 
     val isRunning: Boolean
         get() = _progress.value.state == BenchmarkState.RUNNING ||
                 _progress.value.state == BenchmarkState.WARMING_UP
+
+    val isBatchRunning: Boolean
+        get() = _batchProgress.value.isRunning
 
     /**
      * Start benchmark with given configuration
@@ -89,12 +109,13 @@ class BenchmarkRunner(
         config: BenchmarkConfig,
         scope: CoroutineScope
     ) {
-        if (isRunning) {
+        if (isRunning || isBatchRunning) {
             Log.w(TAG, "Benchmark already running")
             return
         }
 
         this.config = config
+        this.currentModel = config.modelType
         Log.i(TAG, "Starting benchmark: $config")
 
         benchmarkJob = scope.launch(Dispatchers.Default) {
@@ -118,6 +139,16 @@ class BenchmarkRunner(
         _progress.value = _progress.value.copy(state = BenchmarkState.STOPPING)
         benchmarkJob?.cancel()
         systemMetricsJob?.cancel()
+    }
+
+    /**
+     * Stop running batch
+     */
+    fun stopBatch() {
+        Log.i(TAG, "Stopping batch")
+        batchJob?.cancel()
+        stop()
+        _batchProgress.value = BatchProgress()
     }
 
     private suspend fun runBenchmark(config: BenchmarkConfig) {
@@ -306,9 +337,153 @@ class BenchmarkRunner(
     }
 
     /**
+     * Start batch experiment execution
+     */
+    fun startBatch(
+        experimentSet: ExperimentSet,
+        defaults: ExperimentDefaults,
+        scope: CoroutineScope,
+        onExperimentComplete: (csvPath: String) -> Unit = {}
+    ) {
+        if (isRunning || isBatchRunning) {
+            Log.w(TAG, "Benchmark or batch already running")
+            return
+        }
+
+        Log.i(TAG, "Starting batch: ${experimentSet.name} with ${experimentSet.experiments.size} experiments")
+
+        _batchProgress.value = BatchProgress(
+            isRunning = true,
+            currentSetName = experimentSet.name,
+            currentExperimentIndex = 0,
+            totalExperiments = experimentSet.experiments.size
+        )
+
+        batchJob = scope.launch(Dispatchers.Default) {
+            val completedFiles = mutableListOf<String>()
+
+            try {
+                for ((index, experiment) in experimentSet.experiments.withIndex()) {
+                    // Check if cancelled
+                    if (!isActive) break
+
+                    val experimentName = experiment.getDisplayName()
+                    Log.i(TAG, "=== Batch Experiment ${index + 1}/${experimentSet.experiments.size}: $experimentName ===")
+
+                    // Update batch progress
+                    _batchProgress.value = _batchProgress.value.copy(
+                        currentExperimentIndex = index + 1,
+                        currentExperimentName = experimentName,
+                        isCoolingDown = false
+                    )
+
+                    // Convert to BenchmarkConfig
+                    val config = experiment.toBenchmarkConfig(defaults)
+                    this@BenchmarkRunner.config = config
+                    this@BenchmarkRunner.currentModel = config.modelType
+
+                    // Run single benchmark
+                    try {
+                        runBenchmark(config)
+                    } catch (e: CancellationException) {
+                        Log.i(TAG, "Batch experiment cancelled")
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Batch experiment failed: ${e.message}", e)
+                        // Continue with next experiment
+                        continue
+                    }
+
+                    // Export CSV
+                    val csvPath = exportAndSaveCsv()
+                    if (csvPath != null) {
+                        completedFiles.add(csvPath)
+                        _batchProgress.value = _batchProgress.value.copy(
+                            completedExperiments = completedFiles.toList()
+                        )
+                        onExperimentComplete(csvPath)
+                        Log.i(TAG, "Experiment CSV saved: $csvPath")
+                    }
+
+                    // Cooldown between experiments (except for last one)
+                    if (index < experimentSet.experiments.size - 1 && isActive) {
+                        Log.i(TAG, "Cooldown for $COOLDOWN_SECONDS seconds...")
+                        _batchProgress.value = _batchProgress.value.copy(isCoolingDown = true)
+
+                        for (remaining in COOLDOWN_SECONDS downTo 1) {
+                            if (!isActive) break
+                            _batchProgress.value = _batchProgress.value.copy(
+                                cooldownRemainingSeconds = remaining
+                            )
+                            delay(1000)
+                        }
+                    }
+                }
+
+                Log.i(TAG, "=== Batch completed: ${completedFiles.size}/${experimentSet.experiments.size} experiments ===")
+
+            } catch (e: CancellationException) {
+                Log.i(TAG, "Batch cancelled")
+            } finally {
+                _batchProgress.value = BatchProgress(
+                    completedExperiments = completedFiles.toList()
+                )
+                cleanup()
+            }
+        }
+    }
+
+    /**
+     * Export current data and save to file, returning the file path
+     */
+    private fun exportAndSaveCsv(): String? {
+        val csvData = exportCsv()
+        if (csvData.isEmpty()) {
+            return null
+        }
+
+        return try {
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val modelName = currentModel?.displayName
+                ?.replace(" ", "")
+                ?.replace("-", "")
+                ?.replace("(", "")
+                ?.replace(")", "")
+                ?: "Unknown"
+            val ep = getActiveExecutionProvider()
+                .replace("_", "")
+                .uppercase()
+            val filename = "kpi_${modelName}_${ep}_${timestamp}.csv"
+
+            val exportDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+            if (exportDir != null) {
+                val file = File(exportDir, filename)
+                FileWriter(file).use { writer ->
+                    writer.write(csvData)
+                }
+                Log.i(TAG, "CSV exported: ${file.absolutePath}")
+                file.absolutePath
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "CSV export failed: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Get active execution provider name
+     */
+    fun getActiveExecutionProvider(): String {
+        return ortRunner?.getActiveExecutionProvider() ?: "CPU"
+    }
+
+    /**
      * Release resources
      */
     fun release() {
+        stopBatch()
         stop()
         ortRunner?.release()
         ortRunner = null

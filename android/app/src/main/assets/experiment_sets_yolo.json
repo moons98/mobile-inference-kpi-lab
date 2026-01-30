@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "defaults": {
+    "frequencyHz": 5,
+    "durationMinutes": 5,
+    "warmUpEnabled": true,
+    "useNpuFp16": true,
+    "useContextCache": false
+  },
+  "experimentSets": [
+    {
+      "id": "yolo_ep_comparison",
+      "name": "[YOLOv8n] EP 비교",
+      "experiments": [
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8N", "executionProvider": "QNN_GPU" },
+        { "model": "YOLOV8N", "executionProvider": "CPU" }
+      ]
+    },
+    {
+      "id": "yolo_quantization",
+      "name": "[YOLOv8n] 양자화 비교 (NPU)",
+      "experiments": [
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8N_INT8_DYNAMIC", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU" }
+      ]
+    },
+    {
+      "id": "yolo_int8_ep_comparison",
+      "name": "[YOLOv8n] INT8 EP 비교",
+      "experiments": [
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_GPU" },
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "CPU" }
+      ]
+    },
+    {
+      "id": "yolo_frequency",
+      "name": "[YOLOv8n] 주파수 비교",
+      "experiments": [
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "frequencyHz": 1 },
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "frequencyHz": 5 },
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "frequencyHz": 10 }
+      ]
+    },
+    {
+      "id": "yolo_full_matrix",
+      "name": "[YOLOv8n] 전체 비교",
+      "experiments": [
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8N", "executionProvider": "QNN_GPU" },
+        { "model": "YOLOV8N", "executionProvider": "CPU" },
+        { "model": "YOLOV8N_INT8_DYNAMIC", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU" }
+      ]
+    }
+  ]
+}

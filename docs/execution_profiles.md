@@ -206,6 +206,32 @@ data class BenchmarkConfig(
 | QNN_GPU | `libQnnGpu.so` | Qualcomm Adreno GPU |
 | CPU | (기본값) | ONNX Runtime CPU EP |
 
+**Op-level Fallback 동작**:
+
+ONNX Runtime은 세션 생성 시 그래프 분할(Graph Partitioning)을 수행합니다:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Session Creation (Graph Partitioning)                   │
+│                                                          │
+│  1. QNN EP가 지원하는 Op들을 claim                        │
+│  2. 나머지 Op들은 CPU EP로 할당                           │
+│  3. 분할 결과는 세션 수명 동안 고정                        │
+│                                                          │
+│  예시 결과:                                               │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐     │
+│  │ Conv2D  │→ │  ReLU   │→ │ Softmax │→ │ ArgMax  │     │
+│  │  (NPU)  │  │  (NPU)  │  │  (NPU)  │  │  (CPU)  │     │
+│  └─────────┘  └─────────┘  └─────────┘  └─────────┘     │
+└─────────────────────────────────────────────────────────┘
+```
+
+- **NPU 선택**: QNN HTP가 지원하는 Op은 NPU에서, 미지원 Op은 CPU에서 실행
+- **GPU 선택**: QNN GPU가 지원하는 Op은 GPU에서, 미지원 Op은 CPU에서 실행
+- **CPU 선택**: 모든 Op이 CPU에서 실행
+
+> **Note**: 이 fallback 동작은 비활성화할 수 없습니다. QNN EP의 기본 동작입니다.
+
 **QNN NPU 옵션 상세**:
 
 | 옵션 | 값 | 설명 |

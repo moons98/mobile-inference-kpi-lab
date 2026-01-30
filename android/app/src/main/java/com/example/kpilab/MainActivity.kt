@@ -3,10 +3,14 @@ package com.example.kpilab
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
+import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.example.kpilab.batch.BatchProgress
+import com.example.kpilab.batch.ExperimentSet
+import com.example.kpilab.batch.ExperimentSetLoader
 import com.example.kpilab.databinding.ActivityMainBinding
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -25,8 +29,11 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var kpiCollector: KpiCollector
     private lateinit var benchmarkRunner: BenchmarkRunner
+    private lateinit var experimentSetLoader: ExperimentSetLoader
 
     private var isForeground = true
+    private var isBatchMode = false
+    private var experimentSets: List<ExperimentSet> = emptyList()
 
     // All available model types for the spinner
     private val modelTypes = OnnxModelType.values()
@@ -40,18 +47,25 @@ class MainActivity : AppCompatActivity() {
         initializeComponents()
         setupUI()
         setupModelSpinner()
+        setupBatchMode()
         observeProgress()
+        observeBatchProgress()
     }
 
     private fun initializeComponents() {
         kpiCollector = KpiCollector(this)
         benchmarkRunner = BenchmarkRunner(this, kpiCollector)
+        experimentSetLoader = ExperimentSetLoader(this)
+
+        // Load experiment sets
+        experimentSets = experimentSetLoader.getExperimentSets()
+        Log.i(TAG, "Loaded ${experimentSets.size} experiment sets")
     }
 
     private fun setupUI() {
         // Start/Stop button
         binding.btnStartStop.setOnClickListener {
-            if (benchmarkRunner.isRunning) {
+            if (benchmarkRunner.isRunning || benchmarkRunner.isBatchRunning) {
                 stopBenchmark()
             } else {
                 startBenchmark()
@@ -65,6 +79,38 @@ class MainActivity : AppCompatActivity() {
 
         // Initially disable export
         binding.btnExport.isEnabled = false
+    }
+
+    private fun setupBatchMode() {
+        // Setup experiment set spinner
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            experimentSets.map { it.name }
+        )
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerExperimentSet.adapter = adapter
+
+        // Batch mode checkbox listener
+        binding.checkBatchMode.setOnCheckedChangeListener { _, isChecked ->
+            isBatchMode = isChecked
+            updateBatchModeUI()
+        }
+
+        // Initial state
+        updateBatchModeUI()
+    }
+
+    private fun updateBatchModeUI() {
+        // Show/hide batch options
+        binding.layoutBatchOptions.visibility = if (isBatchMode) View.VISIBLE else View.GONE
+
+        // Show/hide single mode cards
+        val singleModeVisibility = if (isBatchMode) View.GONE else View.VISIBLE
+        binding.cardSingleMode.visibility = singleModeVisibility
+        binding.cardExecutionPath.visibility = singleModeVisibility
+        binding.cardFrequency.visibility = singleModeVisibility
+        binding.cardOptions.visibility = singleModeVisibility
     }
 
     private fun setupModelSpinner() {
@@ -82,6 +128,57 @@ class MainActivity : AppCompatActivity() {
             benchmarkRunner.progress.collectLatest { progress ->
                 updateUI(progress)
             }
+        }
+    }
+
+    private fun observeBatchProgress() {
+        lifecycleScope.launch {
+            benchmarkRunner.batchProgress.collectLatest { progress ->
+                updateBatchUI(progress)
+            }
+        }
+    }
+
+    private fun updateBatchUI(progress: BatchProgress) {
+        // Show/hide batch progress card
+        binding.cardBatchProgress.visibility = if (progress.isRunning || progress.completedExperiments.isNotEmpty()) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
+
+        // Update experiment progress
+        binding.tvBatchExperiment.text = progress.formatProgress()
+        binding.tvCurrentExperiment.text = progress.currentExperimentName.ifEmpty { "--" }
+
+        // Update cooldown status
+        if (progress.isCoolingDown) {
+            binding.layoutCooldown.visibility = View.VISIBLE
+            binding.tvCooldown.text = "${progress.cooldownRemainingSeconds} sec"
+        } else {
+            binding.layoutCooldown.visibility = View.GONE
+        }
+
+        // Update completed experiments list
+        if (progress.completedExperiments.isNotEmpty()) {
+            val completedText = progress.completedExperiments.mapIndexed { index, path ->
+                val filename = File(path).name
+                "${index + 1}. $filename"
+            }.joinToString("\n")
+            binding.tvCompletedExperiments.text = "Completed:\n$completedText"
+        } else {
+            binding.tvCompletedExperiments.text = ""
+        }
+
+        // Update button state for batch mode
+        if (progress.isRunning) {
+            binding.btnStartStop.text = getString(R.string.stop_benchmark)
+            setControlsEnabled(false)
+            binding.checkBatchMode.isEnabled = false
+        } else if (!benchmarkRunner.isRunning) {
+            binding.btnStartStop.text = getString(R.string.start_benchmark)
+            setControlsEnabled(true)
+            binding.checkBatchMode.isEnabled = true
         }
     }
 
@@ -138,7 +235,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setControlsEnabled(enabled: Boolean) {
-        // Model selection
+        // Batch mode toggle
+        binding.checkBatchMode.isEnabled = enabled
+        binding.spinnerExperimentSet.isEnabled = enabled
+
+        // Model selection (single mode only)
         binding.spinnerModel.isEnabled = enabled
 
         // Execution provider selection
@@ -199,6 +300,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startBenchmark() {
+        if (isBatchMode) {
+            startBatchBenchmark()
+        } else {
+            startSingleBenchmark()
+        }
+    }
+
+    private fun startSingleBenchmark() {
         val config = buildConfig()
         Log.i(TAG, "Starting benchmark with config: $config")
 
@@ -207,10 +316,47 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Benchmark started", Toast.LENGTH_SHORT).show()
     }
 
+    private fun startBatchBenchmark() {
+        if (experimentSets.isEmpty()) {
+            Toast.makeText(this, "No experiment sets available", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val selectedIndex = binding.spinnerExperimentSet.selectedItemPosition
+        if (selectedIndex < 0 || selectedIndex >= experimentSets.size) {
+            Toast.makeText(this, "Please select an experiment set", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val selectedSet = experimentSets[selectedIndex]
+        val defaults = experimentSetLoader.getDefaults()
+
+        Log.i(TAG, "Starting batch: ${selectedSet.name} with ${selectedSet.experiments.size} experiments")
+
+        benchmarkRunner.startBatch(
+            experimentSet = selectedSet,
+            defaults = defaults,
+            scope = lifecycleScope,
+            onExperimentComplete = { csvPath ->
+                runOnUiThread {
+                    val filename = File(csvPath).name
+                    Toast.makeText(this, "Saved: $filename", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+
+        Toast.makeText(this, "Batch started: ${selectedSet.name}", Toast.LENGTH_SHORT).show()
+    }
+
     private fun stopBenchmark() {
         Log.i(TAG, "Stopping benchmark")
-        benchmarkRunner.stop()
-        Toast.makeText(this, "Benchmark stopped", Toast.LENGTH_SHORT).show()
+        if (benchmarkRunner.isBatchRunning) {
+            benchmarkRunner.stopBatch()
+            Toast.makeText(this, "Batch stopped", Toast.LENGTH_SHORT).show()
+        } else {
+            benchmarkRunner.stop()
+            Toast.makeText(this, "Benchmark stopped", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun exportData() {
