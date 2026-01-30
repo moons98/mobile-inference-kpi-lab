@@ -144,6 +144,17 @@ class OrtRunner(private val context: Context) {
                     qnnOptions["htp_graph_finalization_optimization_mode"] = "3"
                     qnnOptions["enable_htp_fp16_precision"] = if (useNpuFp16) "1" else "0"
 
+                    // Custom skel library path (for devices without system QNN drivers)
+                    // Push skel to device: adb push libQnnHtpV73Skel.so /data/local/tmp/qnn/
+                    val customSkelPath = "/data/local/tmp/qnn"
+                    val skelFile = java.io.File("$customSkelPath/libQnnHtpV73Skel.so")
+                    if (skelFile.exists()) {
+                        qnnOptions["skel_library_dir"] = customSkelPath
+                        Log.i(TAG, "Custom skel library dir: $customSkelPath")
+                    } else {
+                        Log.i(TAG, "No custom skel at $customSkelPath, using system default")
+                    }
+
                     // Context cache options
                     if (useContextCache) {
                         val model = currentModel
