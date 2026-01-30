@@ -81,6 +81,67 @@ def load_metadata(file_path: str) -> dict:
     return metadata
 
 
+def load_ort_log(csv_path: str) -> Optional[dict]:
+    """
+    Load ORT log file if it exists alongside CSV file.
+
+    Args:
+        csv_path: Path to the CSV file
+
+    Returns:
+        Dict with ORT log info or None if not found
+    """
+    # ORT log file has same name as CSV but with _ort.log suffix
+    # e.g., kpi_MobileNetV2_QNNNPU_20260130_173916.csv -> kpi_MobileNetV2_QNNNPU_20260130_173916_ort.log
+    log_path = Path(csv_path).with_suffix('').with_suffix('_ort.log')
+
+    # Also try the pattern where .csv is simply replaced
+    if not log_path.exists():
+        log_path = Path(str(csv_path).replace('.csv', '_ort.log'))
+
+    if not log_path.exists():
+        return None
+
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        ort_info = {
+            'raw_log': content,
+            'total_nodes': 0,
+            'qnn_nodes': 0,
+            'cpu_nodes': 0,
+            'fallback_ops': []
+        }
+
+        # Parse summary section
+        for line in content.split('\n'):
+            if 'Total nodes:' in line:
+                try:
+                    ort_info['total_nodes'] = int(line.split(':')[1].strip())
+                except:
+                    pass
+            elif 'QNN nodes:' in line:
+                try:
+                    ort_info['qnn_nodes'] = int(line.split(':')[1].strip())
+                except:
+                    pass
+            elif 'CPU fallback nodes:' in line:
+                try:
+                    ort_info['cpu_nodes'] = int(line.split(':')[1].strip())
+                except:
+                    pass
+            elif 'Fallback ops:' in line:
+                ops_str = line.split(':')[1].strip()
+                if ops_str:
+                    ort_info['fallback_ops'] = [op.strip() for op in ops_str.split(',')]
+
+        return ort_info
+    except Exception as e:
+        print(f"Warning: Failed to load ORT log {log_path}: {e}")
+        return None
+
+
 def load_log(file_path: str) -> pd.DataFrame:
     """
     Load a KPI log CSV file.
@@ -365,45 +426,176 @@ def print_single_report(file_path: str):
 
 def generate_comparison_table(file_paths: list) -> str:
     """
-    Generate comparison table string for multiple log files.
+    Generate sectioned comparison report for multiple log files.
 
     Args:
         file_paths: List of paths to CSV files
 
     Returns:
-        Comparison table as string
+        Comparison report as string with multiple sections
     """
-    lines = []
-    lines.append("=" * 130)
-    lines.append("Comparison Report")
-    lines.append("=" * 130)
+    import re
 
-    # Header
-    lines.append(f"\n{'File':<25} {'EP':<10} {'Model':<15} {'P50':<8} {'P95':<8} {'FPS':<8} {'Cold':<8} {'Drift%':<8} {'Power':<8}")
-    lines.append("-" * 130)
-
+    # Load all data first
+    experiments = []
     for file_path in file_paths:
         metadata = load_metadata(file_path)
         df = load_log(file_path)
         metrics = calculate_metrics(df, metadata)
+        ort_log = load_ort_log(file_path)  # Load ORT log if available
 
-        name = Path(file_path).stem[-23:]
-        ep = metadata.get('execution_provider', 'N/A')[:8]
-        model = metadata.get('model', 'N/A')[:13]
+        # Extract short label (remove kpi_ prefix and timestamp)
+        name = Path(file_path).stem
+        label = re.sub(r'^kpi_', '', name)
+        label = re.sub(r'_\d{8}_\d{6}$', '', label)
 
-        # Cold start total
-        cold_ms = metrics.cold_start.total_cold_ms if metrics.cold_start else 0
+        experiments.append({
+            'label': label,
+            'name': name,
+            'ep': metadata.get('execution_provider', 'N/A'),
+            'model': metadata.get('model', 'N/A'),
+            'metrics': metrics,
+            'metadata': metadata,
+            'ort_log': ort_log
+        })
 
-        # Drift percentage
-        drift_pct = ((metrics.last_30s_p50 - metrics.first_30s_p50) / metrics.first_30s_p50 * 100) if metrics.first_30s_p50 > 0 else 0
+    lines = []
+    sep = "=" * 120
 
-        lines.append(f"{name:<25} {ep:<10} {model:<15} "
-              f"{metrics.latency_p50:<8.2f} "
-              f"{metrics.latency_p95:<8.2f} "
-              f"{metrics.fps:<8.1f} "
-              f"{cold_ms:<8.0f} "
-              f"{drift_pct:<+8.1f} "
-              f"{metrics.power_mean:<8.1f}")
+    # Title
+    lines.append(sep)
+    lines.append("KPI Comparison Report")
+    lines.append(sep)
+
+    # Section 1: Experiment Overview
+    lines.append("\n[1] Experiment Overview")
+    lines.append("-" * 120)
+    lines.append(f"{'#':<4} {'Label':<40} {'EP':<12} {'Model':<30}")
+    lines.append("-" * 120)
+    for i, exp in enumerate(experiments, 1):
+        lines.append(f"{i:<4} {exp['label']:<40} {exp['ep']:<12} {exp['model']:<30}")
+    lines.append("")
+    lines.append("    EP: Execution Provider (QNN_NPU=Hexagon HTP, QNN_GPU=Adreno GPU, CPU=ARM CPU)")
+
+    # Section 2: Latency Performance
+    lines.append(f"\n\n[2] Latency Performance")
+    lines.append("-" * 120)
+    lines.append(f"{'#':<4} {'Label':<40} {'P50(ms)':<10} {'P95(ms)':<10} {'Mean(ms)':<10} {'Std(ms)':<10} {'MaxFPS':<10}")
+    lines.append("-" * 120)
+    for i, exp in enumerate(experiments, 1):
+        m = exp['metrics']
+        # Theoretical max FPS = 1000ms / P50 latency
+        max_fps = 1000.0 / m.latency_p50 if m.latency_p50 > 0 else 0
+        lines.append(f"{i:<4} {exp['label']:<40} {m.latency_p50:<10.2f} {m.latency_p95:<10.2f} "
+                     f"{m.latency_mean:<10.2f} {m.latency_std:<10.2f} {max_fps:<10.1f}")
+    lines.append("")
+    lines.append("    P50/P95: 50th/95th percentile latency (lower=better)")
+    lines.append("    MaxFPS: Theoretical max throughput = 1000/P50 (higher=better)")
+
+    # Section 3: Cold Start Breakdown
+    lines.append(f"\n\n[3] Cold Start Breakdown")
+    lines.append("-" * 120)
+    lines.append(f"{'#':<4} {'Label':<40} {'Total(ms)':<12} {'Load(ms)':<12} {'Session(ms)':<12} {'1stInf(ms)':<12}")
+    lines.append("-" * 120)
+    for i, exp in enumerate(experiments, 1):
+        m = exp['metrics']
+        if m.cold_start:
+            total = m.cold_start.total_cold_ms
+            load = m.cold_start.model_load_ms
+            session = m.cold_start.session_create_ms
+            first = m.cold_start.first_inference_ms
+            lines.append(f"{i:<4} {exp['label']:<40} {total:<12.0f} {load:<12.0f} {session:<12.0f} {first:<12.2f}")
+        else:
+            lines.append(f"{i:<4} {exp['label']:<40} {'N/A':<12} {'N/A':<12} {'N/A':<12} {'N/A':<12}")
+    lines.append("")
+    lines.append("    Total: 앱 시작부터 첫 추론 완료까지 = Load + Session + 1stInf")
+    lines.append("    Load: ONNX 모델 파일 로드 시간")
+    lines.append("    Session: ORT 세션 생성 시간 (QNN EP는 HTP 그래프 컴파일 포함)")
+    lines.append("    1stInf: 첫 번째 추론 지연시간")
+
+    # Section 4: Thermal Drift Analysis
+    lines.append(f"\n\n[4] Thermal Drift Analysis (Latency P50 변화)")
+    lines.append("-" * 120)
+    lines.append(f"{'#':<4} {'Label':<40} {'First30s(ms)':<14} {'Last30s(ms)':<14} {'Drift%':<10} {'Verdict':<16}")
+    lines.append("-" * 120)
+    for i, exp in enumerate(experiments, 1):
+        m = exp['metrics']
+        first_30s = m.first_30s_p50
+        last_30s = m.last_30s_p50
+        drift_pct = ((last_30s - first_30s) / first_30s * 100) if first_30s > 0 else 0
+
+        # Verdict based on drift
+        if abs(drift_pct) < 3:
+            verdict = "Stable"
+        elif drift_pct > 10:
+            verdict = "Throttling"
+        elif drift_pct > 3:
+            verdict = "Slight throttle"
+        elif drift_pct < -3:
+            verdict = "Warmup effect"
+        else:
+            verdict = "Normal"
+
+        lines.append(f"{i:<4} {exp['label']:<40} {first_30s:<14.2f} {last_30s:<14.2f} {drift_pct:<+10.1f} {verdict:<16}")
+    lines.append("")
+    lines.append("    First30s/Last30s: 벤치마크 처음/마지막 30초 동안의 Latency P50")
+    lines.append("    Drift%: (Last30s - First30s) / First30s × 100")
+    lines.append("    Verdict: Stable(<±3%), Slight throttle(3~10%), Throttling(>10%), Warmup effect(<-3%)")
+
+    # Section 5: System Resources
+    lines.append(f"\n\n[5] System Resources")
+    lines.append("-" * 120)
+    lines.append(f"{'#':<4} {'Label':<40} {'Power(mW)':<12} {'Slope(°C/min)':<14} {'MemPeak(MB)':<12}")
+    lines.append("-" * 120)
+    for i, exp in enumerate(experiments, 1):
+        m = exp['metrics']
+        lines.append(f"{i:<4} {exp['label']:<40} {m.power_mean:<12.1f} {m.thermal_slope:<14.2f} {m.memory_peak:<12}")
+    lines.append("")
+    lines.append("    Power: 평균 전력 소비량 (mW)")
+    lines.append("    Slope: 온도 상승률 (°C/min, lower=better)")
+    lines.append("    MemPeak: 최대 메모리 사용량 (MB)")
+
+    # Section 6: Model Details
+    lines.append(f"\n\n[6] Model Details")
+    lines.append("-" * 120)
+    lines.append(f"{'#':<4} {'Label':<40} {'Size(KB)':<12} {'Input Shape':<24} {'QNN Options':<30}")
+    lines.append("-" * 120)
+    for i, exp in enumerate(experiments, 1):
+        meta = exp['metadata']
+        size_kb = meta.get('model_size_kb', 'N/A')
+        input_shape = meta.get('input_shape', 'N/A')
+        qnn_opts = meta.get('qnn_options', 'N/A')
+        lines.append(f"{i:<4} {exp['label']:<40} {size_kb:<12} {input_shape:<24} {qnn_opts:<30}")
+    lines.append("")
+    lines.append("    Size: 모델 파일 크기 (KB)")
+    lines.append("    Input Shape: 입력 텐서 shape [N,C,H,W]")
+    lines.append("    QNN Options: QNN Execution Provider 옵션 (NPU/GPU 사용시)")
+    # Section 7: Graph Partitioning (if ORT logs available)
+    has_ort_logs = any(exp.get('ort_log') for exp in experiments)
+    if has_ort_logs:
+        lines.append(f"\n\n[7] Graph Partitioning (from ORT logs)")
+        lines.append("-" * 120)
+        lines.append(f"{'#':<4} {'Label':<40} {'Total':<10} {'QNN':<10} {'CPU':<10} {'Fallback Ops':<40}")
+        lines.append("-" * 120)
+        for i, exp in enumerate(experiments, 1):
+            ort = exp.get('ort_log')
+            if ort:
+                total = ort.get('total_nodes', 0)
+                qnn = ort.get('qnn_nodes', 0)
+                cpu = ort.get('cpu_nodes', 0)
+                fallback = ', '.join(ort.get('fallback_ops', []))[:40] or '-'
+                lines.append(f"{i:<4} {exp['label']:<40} {total:<10} {qnn:<10} {cpu:<10} {fallback:<40}")
+            else:
+                lines.append(f"{i:<4} {exp['label']:<40} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'(no ORT log)':<40}")
+        lines.append("")
+        lines.append("    Total: 그래프 총 노드 수")
+        lines.append("    QNN: QNN EP에서 실행되는 노드 수 (NPU/GPU)")
+        lines.append("    CPU: CPU fallback 노드 수")
+        lines.append("    Fallback Ops: QNN에서 지원하지 않아 CPU로 실행되는 연산자")
+    else:
+        lines.append("")
+        lines.append("    NOTE: Graph partitioning 정보를 보려면 앱에서 벤치마크 실행 후")
+        lines.append("          생성되는 *_ort.log 파일을 CSV와 같은 폴더에 두세요.")
 
     lines.append("")
     return "\n".join(lines)
@@ -435,7 +627,7 @@ if __name__ == "__main__":
         path = Path(p)
         if path.is_dir():
             input_dir = path
-            # Support both old (kpi_log_*) and new (kpi_Model_EP_*) filename formats
+            # Search for CSV files in the specified directory only (not subdirectories)
             log_files.extend(sorted(path.glob("kpi_*.csv")))
         elif path.exists():
             if input_dir is None:

@@ -3,6 +3,13 @@
 Visualization functions for KPI analysis.
 """
 
+import sys
+
+# Set non-interactive backend when running as script (before importing pyplot)
+if __name__ == "__main__" and "--show" not in sys.argv and "-s" not in sys.argv:
+    import matplotlib
+    matplotlib.use('Agg')
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -373,25 +380,71 @@ def compare_experiments(
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate KPI dashboard plots")
+    parser.add_argument("path", help="Log CSV file or directory containing kpi_*.csv files")
+    parser.add_argument("output_dir", nargs="?", default=None, help="Output directory for plots (default: same as input)")
+    parser.add_argument("--show", "-s", action="store_true", help="Show plot window (default: save only)")
+    parser.add_argument("--compare", "-c", action="store_true", help="Compare mode: treat path as directory and generate comparison plot")
+
+    args = parser.parse_args()
 
     setup_style()
 
-    if len(sys.argv) < 2:
-        print("Usage: python plot_kpi.py <log_file.csv> [output_dir]")
-        sys.exit(1)
+    input_path = Path(args.path)
 
-    file_path = sys.argv[1]
-    output_dir = sys.argv[2] if len(sys.argv) > 2 else "."
+    if args.compare or input_path.is_dir():
+        # Directory mode: compare all kpi_*.csv files
+        if not input_path.is_dir():
+            print(f"Error: {input_path} is not a directory")
+            sys.exit(1)
 
-    print(f"Loading: {file_path}")
-    df = load_log(file_path)
+        log_files = sorted(input_path.glob("kpi_*.csv"))
+        if not log_files:
+            print(f"No kpi_*.csv files found in {input_path}")
+            sys.exit(1)
 
-    base_name = Path(file_path).stem
+        print(f"Found {len(log_files)} log file(s) in {input_path}")
 
-    # Generate all plots
-    print("Generating dashboard...")
-    plot_kpi_dashboard(df, save_path=f"{output_dir}/{base_name}_dashboard.png")
+        # Extract labels from filenames (remove kpi_ prefix and timestamp suffix)
+        # Format: kpi_ModelName_EP_YYYYMMDD_HHMMSS -> ModelName_EP
+        import re
+        def extract_label(filename: str) -> str:
+            name = filename.replace("kpi_", "")
+            # Remove timestamp suffix (YYYYMMDD_HHMMSS)
+            name = re.sub(r'_\d{8}_\d{6}$', '', name)
+            return name
+        labels = [extract_label(f.stem) for f in log_files]
+
+        output_dir = args.output_dir or str(input_path)
+        output_path = f"{output_dir}/comparison_plot.png"
+
+        print("Generating comparison plot...")
+        compare_experiments(
+            log_files=[str(f) for f in log_files],
+            labels=labels,
+            save_path=output_path
+        )
+        print(f"Saved: {output_path}")
+
+    else:
+        # Single file mode: generate dashboard
+        if not input_path.exists():
+            print(f"Error: {input_path} does not exist")
+            sys.exit(1)
+
+        output_dir = args.output_dir or str(input_path.parent)
+
+        print(f"Loading: {input_path}")
+        df = load_log(str(input_path))
+
+        base_name = input_path.stem
+
+        print("Generating dashboard...")
+        plot_kpi_dashboard(df, save_path=f"{output_dir}/{base_name}_dashboard.png")
 
     print("Done!")
-    plt.show()
+
+    if args.show:
+        plt.show()

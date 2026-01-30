@@ -91,6 +91,10 @@ class BenchmarkRunner(
     private var startTimeMs: Long = 0
     private var config: BenchmarkConfig? = null
 
+    // Logcat capture for ORT verbose logs
+    private val logcatCapture = LogcatCapture()
+    private var lastOrtLogInfo: OrtLogInfo? = null
+
     /** Current model being benchmarked */
     var currentModel: OnnxModelType? = null
         private set
@@ -165,6 +169,14 @@ class BenchmarkRunner(
             ortRunner = null
         }
 
+        // Start logcat capture BEFORE ORT initialization to catch graph compilation logs
+        val captureScope = CoroutineScope(currentCoroutineContext())
+        logcatCapture.startCapture(
+            tags = listOf("onnxruntime", "OrtRunner", "QNN"),
+            scope = captureScope
+        )
+        Log.i(TAG, "Logcat capture started")
+
         // Create and initialize ONNX Runtime runner
         val initialized = withContext(Dispatchers.IO) {
             Log.i(TAG, "Initializing ONNX Runtime runner")
@@ -183,6 +195,9 @@ class BenchmarkRunner(
 
         if (!initialized) {
             Log.e(TAG, "Failed to initialize runner")
+            // Stop logcat capture even on failure - it may contain useful error info
+            logcatCapture.stopCapture()
+            lastOrtLogInfo = logcatCapture.parseOrtInfo()
             _progress.value = BenchmarkProgress(state = BenchmarkState.IDLE)
             return
         }
@@ -252,6 +267,11 @@ class BenchmarkRunner(
         // End session
         runner.endSession()
         Log.i(TAG, "Benchmark completed: $inferenceCount inferences")
+
+        // Stop logcat capture and parse ORT info
+        logcatCapture.stopCapture()
+        lastOrtLogInfo = logcatCapture.parseOrtInfo()
+        Log.i(TAG, "Logcat capture stopped, captured ${lastOrtLogInfo?.rawLogs?.lines()?.size ?: 0} lines")
     }
 
     private suspend fun collectSystemMetrics(durationMs: Long, runner: OrtRunner) {
@@ -296,6 +316,9 @@ class BenchmarkRunner(
 
     private fun cleanup() {
         systemMetricsJob?.cancel()
+        if (logcatCapture.isCapturing()) {
+            logcatCapture.stopCapture()
+        }
         _progress.value = BenchmarkProgress(state = BenchmarkState.IDLE)
         config = null
         Log.i(TAG, "Cleanup completed")
@@ -453,16 +476,31 @@ class BenchmarkRunner(
             val ep = getActiveExecutionProvider()
                 .replace("_", "")
                 .uppercase()
-            val filename = "kpi_${modelName}_${ep}_${timestamp}.csv"
+            val baseFilename = "kpi_${modelName}_${ep}_${timestamp}"
 
             val exportDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
             if (exportDir != null) {
-                val file = File(exportDir, filename)
-                FileWriter(file).use { writer ->
+                // Save CSV
+                val csvFile = File(exportDir, "${baseFilename}.csv")
+                FileWriter(csvFile).use { writer ->
                     writer.write(csvData)
                 }
-                Log.i(TAG, "CSV exported: ${file.absolutePath}")
-                file.absolutePath
+                Log.i(TAG, "CSV exported: ${csvFile.absolutePath}")
+
+                // Save ORT logs alongside CSV
+                lastOrtLogInfo?.let { ortInfo ->
+                    if (ortInfo.rawLogs.isNotBlank()) {
+                        val logFile = File(exportDir, "${baseFilename}_ort.log")
+                        FileWriter(logFile).use { writer ->
+                            writer.write(ortInfo.toSummary())
+                            writer.write("\n\n=== Raw Logs ===\n")
+                            writer.write(ortInfo.rawLogs)
+                        }
+                        Log.i(TAG, "ORT logs exported: ${logFile.absolutePath}")
+                    }
+                }
+
+                csvFile.absolutePath
             } else {
                 null
             }
@@ -480,11 +518,19 @@ class BenchmarkRunner(
     }
 
     /**
+     * Get last ORT log info (graph partitioning, fallback ops, etc.)
+     */
+    fun getOrtLogInfo(): OrtLogInfo? = lastOrtLogInfo
+
+    /**
      * Release resources
      */
     fun release() {
         stopBatch()
         stop()
+        if (logcatCapture.isCapturing()) {
+            logcatCapture.stopCapture()
+        }
         ortRunner?.release()
         ortRunner = null
     }

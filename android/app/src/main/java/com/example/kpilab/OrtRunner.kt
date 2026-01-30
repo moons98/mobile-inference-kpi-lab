@@ -38,6 +38,12 @@ class OrtRunner(private val context: Context) {
     private var sessionCreateMs: Long = 0  // Includes QNN compilation
     private var firstInferenceMs: Float = -1f
 
+    // Additional metadata for CSV export
+    private var modelFileSizeKb: Int = 0
+    private var inputShapeStr: String = ""
+    private var outputShapeStr: String = ""
+    private var qnnOptionsStr: String = ""
+
     // Logging
     private val kpiRecords = mutableListOf<KpiRecord>()
     private var sessionId: String = ""
@@ -82,7 +88,9 @@ class OrtRunner(private val context: Context) {
             firstInferenceMs = -1f
 
             // Create ONNX Runtime environment
-            ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING)
+            // VERBOSE level enables detailed logging including graph partitioning info
+            // Check logcat with tag "onnxruntime" for fallback ops details
+            ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE)
             Log.i(TAG, "OrtEnvironment created")
 
             // Create session options with execution provider
@@ -93,7 +101,8 @@ class OrtRunner(private val context: Context) {
             val loadStart = System.currentTimeMillis()
             val modelBytes = loadModelFromAssets(modelType.filename)
             modelLoadMs = System.currentTimeMillis() - loadStart
-            Log.i(TAG, "Model loaded: ${modelType.filename} (${modelBytes.size / 1024} KB) in ${modelLoadMs}ms")
+            modelFileSizeKb = modelBytes.size / 1024
+            Log.i(TAG, "Model loaded: ${modelType.filename} ($modelFileSizeKb KB) in ${modelLoadMs}ms")
 
             // Create session (timed - includes QNN compilation for NPU)
             val sessionStart = System.currentTimeMillis()
@@ -153,6 +162,9 @@ class OrtRunner(private val context: Context) {
                         Log.i(TAG, "  $key = $value")
                     }
 
+                    // Store options for CSV export (exclude cache path for brevity)
+                    qnnOptionsStr = "backend=HTP;perf=burst;fp16=${if (useNpuFp16) "1" else "0"};cache=${if (useContextCache) "1" else "0"}"
+
                     options.addQnn(qnnOptions)
                     activeExecutionProvider = "QNN_NPU"
                     Log.i(TAG, "QNN EP (NPU) configured")
@@ -160,6 +172,7 @@ class OrtRunner(private val context: Context) {
                     Log.e(TAG, "QNN EP failed: ${e.message}")
                     Log.w(TAG, "Falling back to CPU")
                     activeExecutionProvider = "CPU"
+                    qnnOptionsStr = "fallback_to_cpu"
                 }
             }
 
@@ -170,6 +183,8 @@ class OrtRunner(private val context: Context) {
                     val qnnOptions = mutableMapOf<String, String>()
                     qnnOptions["backend_path"] = "libQnnGpu.so"
 
+                    qnnOptionsStr = "backend=GPU"
+
                     options.addQnn(qnnOptions)
                     activeExecutionProvider = "QNN_GPU"
                     Log.i(TAG, "QNN EP (GPU) configured")
@@ -177,12 +192,14 @@ class OrtRunner(private val context: Context) {
                     Log.e(TAG, "QNN GPU EP failed: ${e.message}")
                     Log.w(TAG, "Falling back to CPU")
                     activeExecutionProvider = "CPU"
+                    qnnOptionsStr = "fallback_to_cpu"
                 }
             }
 
             ExecutionProvider.CPU -> {
                 Log.i(TAG, "Using CPU execution provider")
                 activeExecutionProvider = "CPU"
+                qnnOptionsStr = "n/a"
             }
         }
 
@@ -206,7 +223,8 @@ class OrtRunner(private val context: Context) {
             inputName = firstInput.key
             val tensorInfo = firstInput.value.info as? TensorInfo
             inputShape = tensorInfo?.shape ?: longArrayOf()
-            Log.i(TAG, "Input: name=$inputName, shape=${inputShape.contentToString()}")
+            inputShapeStr = inputShape.contentToString()
+            Log.i(TAG, "Input: name=$inputName, shape=$inputShapeStr, type=${tensorInfo?.type}")
         }
 
         // Output info
@@ -216,7 +234,8 @@ class OrtRunner(private val context: Context) {
             outputName = firstOutput.key
             val tensorInfo = firstOutput.value.info as? TensorInfo
             val outputShape = tensorInfo?.shape ?: longArrayOf()
-            Log.i(TAG, "Output: name=$outputName, shape=${outputShape.contentToString()}")
+            outputShapeStr = outputShape.contentToString()
+            Log.i(TAG, "Output: name=$outputName, shape=$outputShapeStr, type=${tensorInfo?.type}")
         }
     }
 
@@ -404,7 +423,13 @@ class OrtRunner(private val context: Context) {
         // Model info
         sb.appendLine("# model,${currentModel?.displayName ?: "Unknown"}")
         sb.appendLine("# model_file,${currentModel?.filename ?: "Unknown"}")
+        sb.appendLine("# model_size_kb,$modelFileSizeKb")
         sb.appendLine("# precision,${currentModel?.precision ?: "FP32"}")
+        sb.appendLine("# input_shape,$inputShapeStr")
+        sb.appendLine("# output_shape,$outputShapeStr")
+
+        // QNN options (if applicable)
+        sb.appendLine("# qnn_options,$qnnOptionsStr")
 
         // Benchmark config
         sb.appendLine("# frequency_hz,$benchmarkFrequencyHz")
@@ -418,6 +443,9 @@ class OrtRunner(private val context: Context) {
         sb.appendLine("# total_cold_ms,$totalColdMs")
 
         sb.appendLine("# session_id,$sessionId")
+        sb.appendLine("#")
+        sb.appendLine("# NOTE: Graph partitioning and fallback ops info available in logcat")
+        sb.appendLine("#       Filter: adb logcat -s onnxruntime:V")
         sb.appendLine("#")
 
         // CSV header
