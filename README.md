@@ -97,8 +97,12 @@ python scripts/export_to_onnx.py --export-mobilenetv2-quantized --quant-method s
 ONNX 모델을 `android/app/src/main/assets/`에 배치:
 ```
 assets/
-├── mobilenetv2_torchvision.onnx           # FP32 MobileNetV2
-└── mobilenetv2_torchvision_quantized.onnx # INT8 MobileNetV2 (QDQ format)
+├── mobilenetv2_torchvision.onnx      # FP32 MobileNetV2
+├── mobilenetv2_int8_dynamic.onnx     # INT8 Dynamic 양자화
+├── mobilenetv2_int8_qdq.onnx         # INT8 QDQ 양자화
+├── yolov8n_ultralytics.onnx          # FP32 YOLOv8n
+├── yolov8n_int8_dynamic.onnx         # INT8 Dynamic 양자화
+└── yolov8n_int8_qdq.onnx             # INT8 QDQ 양자화
 ```
 
 ### 2. Android 앱 빌드
@@ -120,11 +124,26 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 | 옵션 | 선택지 | 설명 |
 |------|--------|------|
-| Model | MobileNetV2 / MobileNetV2 (INT8) | 추론 모델 |
+| Model | 6종 (아래 표 참조) | 추론 모델 |
 | Execution Provider | NPU / GPU / CPU | 추론 실행 경로 |
 | Frequency | 1Hz / 5Hz / 10Hz | 추론 빈도 |
 | Warm-up | On / Off | 워밍업 실행 여부 (10회 추론) |
+| NPU FP16 | On / Off | FP32 모델을 FP16으로 변환 (NPU에서 더 빠름) |
+| Context Cache | On / Off | QNN 컴파일 그래프 캐싱 (재시작 시 빠른 로드) |
 | Duration | 5min / 10min | 실험 시간 |
+
+### 지원 모델
+
+| 모델 | 파일명 | 입력 크기 | 양자화 |
+|------|--------|-----------|--------|
+| MobileNetV2 | `mobilenetv2_torchvision.onnx` | 1x3x224x224 | FP32 |
+| MobileNetV2 (INT8 Dynamic) | `mobilenetv2_int8_dynamic.onnx` | 1x3x224x224 | INT8 Dynamic |
+| MobileNetV2 (INT8 QDQ) | `mobilenetv2_int8_qdq.onnx` | 1x3x224x224 | INT8 QDQ |
+| YOLOv8n | `yolov8n_ultralytics.onnx` | 1x3x640x640 | FP32 |
+| YOLOv8n (INT8 Dynamic) | `yolov8n_int8_dynamic.onnx` | 1x3x640x640 | INT8 Dynamic |
+| YOLOv8n (INT8 QDQ) | `yolov8n_int8_qdq.onnx` | 1x3x640x640 | INT8 QDQ |
+
+> **Note**: INT8 모델도 FLOAT 입력을 받습니다. 양자화/역양자화는 모델 내부에서 처리됩니다.
 
 ### 측정 KPI
 
@@ -190,14 +209,18 @@ jupyter notebook analysis/notebooks/
 
 ## 실험 매트릭스
 
-| # | EP | Model | Freq | Warm-up | 목적 |
-|---|-----|-------|------|---------|------|
-| 1 | NPU | MobileNetV2 | 10Hz | Off | NPU 한계 확인 |
-| 2 | NPU | MobileNetV2 | 10Hz | On | Warm-up 효과 |
-| 3 | GPU | MobileNetV2 | 10Hz | Off | GPU baseline |
-| 4 | CPU | MobileNetV2 | 10Hz | Off | CPU baseline |
-| 5 | NPU | MobileNetV2 (INT8) | 10Hz | Off | 양자화 효과 |
-| 6 | NPU | MobileNetV2 | 5Hz | Off | Frequency 영향 |
+| # | EP | Model | FP16 | Cache | Freq | Warm-up | 목적 |
+|---|-----|-------|------|-------|------|---------|------|
+| 1 | NPU | MobileNetV2 | On | Off | 10Hz | Off | NPU FP16 baseline |
+| 2 | NPU | MobileNetV2 | Off | Off | 10Hz | Off | NPU FP32 baseline |
+| 3 | NPU | MobileNetV2 | On | Off | 10Hz | On | Warm-up 효과 |
+| 4 | GPU | MobileNetV2 | - | - | 10Hz | Off | GPU baseline |
+| 5 | CPU | MobileNetV2 | - | - | 10Hz | Off | CPU baseline |
+| 6 | NPU | MobileNetV2 (INT8 QDQ) | - | Off | 10Hz | Off | INT8 양자화 효과 |
+| 7 | NPU | YOLOv8n | On | Off | 5Hz | Off | 큰 모델 성능 |
+| 8 | NPU | MobileNetV2 | On | On | 10Hz | Off | Context Cache 효과 |
+
+> **Note**: FP16 옵션은 FP32 모델에만 적용됩니다. INT8 모델은 항상 INT8로 실행됩니다.
 
 ## ONNX Runtime QNN EP 옵션
 
@@ -208,8 +231,26 @@ val qnnOptions = mutableMapOf<String, String>()
 qnnOptions["backend_path"] = "libQnnHtp.so"          // NPU 백엔드
 qnnOptions["htp_performance_mode"] = "burst"         // 성능 모드
 qnnOptions["htp_graph_finalization_optimization_mode"] = "3"
-qnnOptions["enable_htp_fp16_precision"] = "1"        // FP16 정밀도
+
+// FP16 정밀도 (UI 옵션: NPU FP16)
+qnnOptions["enable_htp_fp16_precision"] = "1"        // FP32 → FP16 변환 (NPU에서 더 빠름)
+
+// Context Cache (UI 옵션: Context Cache)
+qnnOptions["qnn_context_cache_enable"] = "1"         // HTP 컴파일 그래프 캐싱
+qnnOptions["qnn_context_cache_path"] = "path/to/cache.bin"
 ```
+
+### FP16 Precision
+- FP32 모델을 NPU에서 FP16으로 실행하여 성능 향상
+- INT8 양자화 모델에는 영향 없음 (이미 INT8로 실행)
+- 약간의 정밀도 손실이 있을 수 있음
+
+### Context Cache
+- 첫 실행 시 HTP 컴파일 결과를 파일로 저장
+- 이후 실행 시 캐시된 그래프를 로드하여 초기화 시간 단축
+- 모델/설정별로 별도 캐시 파일 생성 (`qnn_{model}_{precision}.bin`)
+- OFF: 항상 새로 컴파일 (캐시 무시)
+- ON: 캐시 있으면 사용, 없으면 생성
 
 ## Op 분석
 

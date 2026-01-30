@@ -49,11 +49,13 @@
 ```
 BenchmarkRunner.start()
     └─> 이전 runner release (있으면)
-    └─> OrtRunner.initialize(modelType, executionProvider)
+    └─> OrtRunner.initialize(modelType, executionProvider, useNpuFp16, useContextCache)
             ├─> OrtEnvironment.getEnvironment()      // ONNX Runtime 환경 생성
             ├─> configureExecutionProvider()         // QNN EP 또는 CPU 설정
+            │       ├─> FP16 옵션 적용 (useNpuFp16)
+            │       └─> Context Cache 설정 (useContextCache)
             ├─> loadModelFromAssets()                // 모델 파일 로드
-            ├─> ortEnv.createSession()               // 세션 생성
+            ├─> ortEnv.createSession()               // 세션 생성 + HTP 컴파일
             ├─> extractIOInfo()                      // 입출력 정보 추출
             └─> allocateInputData()                  // 입력 버퍼 할당
 ```
@@ -66,7 +68,17 @@ val qnnOptions = mutableMapOf<String, String>()
 qnnOptions["backend_path"] = "libQnnHtp.so"
 qnnOptions["htp_performance_mode"] = "burst"
 qnnOptions["htp_graph_finalization_optimization_mode"] = "3"
-qnnOptions["enable_htp_fp16_precision"] = "1"
+
+// FP16 정밀도 (UI 옵션)
+qnnOptions["enable_htp_fp16_precision"] = if (useNpuFp16) "1" else "0"
+
+// Context Cache (UI 옵션)
+if (useContextCache) {
+    val cachePath = "${cacheDir}/qnn_${model}_${precision}.bin"
+    qnnOptions["qnn_context_cache_enable"] = "1"
+    qnnOptions["qnn_context_cache_path"] = cachePath
+}
+
 options.addQnn(qnnOptions)
 
 // GPU 설정
@@ -156,21 +168,35 @@ data class BenchmarkConfig(
     val executionProvider: ExecutionProvider = ExecutionProvider.QNN_NPU,
     val frequencyHz: Int = 5,
     val warmUpEnabled: Boolean = false,
-    val durationMinutes: Int = 5
+    val durationMinutes: Int = 5,
+    // NPU precision: true = FP16, false = FP32 (FP32 모델에만 적용)
+    val useNpuFp16: Boolean = true,
+    // QNN context cache: HTP 컴파일 그래프 캐싱
+    val useContextCache: Boolean = false
 ) {
     val intervalMs: Long = (1000.0 / frequencyHz).toLong()
     val durationMs: Long = durationMinutes * 60 * 1000L
 }
 ```
 
+**옵션 설명**:
+- `useNpuFp16`: FP32 모델을 NPU에서 FP16으로 변환하여 실행 (더 빠름, 약간의 정밀도 손실)
+- `useContextCache`: 첫 실행 시 HTP 컴파일 결과를 캐싱, 이후 빠른 로드
+
 ### OnnxModelType (지원 모델)
 
 **파일**: [OrtRunner.kt](../android/app/src/main/java/com/example/kpilab/OrtRunner.kt)
 
-| 모델 | 파일명 | 입력 크기 | 포맷 | 데이터 타입 |
-|------|--------|-----------|------|-------------|
-| MobileNetV2 | `mobilenetv2.onnx` | 1x3x224x224 | NCHW | FLOAT32 |
-| MobileNetV2 (INT8) | `mobilenetv2_quantized.onnx` | 1x3x224x224 | NCHW | UINT8 |
+| 모델 | 파일명 | 입력 크기 | 포맷 | 양자화 |
+|------|--------|-----------|------|--------|
+| MobileNetV2 | `mobilenetv2_torchvision.onnx` | 1x3x224x224 | NCHW | FP32 |
+| MobileNetV2 (INT8 Dynamic) | `mobilenetv2_int8_dynamic.onnx` | 1x3x224x224 | NCHW | INT8 Dynamic |
+| MobileNetV2 (INT8 QDQ) | `mobilenetv2_int8_qdq.onnx` | 1x3x224x224 | NCHW | INT8 QDQ |
+| YOLOv8n | `yolov8n_ultralytics.onnx` | 1x3x640x640 | NCHW | FP32 |
+| YOLOv8n (INT8 Dynamic) | `yolov8n_int8_dynamic.onnx` | 1x3x640x640 | NCHW | INT8 Dynamic |
+| YOLOv8n (INT8 QDQ) | `yolov8n_int8_qdq.onnx` | 1x3x640x640 | NCHW | INT8 QDQ |
+
+> **Note**: 모든 모델은 **FLOAT 입력**을 받습니다. INT8 모델의 양자화/역양자화는 모델 내부에서 처리됩니다.
 
 ### ExecutionProvider (실행 경로)
 
@@ -187,7 +213,16 @@ data class BenchmarkConfig(
 | `backend_path` | `libQnnHtp.so` | HTP(NPU) 백엔드 라이브러리 |
 | `htp_performance_mode` | `burst` | 최고 성능 모드 |
 | `htp_graph_finalization_optimization_mode` | `3` | 최대 그래프 최적화 |
-| `enable_htp_fp16_precision` | `1` | FP16 정밀도 사용 |
+| `enable_htp_fp16_precision` | `0` / `1` | FP16 정밀도 사용 (UI: NPU FP16) |
+| `qnn_context_cache_enable` | `0` / `1` | HTP 그래프 캐싱 (UI: Context Cache) |
+| `qnn_context_cache_path` | `path/to/cache.bin` | 캐시 파일 경로 |
+
+**그래프 최적화 타이밍**:
+1. **OrtSession 생성 시**: ONNX Runtime 그래프 최적화
+2. **QNN EP 변환 시**: QNN 그래프로 변환
+3. **첫 추론 시**: HTP 컴파일 (Context Cache 저장 시점)
+
+Context Cache가 활성화되면 3단계에서 컴파일된 그래프가 파일로 저장되어, 다음 실행 시 1-3단계를 건너뛰고 캐시에서 바로 로드합니다.
 
 ---
 
@@ -422,18 +457,78 @@ BenchmarkConfig(
 BenchmarkConfig(
     modelType = OnnxModelType.MOBILENET_V2,
     executionProvider = ExecutionProvider.QNN_NPU,
+    useNpuFp16 = true,
     ...
 )
 
-// INT8
+// INT8 Dynamic
 BenchmarkConfig(
-    modelType = OnnxModelType.MOBILENET_V2_QUANTIZED,
+    modelType = OnnxModelType.MOBILENET_V2_INT8_DYNAMIC,
+    executionProvider = ExecutionProvider.QNN_NPU,
+    ...
+)
+
+// INT8 QDQ
+BenchmarkConfig(
+    modelType = OnnxModelType.MOBILENET_V2_INT8_QDQ,
     executionProvider = ExecutionProvider.QNN_NPU,
     ...
 )
 ```
 
 **목적**: INT8 양자화의 성능/전력 개선 효과 측정
+
+### 시나리오 5: FP16 vs FP32 비교
+
+```kotlin
+// FP16 (빠름, 약간의 정밀도 손실)
+BenchmarkConfig(
+    modelType = OnnxModelType.MOBILENET_V2,
+    executionProvider = ExecutionProvider.QNN_NPU,
+    useNpuFp16 = true,
+    frequencyHz = 10,
+    durationMinutes = 5
+)
+
+// FP32 (정확, 느림)
+BenchmarkConfig(
+    modelType = OnnxModelType.MOBILENET_V2,
+    executionProvider = ExecutionProvider.QNN_NPU,
+    useNpuFp16 = false,
+    frequencyHz = 10,
+    durationMinutes = 5
+)
+```
+
+**목적**: NPU FP16 정밀도의 성능 향상 측정
+
+### 시나리오 6: Context Cache 효과 측정
+
+```kotlin
+// Cache OFF (매번 컴파일)
+BenchmarkConfig(
+    modelType = OnnxModelType.MOBILENET_V2,
+    executionProvider = ExecutionProvider.QNN_NPU,
+    useContextCache = false,
+    ...
+)
+
+// Cache ON (첫 실행 후 캐시 사용)
+BenchmarkConfig(
+    modelType = OnnxModelType.MOBILENET_V2,
+    executionProvider = ExecutionProvider.QNN_NPU,
+    useContextCache = true,
+    ...
+)
+```
+
+**목적**: QNN Context Cache의 초기화 시간 단축 효과 측정
+
+**측정 방법**:
+1. 앱 종료 후 재시작
+2. Cache OFF로 벤치마크 시작 → 초기화 시간 기록
+3. 앱 종료 후 재시작
+4. Cache ON으로 벤치마크 시작 → 초기화 시간 비교
 
 ---
 
