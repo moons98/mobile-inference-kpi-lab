@@ -93,11 +93,7 @@ def load_ort_log(csv_path: str) -> Optional[dict]:
     """
     # ORT log file has same name as CSV but with _ort.log suffix
     # e.g., kpi_MobileNetV2_QNNNPU_20260130_173916.csv -> kpi_MobileNetV2_QNNNPU_20260130_173916_ort.log
-    log_path = Path(csv_path).with_suffix('').with_suffix('_ort.log')
-
-    # Also try the pattern where .csv is simply replaced
-    if not log_path.exists():
-        log_path = Path(str(csv_path).replace('.csv', '_ort.log'))
+    log_path = Path(str(csv_path).replace('.csv', '_ort.log'))
 
     if not log_path.exists():
         return None
@@ -470,12 +466,20 @@ def generate_comparison_table(file_paths: list) -> str:
     # Section 1: Experiment Overview
     lines.append("\n[1] Experiment Overview")
     lines.append("-" * 120)
-    lines.append(f"{'#':<4} {'Label':<40} {'EP':<12} {'Model':<30}")
+    lines.append(f"{'#':<4} {'Label':<40} {'EP':<12} {'Precision':<12} {'Model':<25}")
     lines.append("-" * 120)
     for i, exp in enumerate(experiments, 1):
-        lines.append(f"{i:<4} {exp['label']:<40} {exp['ep']:<12} {exp['model']:<30}")
+        meta = exp['metadata']
+        # Determine precision from metadata
+        precision = meta.get('precision', 'FP32')
+        qnn_opts = meta.get('qnn_options', '')
+        # Check if FP16 is enabled for NPU
+        if 'fp16=1' in qnn_opts and precision == 'FP32':
+            precision = 'FP16'
+        lines.append(f"{i:<4} {exp['label']:<40} {exp['ep']:<12} {precision:<12} {exp['model']:<25}")
     lines.append("")
     lines.append("    EP: Execution Provider (QNN_NPU=Hexagon HTP, QNN_GPU=Adreno GPU, CPU=ARM CPU)")
+    lines.append("    Precision: FP32/FP16=부동소수점, INT8=양자화 (QDQ=Static, Dynamic)")
 
     # Section 2: Latency Performance
     lines.append(f"\n\n[2] Latency Performance")
@@ -615,7 +619,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse and analyze KPI log files")
     parser.add_argument("paths", nargs="+", help="Log files or directories to analyze")
     parser.add_argument("--compare", "-c", action="store_true", help="Show comparison table")
-    parser.add_argument("--output", "-o", help="Output file path (txt). If not specified, auto-generates in input location")
+    parser.add_argument("--output", "-o", help="Output file path (txt). If not specified, auto-generates in outputs folder")
+    parser.add_argument("--output-dir", "-d", help="Output directory (default: outputs/ in project root)")
     parser.add_argument("--print", "-p", action="store_true", help="Print to console instead of saving to file")
 
     args = parser.parse_args()
@@ -660,13 +665,24 @@ if __name__ == "__main__":
         if args.output:
             output_path = Path(args.output)
         else:
-            # Auto-generate output path in input location
-            if is_comparison:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = input_dir / f"comparison_report_{timestamp}.txt"
+            # Determine output directory
+            if args.output_dir:
+                output_dir = Path(args.output_dir)
             else:
-                # Single file: {input_stem}_report.txt
-                output_path = input_dir / f"{log_files[0].stem}_report.txt"
+                # Default: outputs/ folder in project root (relative to script location)
+                script_dir = Path(__file__).parent
+                project_root = script_dir.parent.parent
+                output_dir = project_root / "outputs"
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate output filename based on input folder name
+            folder_name = input_dir.name if input_dir else "logs"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if is_comparison:
+                output_path = output_dir / f"{folder_name}_comparison_{timestamp}.txt"
+            else:
+                output_path = output_dir / f"{log_files[0].stem}_report.txt"
 
         output_path.write_text(full_report, encoding='utf-8')
         print(f"Report saved to: {output_path}")
