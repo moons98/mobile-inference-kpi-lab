@@ -3,7 +3,6 @@
   "defaults": {
     "frequencyHz": 10,
     "durationMinutes": 5,
-    "warmUpEnabled": true,
     "useNpuFp16": true,
     "useContextCache": false
   },
@@ -42,14 +41,6 @@
         { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "frequencyHz": 1 },
         { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "frequencyHz": 5 },
         { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "frequencyHz": 10 }
-      ]
-    },
-    {
-      "id": "mobilenet_warmup",
-      "name": "[MobileNet] Warmup 효과",
-      "experiments": [
-        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "warmUpEnabled": false },
-        { "model": "MOBILENET_V2", "executionProvider": "QNN_NPU", "warmUpEnabled": true }
       ]
     },
     {

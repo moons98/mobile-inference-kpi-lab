@@ -13,7 +13,6 @@ data class ExperimentConfig(
     val executionProvider: String,        // ExecutionProvider enum name
     val frequencyHz: Int? = null,
     val durationMinutes: Int? = null,
-    val warmUpEnabled: Boolean? = null,
     val useNpuFp16: Boolean? = null,
     val useContextCache: Boolean? = null
 ) {
@@ -37,7 +36,6 @@ data class ExperimentConfig(
             modelType = modelType,
             executionProvider = ep,
             frequencyHz = frequencyHz ?: defaults.frequencyHz,
-            warmUpEnabled = warmUpEnabled ?: defaults.warmUpEnabled,
             durationMinutes = durationMinutes ?: defaults.durationMinutes,
             useNpuFp16 = useNpuFp16 ?: defaults.useNpuFp16,
             useContextCache = useContextCache ?: defaults.useContextCache

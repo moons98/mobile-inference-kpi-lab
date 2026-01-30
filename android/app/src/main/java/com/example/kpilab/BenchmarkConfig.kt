@@ -12,7 +12,6 @@ data class BenchmarkConfig(
 
     // Benchmark settings
     val frequencyHz: Int = 5,
-    val warmUpEnabled: Boolean = false,
     val durationMinutes: Int = 5,
 
     // NPU precision: true = FP16, false = FP32 (only affects FP32 models on NPU)
@@ -54,15 +53,14 @@ data class BenchmarkConfig(
             ExecutionProvider.CPU -> "cpu"
         }
 
-        val warmStr = if (warmUpEnabled) "w" else "nw"
         val precStr = if (useNpuFp16) "fp16" else "fp32"
-        return "ort_${modelStr}_${epStr}_${precStr}_${frequencyHz}hz_${warmStr}_${timestamp}"
+        return "ort_${modelStr}_${epStr}_${precStr}_${frequencyHz}hz_${timestamp}"
     }
 
     override fun toString(): String {
         val precStr = if (useNpuFp16) "FP16" else "FP32"
         val cacheStr = if (useContextCache) "cached" else "no-cache"
         return "BenchmarkConfig(model=${modelType.displayName}, ep=${executionProvider.displayName}, " +
-                "prec=$precStr, cache=$cacheStr, freq=${frequencyHz}Hz, warmUp=$warmUpEnabled, duration=${durationMinutes}min)"
+                "prec=$precStr, cache=$cacheStr, freq=${frequencyHz}Hz, duration=${durationMinutes}min)"
     }
 }

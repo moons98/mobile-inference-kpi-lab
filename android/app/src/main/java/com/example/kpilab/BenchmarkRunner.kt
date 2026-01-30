@@ -76,6 +76,7 @@ class BenchmarkRunner(
         private const val SYSTEM_METRICS_INTERVAL_MS = 1000L  // 1 second
         private const val MEMORY_METRICS_INTERVAL_MS = 5000L  // 5 seconds
         private const val COOLDOWN_SECONDS = 30  // Cooldown between batch experiments
+        private const val WARMUP_ITERATIONS = 10  // Always run warm-up for steady-state
     }
 
     private val _progress = MutableStateFlow(BenchmarkProgress())
@@ -207,15 +208,13 @@ class BenchmarkRunner(
         // Start session
         val sessionId = config.generateSessionId()
         runner.startSession(sessionId)
-        runner.setBenchmarkConfig(config.frequencyHz, if (config.warmUpEnabled) 10 else 0)
+        runner.setBenchmarkConfig(config.frequencyHz, WARMUP_ITERATIONS)
         Log.i(TAG, "Session started: $sessionId")
 
-        // Run warm-up if enabled (with proper state display)
-        if (config.warmUpEnabled) {
-            _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
-            withContext(Dispatchers.IO) {
-                runner.runWarmUp()
-            }
+        // Always run warm-up to reach steady-state performance
+        _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
+        withContext(Dispatchers.IO) {
+            runner.runWarmUp(WARMUP_ITERATIONS)
         }
 
         _progress.value = _progress.value.copy(state = BenchmarkState.RUNNING)

@@ -236,13 +236,6 @@
                 android:padding="16dp">
 
                 <CheckBox
-                    android:id="@+id/checkWarmup"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Warm-up enabled"
-                    android:layout_marginBottom="8dp" />
-
-                <CheckBox
                     android:id="@+id/checkFp16"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"

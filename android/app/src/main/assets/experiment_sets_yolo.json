@@ -3,7 +3,6 @@
   "defaults": {
     "frequencyHz": 5,
     "durationMinutes": 5,
-    "warmUpEnabled": true,
     "useNpuFp16": true,
     "useContextCache": false
   },
