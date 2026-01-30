@@ -61,5 +61,6 @@ dependencies {
     implementation("com.google.code.gson:gson:2.10.1")
 
     // ONNX Runtime with QNN Execution Provider (NPU)
-    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.22.0")
+    // Version 1.23.2 uses QNN SDK 2.37.1 - check device compatibility
+    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.23.2")
 }
