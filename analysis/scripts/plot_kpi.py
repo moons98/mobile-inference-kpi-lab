@@ -294,82 +294,173 @@ def compare_experiments(
     save_path: Optional[str] = None
 ):
     """
-    Compare KPI metrics across multiple experiments.
+    Compare KPI metrics across multiple experiments with overlaid time series.
 
     Args:
         log_files: List of log file paths
         labels: Labels for each experiment
         save_path: Optional path to save figure
     """
+    # Load all data
+    data_list = []
     metrics_list = []
 
     for file_path in log_files:
         df = load_log(file_path)
         metrics = calculate_metrics(df)
+        inference_df, system_df = split_events(df)
+        data_list.append({
+            'df': df,
+            'inference_df': inference_df,
+            'system_df': system_df
+        })
         metrics_list.append(metrics)
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    fig.suptitle('Experiment Comparison', fontsize=14, fontweight='bold')
+    # Color scheme:
+    # - NPU FP32: red shades
+    # - NPU Quantized (INT8): orange/brown shades
+    # - GPU: blue shades
+    # - CPU: green shades
+    # Line style by quantization: FP32=solid, Dynamic=dashed, QDQ/Static=dash-dot
+    npu_fp32_shades = ['#d62728', '#c42020', '#ff4444']  # reds
+    npu_quant_shades = ['#ff7f0e', '#d2691e', '#8b4513', '#cd853f']  # orange, chocolate, saddle brown, peru
+    gpu_shades = ['#1f77b4', '#6baed6', '#08519c', '#3498db']  # blues
+    cpu_shades = ['#2ca02c', '#74c476', '#006d2c', '#27ae60']  # greens
 
-    x = np.arange(len(labels))
-    width = 0.35
+    ep_counters = {'npu_fp32': 0, 'npu_quant': 0, 'gpu': 0, 'cpu': 0}
 
-    # Latency comparison
+    def is_quantized(label: str) -> bool:
+        label_upper = label.upper()
+        return 'INT8' in label_upper or 'QDQ' in label_upper or 'DYNAMIC' in label_upper or 'QUANT' in label_upper
+
+    def get_color_category(label: str) -> str:
+        label_upper = label.upper()
+        if 'NPU' in label_upper or 'HTP' in label_upper:
+            if is_quantized(label):
+                return 'npu_quant'
+            return 'npu_fp32'
+        elif 'GPU' in label_upper:
+            return 'gpu'
+        return 'cpu'
+
+    def get_color_for_label(label: str) -> str:
+        cat = get_color_category(label)
+        idx = ep_counters[cat]
+        ep_counters[cat] += 1
+        if cat == 'npu_fp32':
+            return npu_fp32_shades[idx % len(npu_fp32_shades)]
+        elif cat == 'npu_quant':
+            return npu_quant_shades[idx % len(npu_quant_shades)]
+        elif cat == 'gpu':
+            return gpu_shades[idx % len(gpu_shades)]
+        return cpu_shades[idx % len(cpu_shades)]
+
+    def get_line_style(label: str) -> str:
+        label_upper = label.upper()
+        if 'QDQ' in label_upper or 'STATIC' in label_upper:
+            return '-.'  # dash-dot for static/QDQ quantization
+        elif 'INT8' in label_upper or 'DYNAMIC' in label_upper or 'QUANT' in label_upper:
+            return '--'  # dashed for dynamic quantization
+        return '-'  # solid for FP32
+
+    colors = [get_color_for_label(label) for label in labels]
+    styles = [get_line_style(label) for label in labels]
+
+    # Create numbered labels: "1: Label", "2: Label", ...
+    numbered_labels = [f"{i+1}: {label}" for i, label in enumerate(labels)]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Experiment Comparison (Overlaid)', fontsize=14, fontweight='bold')
+
+    # 1. Latency Over Time (top-left) - overlaid with moving average
     ax = axes[0, 0]
-    p50_vals = [m.latency_p50 for m in metrics_list]
-    p95_vals = [m.latency_p95 for m in metrics_list]
-    ax.bar(x - width/2, p50_vals, width, label='P50')
-    ax.bar(x + width/2, p95_vals, width, label='P95')
+    for i, (data, label, color, style) in enumerate(zip(data_list, numbered_labels, colors, styles)):
+        inference_df = data['inference_df']
+        times = inference_df['elapsed_seconds'] / 60
+        latencies = inference_df['latency_ms']
+
+        # Moving average only (cleaner for comparison)
+        window = min(50, max(1, len(inference_df) // 10))
+        if window > 1:
+            rolling = latencies.rolling(window=window).mean()
+            ax.plot(times, rolling, color=color, linestyle=style, linewidth=2.5, label=f"{i+1}")
+        else:
+            ax.plot(times, latencies, color=color, linestyle=style, linewidth=1.5, alpha=0.8, label=f"{i+1}")
+
+    ax.set_xlabel('Time (min)')
     ax.set_ylabel('Latency (ms)')
-    ax.set_title('Latency Comparison')
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha='right')
-    ax.legend()
+    ax.set_title('Latency Over Time (Moving Avg)')
+    ax.legend(loc='upper right', fontsize=9)
 
-    # Thermal slope comparison
+    # 2. Thermal Over Time (top-right) - overlaid
     ax = axes[0, 1]
-    slopes = [m.thermal_slope for m in metrics_list]
-    colors = ['green' if s < 0.5 else 'orange' if s < 1.0 else 'red' for s in slopes]
-    ax.bar(x, slopes, color=colors)
-    ax.set_ylabel('Thermal Slope (°C/min)')
-    ax.set_title('Thermal Increase Rate')
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha='right')
+    for i, (data, label, color, style) in enumerate(zip(data_list, numbered_labels, colors, styles)):
+        system_df = data['system_df']
+        thermal_data = system_df[system_df['thermal_c'] > 0]
+        if len(thermal_data) > 0:
+            times = thermal_data['elapsed_seconds'] / 60
+            temps = thermal_data['thermal_c']
+            ax.plot(times, temps, color=color, linestyle=style, linewidth=2, label=f"{i+1}")
 
-    # Power comparison
+    ax.set_xlabel('Time (min)')
+    ax.set_ylabel('Temperature (°C)')
+    ax.set_title('Thermal Over Time')
+    ax.legend(loc='upper right', fontsize=9)
+
+    # 3. Power Over Time (bottom-left) - overlaid with moving average
     ax = axes[1, 0]
-    power_vals = [m.power_mean for m in metrics_list]
-    ax.bar(x, power_vals, color='green')
-    ax.set_ylabel('Average Power (mW)')
-    ax.set_title('Power Consumption')
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha='right')
+    for i, (data, label, color, style) in enumerate(zip(data_list, numbered_labels, colors, styles)):
+        system_df = data['system_df']
+        power_data = system_df[system_df['power_mw'] > 0]
+        if len(power_data) > 0:
+            times = power_data['elapsed_seconds'] / 60
+            power = power_data['power_mw']
 
-    # Summary table
+            # Moving average for cleaner comparison
+            window = min(30, max(1, len(power) // 5))
+            if window > 1:
+                rolling = power.rolling(window=window).mean()
+                ax.plot(times, rolling, color=color, linestyle=style, linewidth=2, label=f"{i+1}")
+            else:
+                ax.plot(times, power, color=color, linestyle=style, linewidth=1.5, alpha=0.8, label=f"{i+1}")
+
+    ax.set_xlabel('Time (min)')
+    ax.set_ylabel('Power (mW)')
+    ax.set_title('Power Consumption (Moving Avg)')
+    ax.legend(loc='upper right', fontsize=9)
+
+    # 4. Summary table (bottom-right)
     ax = axes[1, 1]
     ax.axis('off')
 
     table_data = []
-    headers = ['Experiment', 'P50', 'P95', 'Thermal', 'Power']
+    headers = ['#', 'Label', 'P50', 'P95', 'Slope', 'Power']
 
     for i, (label, m) in enumerate(zip(labels, metrics_list)):
         table_data.append([
-            label,
+            f'{i+1}',
+            label[:35] + '...' if len(label) > 35 else label,
             f'{m.latency_p50:.1f}',
             f'{m.latency_p95:.1f}',
             f'{m.thermal_slope:.2f}',
-            f'{m.power_mean:.0f}'
+            f'{m.power_mean:.1f}'
         ])
 
     table = ax.table(
         cellText=table_data,
         colLabels=headers,
         loc='center',
-        cellLoc='center'
+        cellLoc='center',
+        colWidths=[0.06, 0.4, 0.12, 0.12, 0.12, 0.12]
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1.2, 1.5)
+    table.set_fontsize(9)
+    table.scale(1.0, 1.4)
+
+    # Style header row
+    for j, key in enumerate(headers):
+        table[(0, j)].set_facecolor('#4472C4')
+        table[(0, j)].set_text_props(color='white', fontweight='bold')
 
     plt.tight_layout()
 
@@ -384,7 +475,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Generate KPI dashboard plots")
     parser.add_argument("path", help="Log CSV file or directory containing kpi_*.csv files")
-    parser.add_argument("output_dir", nargs="?", default=None, help="Output directory for plots (default: same as input)")
+    parser.add_argument("output_dir", nargs="?", default=None, help="Output directory for plots (default: outputs/ in project root)")
     parser.add_argument("--show", "-s", action="store_true", help="Show plot window (default: save only)")
     parser.add_argument("--compare", "-c", action="store_true", help="Compare mode: treat path as directory and generate comparison plot")
 
@@ -417,14 +508,26 @@ if __name__ == "__main__":
             return name
         labels = [extract_label(f.stem) for f in log_files]
 
-        output_dir = args.output_dir or str(input_path)
-        output_path = f"{output_dir}/comparison_plot.png"
+        # Determine output directory
+        if args.output_dir:
+            output_dir = Path(args.output_dir)
+        else:
+            # Default: outputs/ folder in project root
+            script_dir = Path(__file__).parent
+            project_root = script_dir.parent.parent
+            output_dir = project_root / "outputs"
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use input folder name in output filename
+        folder_name = input_path.name
+        output_path = output_dir / f"{folder_name}_comparison.png"
 
         print("Generating comparison plot...")
         compare_experiments(
             log_files=[str(f) for f in log_files],
             labels=labels,
-            save_path=output_path
+            save_path=str(output_path)
         )
         print(f"Saved: {output_path}")
 
@@ -434,7 +537,16 @@ if __name__ == "__main__":
             print(f"Error: {input_path} does not exist")
             sys.exit(1)
 
-        output_dir = args.output_dir or str(input_path.parent)
+        # Determine output directory
+        if args.output_dir:
+            output_dir = Path(args.output_dir)
+        else:
+            # Default: outputs/ folder in project root
+            script_dir = Path(__file__).parent
+            project_root = script_dir.parent.parent
+            output_dir = project_root / "outputs"
+
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"Loading: {input_path}")
         df = load_log(str(input_path))
@@ -442,7 +554,7 @@ if __name__ == "__main__":
         base_name = input_path.stem
 
         print("Generating dashboard...")
-        plot_kpi_dashboard(df, save_path=f"{output_dir}/{base_name}_dashboard.png")
+        plot_kpi_dashboard(df, save_path=str(output_dir / f"{base_name}_dashboard.png"))
 
     print("Done!")
 
