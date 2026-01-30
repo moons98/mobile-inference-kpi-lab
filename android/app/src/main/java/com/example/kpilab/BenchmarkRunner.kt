@@ -161,6 +161,7 @@ class BenchmarkRunner(
         // Start session
         val sessionId = config.generateSessionId()
         runner.startSession(sessionId)
+        runner.setBenchmarkConfig(config.frequencyHz, if (config.warmUpEnabled) 10 else 0)
         Log.i(TAG, "Session started: $sessionId")
 
         // Run warm-up if enabled (with proper state display)

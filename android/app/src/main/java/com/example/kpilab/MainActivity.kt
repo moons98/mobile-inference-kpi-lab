@@ -223,9 +223,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         try {
-            // Generate filename with timestamp
+            // Generate filename with model name, EP, and timestamp
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val filename = "kpi_log_${timestamp}.csv"
+            val modelName = benchmarkRunner.currentModel?.displayName
+                ?.replace(" ", "")
+                ?.replace("-", "")
+                ?: "Unknown"
+            val ep = benchmarkRunner.getActiveExecutionProvider()
+                .replace("_", "")
+                .uppercase()
+            val filename = "kpi_${modelName}_${ep}_${timestamp}.csv"
 
             // Save to app's external files directory
             val exportDir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)

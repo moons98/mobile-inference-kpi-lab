@@ -29,6 +29,10 @@ class OrtRunner(private val context: Context) {
     // Pre-allocated input tensor data (all models use FLOAT input)
     private var inputFloatData: FloatArray? = null
 
+    // Benchmark config info for CSV export
+    private var benchmarkFrequencyHz: Int = 5
+    private var warmupIterations: Int = 0
+
     // Logging
     private val kpiRecords = mutableListOf<KpiRecord>()
     private var sessionId: String = ""
@@ -339,6 +343,14 @@ class OrtRunner(private val context: Context) {
     }
 
     /**
+     * Set benchmark configuration for CSV export metadata
+     */
+    fun setBenchmarkConfig(frequencyHz: Int, warmupIters: Int) {
+        this.benchmarkFrequencyHz = frequencyHz
+        this.warmupIterations = warmupIters
+    }
+
+    /**
      * End the current logging session
      */
     fun endSession() {
@@ -359,9 +371,25 @@ class OrtRunner(private val context: Context) {
         sb.appendLine("# soc_model,${deviceInfo["soc_model"]}")
         sb.appendLine("# android_version,${deviceInfo["android_version"]}")
         sb.appendLine("# api_level,${deviceInfo["api_level"]}")
+
+        // App info
+        sb.appendLine("# app_version,${BuildConfig.VERSION_NAME}")
+        sb.appendLine("# app_build,${BuildConfig.VERSION_CODE}")
+
+        // Runtime info
         sb.appendLine("# runtime,ONNX Runtime")
+        sb.appendLine("# ort_version,${OrtEnvironment.getApiBase().getVersionString()}")
         sb.appendLine("# execution_provider,$activeExecutionProvider")
+
+        // Model info
         sb.appendLine("# model,${currentModel?.displayName ?: "Unknown"}")
+        sb.appendLine("# model_file,${currentModel?.filename ?: "Unknown"}")
+        sb.appendLine("# precision,${currentModel?.precision ?: "FP32"}")
+
+        // Benchmark config
+        sb.appendLine("# frequency_hz,$benchmarkFrequencyHz")
+        sb.appendLine("# warmup_iters,$warmupIterations")
+
         sb.appendLine("# session_id,$sessionId")
         sb.appendLine("#")
 
@@ -432,7 +460,8 @@ enum class OnnxModelType(
     val inputHeight: Int,
     val inputChannels: Int,
     val outputShape: IntArray,
-    val isQuantized: Boolean  // Whether model uses internal quantization (INT8)
+    val isQuantized: Boolean,  // Whether model uses internal quantization (INT8)
+    val precision: String      // FP32, INT8_DYNAMIC, INT8_QDQ
 ) {
     // MobileNetV2 models (224x224, ImageNet classification)
     MOBILENET_V2(
@@ -442,7 +471,8 @@ enum class OnnxModelType(
         inputHeight = 224,
         inputChannels = 3,
         outputShape = intArrayOf(1, 1000),
-        isQuantized = false
+        isQuantized = false,
+        precision = "FP32"
     ),
     MOBILENET_V2_INT8_DYNAMIC(
         displayName = "MobileNetV2 INT8 (Dynamic)",
@@ -451,7 +481,8 @@ enum class OnnxModelType(
         inputHeight = 224,
         inputChannels = 3,
         outputShape = intArrayOf(1, 1000),
-        isQuantized = true  // Dynamic quant: input is FLOAT, quantized internally
+        isQuantized = true,  // Dynamic quant: input is FLOAT, quantized internally
+        precision = "INT8_DYNAMIC"
     ),
     MOBILENET_V2_INT8_QDQ(
         displayName = "MobileNetV2 INT8 (QDQ)",
@@ -460,7 +491,8 @@ enum class OnnxModelType(
         inputHeight = 224,
         inputChannels = 3,
         outputShape = intArrayOf(1, 1000),
-        isQuantized = true  // QDQ: input is FLOAT, Q node quantizes it
+        isQuantized = true,  // QDQ: input is FLOAT, Q node quantizes it
+        precision = "INT8_QDQ"
     ),
     // YOLOv8n models (640x640, object detection)
     YOLOV8N(
@@ -470,7 +502,8 @@ enum class OnnxModelType(
         inputHeight = 640,
         inputChannels = 3,
         outputShape = intArrayOf(1, 84, 8400),
-        isQuantized = false
+        isQuantized = false,
+        precision = "FP32"
     ),
     YOLOV8N_INT8_DYNAMIC(
         displayName = "YOLOv8n INT8 (Dynamic)",
@@ -479,7 +512,8 @@ enum class OnnxModelType(
         inputHeight = 640,
         inputChannels = 3,
         outputShape = intArrayOf(1, 84, 8400),
-        isQuantized = true  // Dynamic quant: input is FLOAT, quantized internally
+        isQuantized = true,  // Dynamic quant: input is FLOAT, quantized internally
+        precision = "INT8_DYNAMIC"
     ),
     YOLOV8N_INT8_QDQ(
         displayName = "YOLOv8n INT8 (QDQ)",
@@ -488,7 +522,8 @@ enum class OnnxModelType(
         inputHeight = 640,
         inputChannels = 3,
         outputShape = intArrayOf(1, 84, 8400),
-        isQuantized = true  // QDQ: input is FLOAT, Q node quantizes it
+        isQuantized = true,  // QDQ: input is FLOAT, Q node quantizes it
+        precision = "INT8_QDQ"
     );
 
     val inputShape: LongArray
