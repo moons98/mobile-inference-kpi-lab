@@ -42,9 +42,9 @@ android {
         viewBinding = true
     }
 
-    // TFLite 모델 파일 압축 방지
+    // 모델 파일 압축 방지
     androidResources {
-        noCompress += listOf("tflite")
+        noCompress += listOf("onnx", "ort")
     }
 }
 
@@ -56,16 +56,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // TFLite Core
-    implementation("org.tensorflow:tensorflow-lite:2.17.0")
-    implementation("org.tensorflow:tensorflow-lite-support:0.5.0")
-
-    // TFLite GPU Delegate
-    implementation("org.tensorflow:tensorflow-lite-gpu:2.17.0")
-    implementation("org.tensorflow:tensorflow-lite-gpu-api:2.17.0")
-    implementation("org.tensorflow:tensorflow-lite-gpu-delegate-plugin:0.4.4")
-
-    // QNN Delegate (NPU)
-    implementation("com.qualcomm.qti:qnn-runtime:2.40.0")
-    implementation("com.qualcomm.qti:qnn-litert-delegate:2.40.0")
+    // ONNX Runtime with QNN Execution Provider (NPU)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.22.0")
 }

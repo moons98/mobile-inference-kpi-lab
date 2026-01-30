@@ -1,11 +1,16 @@
 package com.example.kpilab
 
 /**
- * Benchmark configuration
+ * Benchmark configuration for ONNX Runtime
  */
 data class BenchmarkConfig(
-    val modelType: ModelType = ModelType.MOBILENET_V2,
-    val delegateMode: DelegateMode = DelegateMode.NPU_GPU_CPU,
+    // Model selection
+    val modelType: OnnxModelType = OnnxModelType.MOBILENET_V2,
+
+    // Execution provider (NPU/GPU/CPU)
+    val executionProvider: ExecutionProvider = ExecutionProvider.QNN_NPU,
+
+    // Benchmark settings
     val frequencyHz: Int = 5,
     val warmUpEnabled: Boolean = false,
     val durationMinutes: Int = 5
@@ -27,23 +32,24 @@ data class BenchmarkConfig(
      */
     fun generateSessionId(): String {
         val timestamp = System.currentTimeMillis()
+
         val modelStr = when (modelType) {
-            ModelType.MOBILENET_V2 -> "mnv2"
-            ModelType.MOBILENET_V2_QUANTIZED -> "mnv2_q"
-            ModelType.YOLOV8N -> "yolo"
-            ModelType.YOLOV8N_QUANTIZED -> "yolo_q"
+            OnnxModelType.MOBILENET_V2 -> "mnv2"
+            OnnxModelType.MOBILENET_V2_QUANTIZED -> "mnv2_q"
         }
-        val modeStr = when (delegateMode) {
-            DelegateMode.NPU_GPU_CPU -> "npu_gpu"
-            DelegateMode.GPU_CPU -> "gpu"
-            DelegateMode.CPU_ONLY -> "cpu"
+
+        val epStr = when (executionProvider) {
+            ExecutionProvider.QNN_NPU -> "npu"
+            ExecutionProvider.QNN_GPU -> "gpu"
+            ExecutionProvider.CPU -> "cpu"
         }
+
         val warmStr = if (warmUpEnabled) "w" else "nw"
-        return "${modelStr}_${modeStr}_${frequencyHz}hz_${warmStr}_${timestamp}"
+        return "ort_${modelStr}_${epStr}_${frequencyHz}hz_${warmStr}_${timestamp}"
     }
 
     override fun toString(): String {
-        return "BenchmarkConfig(model=${modelType.displayName}, mode=${delegateMode.displayName}, " +
+        return "BenchmarkConfig(model=${modelType.displayName}, ep=${executionProvider.displayName}, " +
                 "freq=${frequencyHz}Hz, warmUp=$warmUpEnabled, duration=${durationMinutes}min)"
     }
 }

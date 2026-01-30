@@ -43,56 +43,28 @@
                     android:textColor="@color/text_secondary"
                     android:layout_marginBottom="8dp" />
 
-                <RadioGroup
+                <LinearLayout
                     android:id="@+id/radioGroupModel"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical">
+                    android:orientation="horizontal">
 
-                    <LinearLayout
-                        android:layout_width="match_parent"
+                    <RadioButton
+                        android:id="@+id/radioMobilenetV2"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:orientation="horizontal">
+                        android:layout_weight="1"
+                        android:text="MobileNetV2"
+                        android:checked="true" />
 
-                        <RadioButton
-                            android:id="@+id/radioMobilenetV2"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="MobileNetV2"
-                            android:checked="true" />
-
-                        <RadioButton
-                            android:id="@+id/radioMobilenetV2Quant"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="MobileNetV2 (INT8)" />
-
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
+                    <RadioButton
+                        android:id="@+id/radioMobilenetV2Quant"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:orientation="horizontal">
+                        android:layout_weight="1"
+                        android:text="MobileNetV2 (INT8)" />
 
-                        <RadioButton
-                            android:id="@+id/radioYolov8n"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="YOLOv8n" />
-
-                        <RadioButton
-                            android:id="@+id/radioYolov8nQuant"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="YOLOv8n (INT8)" />
-
-                    </LinearLayout>
-
-                </RadioGroup>
+                </LinearLayout>
 
             </LinearLayout>
 
@@ -113,9 +85,10 @@
                 android:padding="16dp">
 
                 <TextView
+                    android:id="@+id/tvPathLabel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Delegate Mode"
+                    android:text="Execution Provider"
                     android:textSize="14sp"
                     android:textColor="@color/text_secondary"
                     android:layout_marginBottom="8dp" />
@@ -131,7 +104,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="NPU+GPU"
+                        android:text="NPU"
                         android:checked="true" />
 
                     <RadioButton
@@ -290,14 +263,6 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
                 android:padding="16dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Status"
-                    android:textSize="14sp"
-                    android:textColor="@color/text_secondary"
-                    android:layout_marginBottom="12dp" />
 
                 <!-- Status Row -->
                 <LinearLayout

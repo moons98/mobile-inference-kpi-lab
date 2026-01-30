@@ -3,6 +3,7 @@ package com.example.kpilab
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
+import android.widget.RadioButton
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -22,11 +23,12 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
-    private lateinit var tfliteRunner: TFLiteRunner
     private lateinit var kpiCollector: KpiCollector
     private lateinit var benchmarkRunner: BenchmarkRunner
 
     private var isForeground = true
+    private var selectedModelId = R.id.radioMobilenetV2
+    private lateinit var modelRadioButtons: List<RadioButton>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -36,13 +38,13 @@ class MainActivity : AppCompatActivity() {
 
         initializeComponents()
         setupUI()
+        setupModelRadioButtons()
         observeProgress()
     }
 
     private fun initializeComponents() {
-        tfliteRunner = TFLiteRunner(this)
         kpiCollector = KpiCollector(this)
-        benchmarkRunner = BenchmarkRunner(tfliteRunner, kpiCollector)
+        benchmarkRunner = BenchmarkRunner(this, kpiCollector)
     }
 
     private fun setupUI() {
@@ -62,6 +64,24 @@ class MainActivity : AppCompatActivity() {
 
         // Initially disable export
         binding.btnExport.isEnabled = false
+    }
+
+    private fun setupModelRadioButtons() {
+        modelRadioButtons = listOf(
+            binding.radioMobilenetV2,
+            binding.radioMobilenetV2Quant
+        )
+
+        modelRadioButtons.forEach { radioButton ->
+            radioButton.setOnClickListener {
+                selectModelRadio(radioButton.id)
+            }
+        }
+    }
+
+    private fun selectModelRadio(id: Int) {
+        selectedModelId = id
+        modelRadioButtons.forEach { it.isChecked = (it.id == id) }
     }
 
     private fun observeProgress() {
@@ -88,19 +108,19 @@ class MainActivity : AppCompatActivity() {
         // Update metrics
         binding.tvInferences.text = progress.inferenceCount.toString()
 
-        binding.tvLatency.text = if (progress.lastLatencyMs > 0) {
+        binding.tvLatency.text = if (progress.lastLatencyMs >= 0) {
             String.format("%.1f ms", progress.lastLatencyMs)
         } else {
             "-- ms"
         }
 
-        binding.tvThermal.text = if (progress.lastThermalC > 0) {
+        binding.tvThermal.text = if (progress.lastThermalC >= 0) {
             String.format("%.1f °C", progress.lastThermalC)
         } else {
             "-- °C"
         }
 
-        binding.tvPower.text = if (progress.lastPowerMw > 0) {
+        binding.tvPower.text = if (progress.lastPowerMw >= 0) {
             String.format("%.0f mW", progress.lastPowerMw)
         } else {
             "-- mW"
@@ -125,19 +145,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setControlsEnabled(enabled: Boolean) {
+        // Model selection
         binding.radioGroupModel.isEnabled = enabled
         binding.radioMobilenetV2.isEnabled = enabled
         binding.radioMobilenetV2Quant.isEnabled = enabled
-        binding.radioYolov8n.isEnabled = enabled
-        binding.radioYolov8nQuant.isEnabled = enabled
+
+        // Execution provider selection
         binding.radioGroupPath.isEnabled = enabled
         binding.radioNpuGpuCpu.isEnabled = enabled
         binding.radioGpuCpu.isEnabled = enabled
         binding.radioCpuOnly.isEnabled = enabled
+
+        // Frequency
         binding.radioGroupFrequency.isEnabled = enabled
         binding.radioFreq1.isEnabled = enabled
         binding.radioFreq5.isEnabled = enabled
         binding.radioFreq10.isEnabled = enabled
+
+        // Options
         binding.checkWarmup.isEnabled = enabled
         binding.radioGroupDuration.isEnabled = enabled
         binding.radioDuration5.isEnabled = enabled
@@ -145,19 +170,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildConfig(): BenchmarkConfig {
-        val modelType = when (binding.radioGroupModel.checkedRadioButtonId) {
-            R.id.radioMobilenetV2 -> ModelType.MOBILENET_V2
-            R.id.radioMobilenetV2Quant -> ModelType.MOBILENET_V2_QUANTIZED
-            R.id.radioYolov8n -> ModelType.YOLOV8N
-            R.id.radioYolov8nQuant -> ModelType.YOLOV8N_QUANTIZED
-            else -> ModelType.MOBILENET_V2
+        // Model type
+        val modelType = when (selectedModelId) {
+            R.id.radioMobilenetV2 -> OnnxModelType.MOBILENET_V2
+            R.id.radioMobilenetV2Quant -> OnnxModelType.MOBILENET_V2_QUANTIZED
+            else -> OnnxModelType.MOBILENET_V2
         }
 
-        val delegateMode = when (binding.radioGroupPath.checkedRadioButtonId) {
-            R.id.radioNpuGpuCpu -> DelegateMode.NPU_GPU_CPU
-            R.id.radioGpuCpu -> DelegateMode.GPU_CPU
-            R.id.radioCpuOnly -> DelegateMode.CPU_ONLY
-            else -> DelegateMode.NPU_GPU_CPU
+        // Execution provider
+        val executionProvider = when (binding.radioGroupPath.checkedRadioButtonId) {
+            R.id.radioNpuGpuCpu -> ExecutionProvider.QNN_NPU
+            R.id.radioGpuCpu -> ExecutionProvider.QNN_GPU
+            R.id.radioCpuOnly -> ExecutionProvider.CPU
+            else -> ExecutionProvider.QNN_NPU
         }
 
         val frequencyHz = when (binding.radioGroupFrequency.checkedRadioButtonId) {
@@ -175,7 +200,7 @@ class MainActivity : AppCompatActivity() {
 
         return BenchmarkConfig(
             modelType = modelType,
-            delegateMode = delegateMode,
+            executionProvider = executionProvider,
             frequencyHz = frequencyHz,
             warmUpEnabled = binding.checkWarmup.isChecked,
             durationMinutes = durationMinutes
@@ -237,14 +262,14 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         isForeground = true
-        tfliteRunner.setForeground(true)
+        benchmarkRunner.setForeground(true)
         Log.d(TAG, "App resumed (foreground)")
     }
 
     override fun onPause() {
         super.onPause()
         isForeground = false
-        tfliteRunner.setForeground(false)
+        benchmarkRunner.setForeground(false)
         Log.d(TAG, "App paused (background)")
     }
 
