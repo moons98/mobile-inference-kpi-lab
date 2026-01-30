@@ -67,6 +67,14 @@ mobile-inference-kpi-lab/
 │   └── notebooks/
 │       ├── 01_baseline.ipynb
 │       └── 02_policy_comparison.ipynb
+├── logs/                       # 원본 데이터 (adb pull)
+│   ├── mobilenetv2/            # MobileNetV2 로그
+│   │   ├── kpi_*.csv           # 벤치마크 CSV
+│   │   └── kpi_*_ort.log       # ORT 로그
+│   └── yolov8/                 # YOLOv8 로그
+├── outputs/                    # 분석 결과물 (자동 생성)
+│   ├── *_comparison.png        # 비교 플롯
+│   └── *_comparison_*.txt      # 비교 리포트
 └── docs/
 ```
 
@@ -192,12 +200,20 @@ ONNX Runtime은 세션 생성 시 그래프를 분할(partitioning)하여 각 Op
 ### 데이터 Export
 
 1. 벤치마크 완료 후 "EXPORT CSV" 클릭
-2. 파일명 형식: `kpi_{Model}_{EP}_{timestamp}.csv`
+2. 파일명 형식:
+   - CSV: `kpi_{Model}_{EP}_{timestamp}.csv`
+   - ORT 로그: `kpi_{Model}_{EP}_{timestamp}_ort.log`
 3. 파일 위치: `/sdcard/Android/data/com.example.kpilab/files/Documents/`
 4. ADB로 추출:
    ```bash
    adb pull /sdcard/Android/data/com.example.kpilab/files/Documents/ ./logs/
    ```
+
+**ORT 로그 파일 (`_ort.log`)**:
+- ONNX Runtime의 Graph Partitioning 정보 포함
+- QNN EP에서 실행되는 노드 수 vs CPU fallback 노드 수
+- Fallback된 Op 목록 (QNN에서 지원하지 않는 연산자)
+- 디버깅 및 최적화에 유용
 
 ## Batch Mode (배치 모드)
 
@@ -279,7 +295,7 @@ ONNX Runtime은 세션 생성 시 그래프를 분할(partitioning)하여 각 Op
 # app_version,1.0
 # app_build,1
 # runtime,ONNX Runtime
-# ort_version,1.17.0
+# ort_version,1.22.0
 # execution_provider,QNN_NPU
 # model,MobileNetV2
 # model_file,mobilenetv2.onnx
@@ -313,18 +329,32 @@ pip install -r requirements.txt
 ### 분석 실행
 
 ```bash
+# 여러 로그 비교 분석 (outputs/ 폴더에 저장)
+python analysis/scripts/parse_logs.py logs/mobilenetv2/
+# -> outputs/mobilenetv2_comparison_YYYYMMDD_HHMMSS.txt
+
+# 시각화 (outputs/ 폴더에 저장)
+python analysis/scripts/plot_kpi.py logs/mobilenetv2/
+# -> outputs/mobilenetv2_comparison.png
+
 # 단일 로그 분석
-python analysis/scripts/parse_logs.py logs/kpi_MobileNetV2_QNNNPU_xxx.csv
+python analysis/scripts/parse_logs.py logs/mobilenetv2/kpi_xxx.csv
 
-# 여러 로그 비교 분석
-python analysis/scripts/parse_logs.py logs/
-
-# 시각화
-python analysis/scripts/plot_kpi.py logs/kpi_MobileNetV2_QNNNPU_xxx.csv logs/
+# 콘솔 출력만 (파일 저장 안함)
+python analysis/scripts/parse_logs.py logs/mobilenetv2/ --print
 
 # Jupyter notebook
 jupyter notebook analysis/notebooks/
 ```
+
+**비교 리포트 섹션**:
+1. Experiment Overview - EP, 정밀도, 모델
+2. Latency Performance - P50/P95, MaxFPS
+3. Cold Start Breakdown - 모델 로드, 세션 생성, 첫 추론
+4. Latency Stability - 시간에 따른 latency 변화
+5. Thermal & Power - 전력 소비, 온도 상승률
+6. Model Details - 모델 크기, 입력 shape, QNN 옵션
+7. Graph Partitioning - QNN/CPU 노드 분할 (ORT 로그 필요)
 
 ## 실험 매트릭스
 

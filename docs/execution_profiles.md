@@ -558,6 +558,59 @@ BenchmarkConfig(
 
 ---
 
+## ORT 로그 캡처 (Graph Partitioning 정보)
+
+### LogcatCapture
+
+**파일**: [LogcatCapture.kt](../android/app/src/main/java/com/example/kpilab/LogcatCapture.kt)
+
+벤치마크 실행 중 ONNX Runtime의 VERBOSE 로그를 캡처하여 Graph Partitioning 정보를 수집합니다.
+
+```kotlin
+// BenchmarkRunner.kt에서 사용
+logcatCapture.startCapture(
+    tags = listOf("onnxruntime", "OrtRunner", "QNN"),
+    scope = captureScope
+)
+
+// 벤치마크 완료 후
+logcatCapture.stopCapture()
+lastOrtLogInfo = logcatCapture.parseOrtInfo()
+```
+
+**수집 정보 (OrtLogInfo)**:
+- `totalNodes`: 그래프 전체 노드 수
+- `qnnNodes`: QNN EP에서 실행되는 노드 수
+- `cpuNodes`: CPU fallback 노드 수
+- `fallbackOps`: CPU로 fallback된 Op 목록
+- `rawLogs`: 전체 ORT 로그
+
+### Export 파일
+
+CSV export 시 `_ort.log` 파일이 함께 생성됩니다:
+
+```
+kpi_MobileNetV2_QNNNPU_20260130_150850.csv      # KPI 데이터
+kpi_MobileNetV2_QNNNPU_20260130_150850_ort.log  # ORT 로그
+```
+
+**`_ort.log` 파일 내용**:
+```
+=== ORT Graph Partitioning Info ===
+Total nodes: 154
+QNN nodes: 150
+CPU fallback nodes: 4
+Fallback ops: Softmax, ArgMax
+
+=== Partition Details ===
+...
+
+=== Raw Logs ===
+(ONNX Runtime verbose 로그)
+```
+
+---
+
 ## 디버깅 가이드
 
 ### QNN EP 초기화 실패 시
@@ -579,6 +632,21 @@ QNN EP (NPU) configured
 1. 모델 파일이 assets에 있는지
 2. ONNX 모델이 QNN 지원 op만 사용하는지 (`analyze_ops.py`)
 3. 기기가 Snapdragon인지 (QNN은 Qualcomm 전용)
+
+### ORT Verbose 로그 확인
+
+OrtRunner는 `ORT_LOGGING_LEVEL_VERBOSE`로 설정되어 Graph Partitioning 상세 정보가 logcat에 출력됩니다:
+
+```bash
+adb logcat -s onnxruntime:V
+```
+
+**확인 가능한 정보**:
+- 그래프 노드 수 및 QNN/CPU 분할 결과
+- 미지원 Op으로 인한 CPU fallback
+- QNN 컴파일 오류 상세
+
+> **Note**: VERBOSE 로그는 앱 내 LogcatCapture에 의해 자동 캡처되어 `_ort.log` 파일로 저장됩니다.
 
 ### Thermal 읽기 실패 시
 
