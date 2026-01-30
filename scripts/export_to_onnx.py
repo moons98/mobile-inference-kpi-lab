@@ -9,13 +9,14 @@ Supported models:
 Quantization methods:
 - dynamic: Fast, no calibration data needed, but NOT supported by QNN EP (CPU fallback)
 - static: Requires calibration data, fully supported by QNN EP (NPU acceleration)
+- both: Export both dynamic and static versions (default)
 
 Usage:
     python export_to_onnx.py --export-mobilenetv2
-    python export_to_onnx.py --export-mobilenetv2-quantized
+    python export_to_onnx.py --export-mobilenetv2-quantized              # exports both dynamic & static
     python export_to_onnx.py --export-mobilenetv2-quantized --quant-method static
     python export_to_onnx.py --export-yolov8n
-    python export_to_onnx.py --export-all
+    python export_to_onnx.py --export-all                                # all models, both quant methods
     python export_to_onnx.py --list
     python export_to_onnx.py --status
 """
@@ -32,7 +33,7 @@ CALIBRATION_SAMPLES = 100
 MODELS = {
     "mobilenetv2": {
         "source": "torchvision",
-        "filename": "mobilenetv2_torchvision.onnx",
+        "filename": "mobilenetv2.onnx",
         "description": "MobileNetV2 (FP32) - torchvision export",
         "input_shape": [1, 3, 224, 224],  # NCHW
         "output": "1000 classes (ImageNet)",
@@ -40,7 +41,8 @@ MODELS = {
     },
     "mobilenetv2-quantized": {
         "source": "torchvision",
-        "filename": "mobilenetv2_torchvision_quantized.onnx",
+        "filename_dynamic": "mobilenetv2_int8_dynamic.onnx",  # CPU fallback
+        "filename_static": "mobilenetv2_int8_qdq.onnx",       # NPU supported
         "description": "MobileNetV2 (INT8) - torchvision + onnxruntime quantization",
         "input_shape": [1, 3, 224, 224],
         "output": "1000 classes (ImageNet)",
@@ -49,7 +51,7 @@ MODELS = {
     },
     "yolov8n": {
         "source": "ultralytics",
-        "filename": "yolov8n_ultralytics.onnx",
+        "filename": "yolov8n.onnx",
         "description": "YOLOv8n (FP32) - ultralytics export",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
@@ -57,7 +59,8 @@ MODELS = {
     },
     "yolov8n-quantized": {
         "source": "ultralytics",
-        "filename": "yolov8n_ultralytics_quantized.onnx",
+        "filename_dynamic": "yolov8n_int8_dynamic.onnx",  # CPU fallback
+        "filename_static": "yolov8n_int8_qdq.onnx",       # NPU supported
         "description": "YOLOv8n (INT8) - ultralytics + onnxruntime quantization",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
@@ -295,11 +298,19 @@ def quantize_dynamic_onnx(input_path: Path, output_path: Path) -> bool:
     print("  [!] Warning: Dynamic quantization NOT supported by QNN EP")
     print("  [!] Use --quant-method static for NPU acceleration")
 
+    # Preprocess model for better quantization results
+    preprocessed_path = preprocess_for_quantization(input_path)
+
     quantize_dynamic(
-        model_input=str(input_path),
+        model_input=str(preprocessed_path),
         model_output=str(output_path),
         weight_type=QuantType.QUInt8,
     )
+
+    # Remove intermediate preprocessed file
+    if preprocessed_path != input_path and preprocessed_path.exists():
+        preprocessed_path.unlink()
+        print(f"Removed intermediate file: {preprocessed_path.name}")
 
     print(f"Quantized: {output_path.name} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
 
@@ -309,6 +320,54 @@ def quantize_dynamic_onnx(input_path: Path, output_path: Path) -> bool:
         print(f"Removed intermediate file: {input_path.name}")
 
     return True
+
+
+def preprocess_for_quantization(input_path: Path) -> Path:
+    """Preprocess model before quantization for better results.
+
+    Steps:
+    1. Shape inference - provides tensor shape information
+    2. Model optimization - merges Conv+BN, etc.
+
+    Returns:
+        Path to preprocessed model
+    """
+    import onnx
+    from onnx import shape_inference
+
+    print("  Preprocessing model for quantization...")
+
+    preprocessed_path = input_path.with_suffix(".preprocessed.onnx")
+
+    try:
+        # Try using onnxruntime's preprocessing
+        from onnxruntime.quantization.shape_inference import quant_pre_process
+
+        quant_pre_process(
+            input_model_path=str(input_path),
+            output_model_path=str(preprocessed_path),
+            skip_optimization=False,
+            skip_onnx_shape=False,
+            skip_symbolic_shape=False,
+        )
+        print("  [OK] Preprocessing complete (shape inference + optimization)")
+        return preprocessed_path
+
+    except ImportError:
+        # Fallback: just use onnx shape inference
+        print("  [!] onnxruntime.quantization.shape_inference not available")
+        print("  Using ONNX shape inference only...")
+
+        model = onnx.load(str(input_path))
+        model = shape_inference.infer_shapes(model)
+        onnx.save(model, str(preprocessed_path))
+        print("  [OK] Shape inference complete")
+        return preprocessed_path
+
+    except Exception as e:
+        print(f"  [!] Preprocessing failed: {e}")
+        print("  Proceeding without preprocessing...")
+        return input_path
 
 
 def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list = None) -> bool:
@@ -321,8 +380,11 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
     print(f"Quantizing (static/QDQ) to INT8: {output_path}")
     print("  [OK] QDQ format supported by QNN EP for NPU acceleration")
 
+    # Preprocess model for better quantization
+    preprocessed_path = preprocess_for_quantization(input_path)
+
     # Get input name and shape from model if not provided
-    model = onnx.load(str(input_path))
+    model = onnx.load(str(preprocessed_path))
     input_info = model.graph.input[0]
     input_name = input_info.name
 
@@ -374,7 +436,7 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
 
     # Quantize with static method
     quantize_static(
-        model_input=str(input_path),
+        model_input=str(preprocessed_path),
         model_output=str(output_path),
         calibration_data_reader=calibration_reader,
         quant_format=__import__('onnxruntime.quantization', fromlist=['QuantFormat']).QuantFormat.QDQ,
@@ -385,37 +447,83 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
 
     print(f"Quantized: {output_path.name} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
 
-    # Remove intermediate FP32 file
+    # Remove intermediate files
     if input_path != output_path and input_path.exists():
         input_path.unlink()
         print(f"Removed intermediate file: {input_path.name}")
 
+    if preprocessed_path != input_path and preprocessed_path.exists():
+        preprocessed_path.unlink()
+        print(f"Removed intermediate file: {preprocessed_path.name}")
+
     return True
 
 
-def export_model(model_key: str, output_dir: Path) -> bool:
-    """Export a model by key."""
+def export_model(model_key: str, output_dir: Path) -> list:
+    """Export a model by key.
+
+    Returns:
+        List of (model_key, quant_method) tuples that were successfully exported.
+    """
+    global QUANT_METHOD
+
     if model_key not in MODELS:
         print(f"Unknown model: {model_key}")
-        return False
+        return []
 
     model = MODELS[model_key]
-    dest = output_dir / model["filename"]
     quantize = model.get("quantize", False)
-
-    print("=" * 60)
-    print(f"Exporting {model['description']}")
-    print("=" * 60)
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if model["source"] == "torchvision":
-        return export_mobilenetv2(dest, quantize=quantize)
-    elif model["source"] == "ultralytics":
-        return export_yolov8n(dest, quantize=quantize)
+    exported = []
+
+    # Handle "both" option for quantized models
+    if quantize and QUANT_METHOD == "both":
+        quant_methods = ["dynamic", "static"]
+    elif quantize:
+        quant_methods = [QUANT_METHOD]
     else:
-        print(f"Unknown source: {model['source']}")
-        return False
+        quant_methods = [None]  # FP32 model
+
+    for method in quant_methods:
+        # Select filename based on quantization method
+        if quantize:
+            if method == "static":
+                filename = model.get("filename_static", model.get("filename"))
+            else:
+                filename = model.get("filename_dynamic", model.get("filename"))
+        else:
+            filename = model["filename"]
+
+        dest = output_dir / filename
+
+        print("=" * 60)
+        print(f"Exporting {model['description']}")
+        if quantize:
+            print(f"Quantization: {method} → {filename}")
+        print("=" * 60)
+
+        # Temporarily set global QUANT_METHOD for quantization functions
+        old_method = QUANT_METHOD
+        if method:
+            QUANT_METHOD = method
+
+        success = False
+        if model["source"] == "torchvision":
+            success = export_mobilenetv2(dest, quantize=quantize)
+        elif model["source"] == "ultralytics":
+            success = export_yolov8n(dest, quantize=quantize)
+        else:
+            print(f"Unknown source: {model['source']}")
+
+        QUANT_METHOD = old_method
+
+        if success:
+            exported.append((model_key, method))
+
+        print()  # Add spacing between exports
+
+    return exported
 
 
 def list_models():
@@ -431,7 +539,11 @@ def list_models():
         print(f"    Input: {model['input_shape']} (NCHW)")
         print(f"    Output: {model['output']}")
         print(f"    Data type: {model['dtype']}")
-        print(f"    Filename: {model['filename']}")
+        if model.get("quantize"):
+            print(f"    Filename (dynamic): {model['filename_dynamic']} [CPU fallback]")
+            print(f"    Filename (static):  {model['filename_static']} [NPU supported]")
+        else:
+            print(f"    Filename: {model['filename']}")
         print()
 
 
@@ -442,14 +554,35 @@ def check_assets():
     print("=" * 60)
     print()
 
-    print("Exported models (torchvision/ultralytics):")
+    print("FP32 models:")
     for model in MODELS.values():
-        path = ASSETS_DIR / model["filename"]
-        if path.exists():
-            size = path.stat().st_size / 1024 / 1024
-            print(f"  [OK] {model['filename']} ({size:.2f} MB)")
-        else:
-            print(f"  [--] {model['filename']} (not found)")
+        if not model.get("quantize"):
+            path = ASSETS_DIR / model["filename"]
+            if path.exists():
+                size = path.stat().st_size / 1024 / 1024
+                print(f"  [OK] {model['filename']} ({size:.2f} MB)")
+            else:
+                print(f"  [--] {model['filename']} (not found)")
+
+    print()
+    print("INT8 quantized models:")
+    for model in MODELS.values():
+        if model.get("quantize"):
+            # Check dynamic
+            path_dynamic = ASSETS_DIR / model["filename_dynamic"]
+            if path_dynamic.exists():
+                size = path_dynamic.stat().st_size / 1024 / 1024
+                print(f"  [OK] {model['filename_dynamic']} ({size:.2f} MB) [dynamic/CPU]")
+            else:
+                print(f"  [--] {model['filename_dynamic']} (not found) [dynamic/CPU]")
+
+            # Check static
+            path_static = ASSETS_DIR / model["filename_static"]
+            if path_static.exists():
+                size = path_static.stat().st_size / 1024 / 1024
+                print(f"  [OK] {model['filename_static']} ({size:.2f} MB) [static/NPU]")
+            else:
+                print(f"  [--] {model['filename_static']} (not found) [static/NPU]")
 
     print()
 
@@ -501,9 +634,9 @@ def main():
     )
     parser.add_argument(
         "--quant-method",
-        choices=["dynamic", "static"],
-        default="dynamic",
-        help="Quantization method: dynamic (fast, CPU fallback) or static (QDQ, NPU supported)"
+        choices=["dynamic", "static", "both"],
+        default="both",
+        help="Quantization method: dynamic (CPU fallback), static (NPU supported), or both"
     )
     parser.add_argument(
         "--calibration-samples",
@@ -551,24 +684,25 @@ def main():
         parser.print_help()
         print("\nExamples:")
         print("  python export_to_onnx.py --export-mobilenetv2")
-        print("  python export_to_onnx.py --export-mobilenetv2-quantized")
-        print("  python export_to_onnx.py --export-mobilenetv2-quantized --quant-method static  # NPU supported")
+        print("  python export_to_onnx.py --export-mobilenetv2-quantized                    # both dynamic & static")
+        print("  python export_to_onnx.py --export-mobilenetv2-quantized --quant-method static")
         print("  python export_to_onnx.py --export-yolov8n")
-        print("  python export_to_onnx.py --export-yolov8n-quantized --quant-method static")
-        print("  python export_to_onnx.py --export-all")
+        print("  python export_to_onnx.py --export-all                                      # all models, both quant methods")
         print("  python export_to_onnx.py --list")
         print("  python export_to_onnx.py --status")
         print("\nQuantization methods:")
         print("  dynamic: Fast, no calibration needed, but CPU fallback on QNN EP")
         print("  static:  Uses QDQ format, fully supported by QNN EP for NPU acceleration")
+        print("  both:    Export both dynamic and static versions (default)")
         return
 
     exported = []
     failed = []
 
     for model_key in exports:
-        if export_model(model_key, args.output):
-            exported.append(model_key)
+        results = export_model(model_key, args.output)
+        if results:
+            exported.extend(results)
         else:
             failed.append(model_key)
 
@@ -577,13 +711,21 @@ def main():
     print("Summary")
     print("=" * 60)
     if exported:
-        print(f"Exported: {', '.join(exported)}")
+        export_strs = []
+        for model_key, method in exported:
+            if method:
+                export_strs.append(f"{model_key} ({method})")
+            else:
+                export_strs.append(model_key)
+        print(f"Exported: {', '.join(export_strs)}")
     if failed:
         print(f"Failed: {', '.join(failed)}")
     print(f"Output directory: {args.output}")
-    if any("quantized" in e for e in exported):
+    if any(m for _, m in exported if m):
         print(f"Quantization method: {args.quant_method}")
-        if args.quant_method == "dynamic":
+        if args.quant_method == "both":
+            print("  [OK] Both dynamic and static versions exported")
+        elif args.quant_method == "dynamic":
             print("  [!] Note: Dynamic quantization will fallback to CPU on QNN EP")
         else:
             print("  [OK] Static (QDQ) quantization supported by QNN EP")
