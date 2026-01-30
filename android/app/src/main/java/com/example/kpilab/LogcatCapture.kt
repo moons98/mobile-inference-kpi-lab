@@ -115,35 +115,64 @@ class LogcatCapture {
         var cpuNodes = 0
         val fallbackOps = mutableListOf<String>()
         val partitionInfo = mutableListOf<String>()
+        var qnnSetupFailed = false
+        var qnnErrorMessage: String? = null
 
         for (line in logs.lines()) {
-            // Parse node counts from graph partitioning logs
-            // Example: "Number of nodes in the graph: 100"
-            if (line.contains("nodes in the graph", ignoreCase = true)) {
-                val match = Regex("(\\d+)\\s*nodes").find(line)
-                match?.groupValues?.get(1)?.toIntOrNull()?.let { totalNodes = it }
+            // Check for QNN setup failure
+            // Example: "QNN SetupBackend failed"
+            if (line.contains("SetupBackend failed", ignoreCase = true) ||
+                line.contains("QNN_DEVICE_ERROR", ignoreCase = true) ||
+                line.contains("QNN_COMMON_ERROR", ignoreCase = true)) {
+                qnnSetupFailed = true
+                qnnErrorMessage = line.substringAfter("Error:").trim().ifEmpty { null }
+                    ?: line.substringAfter("failed").trim().ifEmpty { null }
+                partitionInfo.add(line.trim())
             }
 
-            // Parse QNN/CPU partition info
-            // Example: "QNN EP assigned 80 nodes"
-            if (line.contains("QNN", ignoreCase = true) && line.contains("node", ignoreCase = true)) {
+            // Parse node placement info from ORT
+            // Example: "All nodes placed on [QNNExecutionProvider]. Number of nodes: 77"
+            // Example: "All nodes placed on [CPUExecutionProvider]. Number of nodes: 55"
+            if (line.contains("nodes placed on", ignoreCase = true)) {
                 partitionInfo.add(line.trim())
-                val match = Regex("(\\d+)\\s*node").find(line)
-                match?.groupValues?.get(1)?.toIntOrNull()?.let { qnnNodes += it }
+                val nodeCountMatch = Regex("Number of nodes:\\s*(\\d+)").find(line)
+                val nodeCount = nodeCountMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+
+                when {
+                    line.contains("QNNExecutionProvider") -> qnnNodes += nodeCount
+                    line.contains("CPUExecutionProvider") -> cpuNodes += nodeCount
+                }
+                totalNodes += nodeCount
             }
 
             // Parse fallback ops
             // Example: "Op [Softmax] is not supported by QNN"
-            if (line.contains("not supported", ignoreCase = true) ||
-                line.contains("fallback", ignoreCase = true) ||
-                line.contains("CPU EP", ignoreCase = true)) {
+            // Example: "Falling back to CPU for node: Softmax_123"
+            if (line.contains("not supported", ignoreCase = true)) {
                 val opMatch = Regex("\\[([^\\]]+)\\]").find(line)
-                opMatch?.groupValues?.get(1)?.let { fallbackOps.add(it) }
+                    ?: Regex("Op\\s+(\\w+)").find(line)
+                opMatch?.groupValues?.get(1)?.let {
+                    if (!fallbackOps.contains(it)) fallbackOps.add(it)
+                }
+                partitionInfo.add(line.trim())
+            }
+
+            // Parse CPU fallback info
+            if (line.contains("fallback", ignoreCase = true) && line.contains("CPU", ignoreCase = true)) {
+                val nodeMatch = Regex("node[:\\s]+([\\w_]+)").find(line)
+                nodeMatch?.groupValues?.get(1)?.let {
+                    val opType = it.substringBefore("_")
+                    if (!fallbackOps.contains(opType)) fallbackOps.add(opType)
+                }
                 partitionInfo.add(line.trim())
             }
         }
 
-        cpuNodes = totalNodes - qnnNodes
+        // If QNN setup failed, all nodes run on CPU
+        if (qnnSetupFailed && qnnNodes == 0 && cpuNodes == 0) {
+            // No node placement info found, but we know it fell back to CPU
+            qnnErrorMessage?.let { fallbackOps.add("QNN failed: $it") }
+        }
 
         return OrtLogInfo(
             totalNodes = totalNodes,
