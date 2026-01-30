@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
+import android.os.HardwarePropertiesManager
 import android.util.Log
 import java.io.BufferedReader
 import java.io.File
@@ -18,11 +19,25 @@ class KpiCollector(private val context: Context) {
     companion object {
         private const val TAG = "KpiCollector"
 
-        // Common thermal zone paths on Qualcomm devices
+        // Extended thermal zone paths for various devices
         private val THERMAL_PATHS = listOf(
+            // Standard thermal zones (try multiple indices)
             "/sys/class/thermal/thermal_zone0/temp",
             "/sys/class/thermal/thermal_zone1/temp",
-            "/sys/devices/virtual/thermal/thermal_zone0/temp"
+            "/sys/class/thermal/thermal_zone2/temp",
+            "/sys/class/thermal/thermal_zone3/temp",
+            "/sys/class/thermal/thermal_zone4/temp",
+            "/sys/class/thermal/thermal_zone5/temp",
+            // Virtual thermal
+            "/sys/devices/virtual/thermal/thermal_zone0/temp",
+            "/sys/devices/virtual/thermal/thermal_zone1/temp",
+            // CPU specific paths (Qualcomm)
+            "/sys/class/hwmon/hwmon0/temp1_input",
+            "/sys/class/hwmon/hwmon1/temp1_input",
+            // Samsung specific
+            "/sys/class/sec/temperature/value",
+            // MTK specific
+            "/sys/class/thermal/thermal_zone9/temp"
         )
 
         // Memory info path
@@ -73,39 +88,159 @@ class KpiCollector(private val context: Context) {
         context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
 
     private var thermalPath: String? = null
+    private var useBatteryTemperature: Boolean = false
 
     init {
-        // Find available thermal path
-        thermalPath = THERMAL_PATHS.firstOrNull { File(it).exists() }
+        // Find available thermal path that is readable
+        thermalPath = findReadableThermalPath()
+
         if (thermalPath == null) {
-            Log.w(TAG, "No thermal zone found, thermal readings will be unavailable")
+            Log.w(TAG, "No thermal zone found, will use battery temperature as fallback")
+            useBatteryTemperature = true
         } else {
             Log.i(TAG, "Using thermal path: $thermalPath")
         }
+
+        // Log all available thermal zones for debugging
+        logAvailableThermalZones()
+    }
+
+    private fun findReadableThermalPath(): String? {
+        Log.i(TAG, "=== Searching for readable thermal path ===")
+        for (path in THERMAL_PATHS) {
+            val file = File(path)
+            val exists = file.exists()
+            val canRead = file.canRead()
+
+            if (exists && canRead) {
+                // Try to actually read it
+                try {
+                    val reader = BufferedReader(FileReader(path))
+                    val value = reader.readLine()
+                    reader.close()
+                    val parsed = value?.trim()?.toIntOrNull()
+                    Log.i(TAG, "  $path: exists=$exists, canRead=$canRead, value='$value', parsed=$parsed")
+                    if (parsed != null) {
+                        Log.i(TAG, "  -> Selected this path!")
+                        return path
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "  $path: exists=$exists, canRead=$canRead, error=${e.message}")
+                }
+            } else {
+                // Only log first few for brevity
+                if (THERMAL_PATHS.indexOf(path) < 3) {
+                    Log.i(TAG, "  $path: exists=$exists, canRead=$canRead")
+                }
+            }
+        }
+        Log.w(TAG, "=== No readable thermal path found ===")
+        return null
+    }
+
+    private fun logAvailableThermalZones() {
+        val thermalDir = File("/sys/class/thermal/")
+        Log.i(TAG, "=== Available thermal zones ===")
+        if (thermalDir.exists() && thermalDir.isDirectory) {
+            val zones = thermalDir.listFiles()?.filter { it.name.startsWith("thermal_zone") }
+            Log.i(TAG, "Found ${zones?.size ?: 0} thermal zones")
+
+            // Try to read type of each zone
+            zones?.forEach { zone ->
+                try {
+                    val typeFile = File(zone, "type")
+                    val tempFile = File(zone, "temp")
+                    val typeExists = typeFile.exists()
+                    val tempExists = tempFile.exists()
+                    val tempCanRead = tempFile.canRead()
+
+                    if (typeExists && tempExists) {
+                        val type = BufferedReader(FileReader(typeFile)).use { it.readLine() }
+                        val temp = if (tempCanRead) {
+                            try {
+                                BufferedReader(FileReader(tempFile)).use { it.readLine() }
+                            } catch (e: Exception) {
+                                "read_error: ${e.message}"
+                            }
+                        } else {
+                            "no_permission"
+                        }
+                        Log.i(TAG, "  ${zone.name}: type=$type, temp=$temp, canRead=$tempCanRead")
+                    } else {
+                        Log.i(TAG, "  ${zone.name}: typeExists=$typeExists, tempExists=$tempExists")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "  ${zone.name}: error=${e.message}")
+                }
+            }
+        } else {
+            Log.w(TAG, "Thermal directory does not exist or is not a directory")
+        }
+
+        // Also try battery temperature
+        val batteryTemp = readBatteryTemperature()
+        Log.i(TAG, "Battery temperature fallback: $batteryTemp °C")
+        Log.i(TAG, "================================")
     }
 
     /**
      * Read current CPU/SoC temperature in Celsius
+     * Falls back to battery temperature if thermal zone unavailable
      * @return Temperature in °C, or -1 if unavailable
      */
     fun readThermal(): Float {
-        val path = thermalPath ?: return -1f
+        // Try thermal zone first
+        val path = thermalPath
+        if (path != null) {
+            try {
+                val reader = BufferedReader(FileReader(path))
+                val tempStr = reader.readLine()
+                reader.close()
 
+                val tempRaw = tempStr?.trim()?.toIntOrNull()
+                if (tempRaw != null) {
+                    // Most devices report in millidegrees Celsius
+                    val result = if (tempRaw > 1000) {
+                        tempRaw / 1000f
+                    } else {
+                        tempRaw.toFloat()
+                    }
+                    // Log occasionally (every ~100 calls would spam, so just first few)
+                    return result
+                } else {
+                    Log.w(TAG, "readThermal: tempStr='$tempStr' could not be parsed")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to read thermal zone: ${e.message}")
+            }
+        }
+
+        // Fallback: use battery temperature
+        val batteryTemp = readBatteryTemperature()
+        if (batteryTemp < 0) {
+            Log.w(TAG, "readThermal: Both thermal zone and battery temp failed")
+        }
+        return batteryTemp
+    }
+
+    /**
+     * Read battery temperature as fallback
+     * @return Temperature in °C, or -1 if unavailable
+     */
+    private fun readBatteryTemperature(): Float {
         return try {
-            val reader = BufferedReader(FileReader(path))
-            val tempStr = reader.readLine()
-            reader.close()
-
-            val tempRaw = tempStr.trim().toIntOrNull() ?: return -1f
-
-            // Most devices report in millidegrees Celsius
-            if (tempRaw > 1000) {
-                tempRaw / 1000f
+            val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { filter ->
+                context.registerReceiver(null, filter)
+            }
+            // Battery temperature is in tenths of degrees Celsius
+            val tempTenths = batteryStatus?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+            if (tempTenths > 0) {
+                tempTenths / 10f
             } else {
-                tempRaw.toFloat()
+                -1f
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to read thermal: ${e.message}")
+            Log.e(TAG, "Failed to read battery temperature: ${e.message}")
             -1f
         }
     }

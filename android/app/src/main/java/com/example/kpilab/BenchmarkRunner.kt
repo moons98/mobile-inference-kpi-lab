@@ -1,5 +1,6 @@
 package com.example.kpilab
 
+import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,13 +27,17 @@ data class BenchmarkProgress(
     val elapsedMs: Long = 0,
     val totalMs: Long = 0,
     val inferenceCount: Int = 0,
-    val lastLatencyMs: Float = 0f,
-    val lastThermalC: Float = 0f,
-    val lastPowerMw: Float = 0f,
+    val lastLatencyMs: Float = -1f,
+    val lastThermalC: Float = -1f,
+    val lastPowerMw: Float = -1f,
     val lastMemoryMb: Int = 0
 ) {
     val progressPercent: Int
         get() = if (totalMs > 0) ((elapsedMs * 100) / totalMs).toInt() else 0
+
+    /** Throughput in inferences per second */
+    val throughput: Float
+        get() = if (elapsedMs > 0) (inferenceCount * 1000f) / elapsedMs else 0f
 
     fun formatElapsed(): String {
         val seconds = (elapsedMs / 1000) % 60
@@ -45,13 +50,17 @@ data class BenchmarkProgress(
         val minutes = (totalMs / 1000) / 60
         return String.format("%02d:%02d", minutes, seconds)
     }
+
+    fun formatThroughput(): String {
+        return String.format("%.2f inf/s", throughput)
+    }
 }
 
 /**
- * Runs benchmark with configured settings using TFLite
+ * Runs benchmark with ONNX Runtime
  */
 class BenchmarkRunner(
-    private val tfliteRunner: TFLiteRunner,
+    private val context: Context,
     private val kpiCollector: KpiCollector
 ) {
     companion object {
@@ -63,6 +72,7 @@ class BenchmarkRunner(
     private val _progress = MutableStateFlow(BenchmarkProgress())
     val progress: StateFlow<BenchmarkProgress> = _progress.asStateFlow()
 
+    private var ortRunner: OrtRunner? = null
     private var benchmarkJob: Job? = null
     private var systemMetricsJob: Job? = null
     private var startTimeMs: Long = 0
@@ -117,29 +127,46 @@ class BenchmarkRunner(
             totalMs = config.durationMs
         )
 
+        // Release previous runner if exists
+        ortRunner?.let {
+            Log.i(TAG, "Releasing previous runner")
+            it.release()
+            ortRunner = null
+        }
+
+        // Create and initialize ONNX Runtime runner
         val initialized = withContext(Dispatchers.IO) {
-            tfliteRunner.initialize(
+            Log.i(TAG, "Initializing ONNX Runtime runner")
+            val runner = OrtRunner(context)
+            val success = runner.initialize(
                 config.modelType,
-                config.delegateMode,
-                config.warmUpEnabled
+                config.executionProvider
             )
+            if (success) {
+                ortRunner = runner
+            }
+            success
         }
 
         if (!initialized) {
-            Log.e(TAG, "Failed to initialize TFLite runner")
+            Log.e(TAG, "Failed to initialize runner")
             _progress.value = BenchmarkProgress(state = BenchmarkState.IDLE)
             return
         }
 
+        val runner = ortRunner ?: return
+
         // Start session
         val sessionId = config.generateSessionId()
-        tfliteRunner.startSession(sessionId)
+        runner.startSession(sessionId)
         Log.i(TAG, "Session started: $sessionId")
 
-        // Update state
+        // Run warm-up if enabled (with proper state display)
         if (config.warmUpEnabled) {
             _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
-            // Warm-up is handled in TFLiteRunner.initialize()
+            withContext(Dispatchers.IO) {
+                runner.runWarmUp()
+            }
         }
 
         _progress.value = _progress.value.copy(state = BenchmarkState.RUNNING)
@@ -148,7 +175,7 @@ class BenchmarkRunner(
         // Start system metrics collection in parallel
         val metricsScope = CoroutineScope(currentCoroutineContext())
         systemMetricsJob = metricsScope.launch {
-            collectSystemMetrics(config.durationMs)
+            collectSystemMetrics(config.durationMs, runner)
         }
 
         // Main inference loop
@@ -165,7 +192,7 @@ class BenchmarkRunner(
 
             // Run inference
             val latencyMs = withContext(Dispatchers.IO) {
-                tfliteRunner.runInference()
+                runner.runInference()
             }
 
             if (latencyMs >= 0) {
@@ -189,12 +216,13 @@ class BenchmarkRunner(
         }
 
         // End session
-        tfliteRunner.endSession()
+        runner.endSession()
         Log.i(TAG, "Benchmark completed: $inferenceCount inferences")
     }
 
-    private suspend fun collectSystemMetrics(durationMs: Long) {
+    private suspend fun collectSystemMetrics(durationMs: Long, runner: OrtRunner) {
         var lastMemoryTime = 0L
+        var lastMemoryValue = 0
 
         while (currentCoroutineContext().isActive) {
             val elapsed = System.currentTimeMillis() - startTimeMs
@@ -205,25 +233,26 @@ class BenchmarkRunner(
             // Collect thermal and power every second
             val metrics = kpiCollector.collectAll()
 
-            // Log to TFLiteRunner
+            // Log to runner (memory every 5 seconds, use -1 for "not sampled")
             val memoryMb = if (elapsed - lastMemoryTime >= MEMORY_METRICS_INTERVAL_MS) {
                 lastMemoryTime = elapsed
+                lastMemoryValue = metrics.memoryMb
                 metrics.memoryMb
             } else {
-                0
+                -1  // Not sampled this interval
             }
 
-            tfliteRunner.logSystemMetrics(
+            runner.logSystemMetrics(
                 metrics.thermalC,
                 metrics.powerMw,
                 memoryMb
             )
 
-            // Update progress
+            // Update progress (keep last known memory value for UI)
             _progress.value = _progress.value.copy(
                 lastThermalC = metrics.thermalC,
                 lastPowerMw = metrics.powerMw,
-                lastMemoryMb = if (metrics.memoryMb > 0) metrics.memoryMb
+                lastMemoryMb = if (lastMemoryValue > 0) lastMemoryValue
                                else _progress.value.lastMemoryMb
             )
 
@@ -242,21 +271,35 @@ class BenchmarkRunner(
      * Export collected data as CSV
      */
     fun exportCsv(): String {
-        return tfliteRunner.exportCsv()
+        return ortRunner?.exportCsv() ?: ""
     }
 
     /**
      * Get record count
      */
     fun getRecordCount(): Int {
-        return tfliteRunner.getRecordCount()
+        return ortRunner?.getRecordCount() ?: 0
     }
 
     /**
      * Get device info
      */
     fun getDeviceInfo(): String {
-        return tfliteRunner.getDeviceInfo()
+        return ortRunner?.getDeviceInfo() ?: "No runner active"
+    }
+
+    /**
+     * Check if NPU is active
+     */
+    fun isNpuActive(): Boolean {
+        return ortRunner?.isNpuActive() ?: false
+    }
+
+    /**
+     * Set foreground state
+     */
+    fun setForeground(isForeground: Boolean) {
+        ortRunner?.setForeground(isForeground)
     }
 
     /**
@@ -264,6 +307,7 @@ class BenchmarkRunner(
      */
     fun release() {
         stop()
-        tfliteRunner.release()
+        ortRunner?.release()
+        ortRunner = null
     }
 }
