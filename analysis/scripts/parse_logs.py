@@ -11,6 +11,15 @@ from dataclasses import dataclass
 
 
 @dataclass
+class ColdStartMetrics:
+    """Cold start timing metrics."""
+    model_load_ms: float
+    session_create_ms: float  # QNN compilation time
+    first_inference_ms: float
+    total_cold_ms: float
+
+
+@dataclass
 class KpiMetrics:
     """Aggregated KPI metrics from a benchmark run."""
     # Latency metrics
@@ -21,6 +30,13 @@ class KpiMetrics:
     latency_min: float
     latency_max: float
     inference_count: int
+
+    # Throughput
+    fps: float  # Inferences per second
+
+    # Thermal drift metrics (for sustained performance analysis)
+    first_30s_p50: float  # Latency p50 in first 30 seconds
+    last_30s_p50: float   # Latency p50 in last 30 seconds
 
     # Thermal metrics
     thermal_start: float
@@ -38,6 +54,9 @@ class KpiMetrics:
 
     # Duration
     duration_seconds: float
+
+    # Cold start (optional, from metadata)
+    cold_start: Optional[ColdStartMetrics] = None
 
 
 def load_metadata(file_path: str) -> dict:
@@ -101,12 +120,13 @@ def split_events(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     return inference_df, system_df
 
 
-def calculate_metrics(df: pd.DataFrame) -> KpiMetrics:
+def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
     """
     Calculate aggregated KPI metrics from a log file.
 
     Args:
         df: Full log DataFrame
+        metadata: Optional metadata dict from CSV header
 
     Returns:
         KpiMetrics with calculated values
@@ -115,6 +135,19 @@ def calculate_metrics(df: pd.DataFrame) -> KpiMetrics:
 
     # Latency metrics
     latencies = inference_df['latency_ms'].dropna()
+
+    # Duration
+    duration = df['elapsed_seconds'].max()
+
+    # Throughput (FPS)
+    fps = len(latencies) / duration if duration > 0 else 0
+
+    # First 30s and Last 30s latency p50 (for thermal drift analysis)
+    first_30s_latencies = inference_df[inference_df['elapsed_seconds'] <= 30]['latency_ms'].dropna()
+    last_30s_latencies = inference_df[inference_df['elapsed_seconds'] >= duration - 30]['latency_ms'].dropna()
+
+    first_30s_p50 = first_30s_latencies.quantile(0.50) if len(first_30s_latencies) > 0 else 0
+    last_30s_p50 = last_30s_latencies.quantile(0.50) if len(last_30s_latencies) > 0 else 0
 
     # Thermal metrics
     thermals = system_df['thermal_c'].dropna()
@@ -134,8 +167,25 @@ def calculate_metrics(df: pd.DataFrame) -> KpiMetrics:
     # Memory metrics
     memories = system_df['memory_mb'].dropna()
 
-    # Duration
-    duration = df['elapsed_seconds'].max()
+    # Cold start metrics from metadata
+    cold_start = None
+    if metadata:
+        try:
+            model_load = float(metadata.get('model_load_ms', 0))
+            session_create = float(metadata.get('session_create_ms', 0))
+            first_inf_str = metadata.get('first_inference_ms', 'N/A')
+            first_inf = float(first_inf_str) if first_inf_str != 'N/A' else 0
+            total_cold = float(metadata.get('total_cold_ms', 0))
+
+            if model_load > 0 or session_create > 0:
+                cold_start = ColdStartMetrics(
+                    model_load_ms=model_load,
+                    session_create_ms=session_create,
+                    first_inference_ms=first_inf,
+                    total_cold_ms=total_cold
+                )
+        except (ValueError, TypeError):
+            pass
 
     return KpiMetrics(
         # Latency
@@ -146,6 +196,13 @@ def calculate_metrics(df: pd.DataFrame) -> KpiMetrics:
         latency_min=latencies.min() if len(latencies) > 0 else 0,
         latency_max=latencies.max() if len(latencies) > 0 else 0,
         inference_count=len(latencies),
+
+        # Throughput
+        fps=fps,
+
+        # Thermal drift
+        first_30s_p50=first_30s_p50,
+        last_30s_p50=last_30s_p50,
 
         # Thermal
         thermal_start=thermals.iloc[0] if len(thermals) > 0 else 0,
@@ -162,7 +219,10 @@ def calculate_metrics(df: pd.DataFrame) -> KpiMetrics:
         memory_mean=memories.mean() if len(memories) > 0 else 0,
 
         # Duration
-        duration_seconds=duration
+        duration_seconds=duration,
+
+        # Cold start
+        cold_start=cold_start
     )
 
 
@@ -243,9 +303,17 @@ def print_single_report(file_path: str):
     print(f"\nTotal records: {len(df)}")
     print(f"Duration: {df['elapsed_seconds'].max():.1f} seconds")
 
-    metrics = calculate_metrics(df)
+    metrics = calculate_metrics(df, metadata)
 
-    print("\n=== KPI Summary ===")
+    # Cold Start metrics
+    if metrics.cold_start:
+        print("\n=== Cold Start ===")
+        print(f"  Model Load: {metrics.cold_start.model_load_ms:.0f} ms")
+        print(f"  Session Create (QNN compile): {metrics.cold_start.session_create_ms:.0f} ms")
+        print(f"  First Inference: {metrics.cold_start.first_inference_ms:.2f} ms")
+        print(f"  Total Cold: {metrics.cold_start.total_cold_ms:.0f} ms")
+
+    print("\n=== Sustained Performance ===")
     print(f"\nLatency:")
     print(f"  P50: {metrics.latency_p50:.2f} ms")
     print(f"  P95: {metrics.latency_p95:.2f} ms")
@@ -253,6 +321,15 @@ def print_single_report(file_path: str):
     print(f"  Min: {metrics.latency_min:.2f} ms")
     print(f"  Max: {metrics.latency_max:.2f} ms")
     print(f"  Count: {metrics.inference_count}")
+
+    print(f"\nThroughput:")
+    print(f"  FPS: {metrics.fps:.2f} inf/s")
+
+    print(f"\nThermal Drift:")
+    print(f"  First 30s P50: {metrics.first_30s_p50:.2f} ms")
+    print(f"  Last 30s P50: {metrics.last_30s_p50:.2f} ms")
+    drift_pct = ((metrics.last_30s_p50 - metrics.first_30s_p50) / metrics.first_30s_p50 * 100) if metrics.first_30s_p50 > 0 else 0
+    print(f"  Drift: {drift_pct:+.1f}%")
 
     print(f"\nThermal:")
     print(f"  Start: {metrics.thermal_start:.1f} °C")
@@ -272,29 +349,36 @@ def print_single_report(file_path: str):
 
 def print_comparison_table(file_paths: list):
     """Print comparison table for multiple log files."""
-    print("=" * 110)
+    print("=" * 130)
     print("Comparison Report")
-    print("=" * 110)
+    print("=" * 130)
 
     # Header
-    print(f"\n{'File':<25} {'EP':<12} {'Model':<15} {'Mean':<10} {'P50':<10} {'P95':<10} {'Thermal':<10} {'Power':<10}")
-    print("-" * 110)
+    print(f"\n{'File':<25} {'EP':<10} {'Model':<15} {'P50':<8} {'P95':<8} {'FPS':<8} {'Cold':<8} {'Drift%':<8} {'Power':<8}")
+    print("-" * 130)
 
     for file_path in file_paths:
         metadata = load_metadata(file_path)
         df = load_log(file_path)
-        metrics = calculate_metrics(df)
+        metrics = calculate_metrics(df, metadata)
 
         name = Path(file_path).stem[-23:]
-        ep = metadata.get('execution_provider', 'N/A')[:10]
+        ep = metadata.get('execution_provider', 'N/A')[:8]
         model = metadata.get('model', 'N/A')[:13]
 
-        print(f"{name:<25} {ep:<12} {model:<15} "
-              f"{metrics.latency_mean:<10.2f} "
-              f"{metrics.latency_p50:<10.2f} "
-              f"{metrics.latency_p95:<10.2f} "
-              f"{metrics.thermal_slope:<10.2f} "
-              f"{metrics.power_mean:<10.1f}")
+        # Cold start total
+        cold_ms = metrics.cold_start.total_cold_ms if metrics.cold_start else 0
+
+        # Drift percentage
+        drift_pct = ((metrics.last_30s_p50 - metrics.first_30s_p50) / metrics.first_30s_p50 * 100) if metrics.first_30s_p50 > 0 else 0
+
+        print(f"{name:<25} {ep:<10} {model:<15} "
+              f"{metrics.latency_p50:<8.2f} "
+              f"{metrics.latency_p95:<8.2f} "
+              f"{metrics.fps:<8.1f} "
+              f"{cold_ms:<8.0f} "
+              f"{drift_pct:<+8.1f} "
+              f"{metrics.power_mean:<8.1f}")
 
     print()
 

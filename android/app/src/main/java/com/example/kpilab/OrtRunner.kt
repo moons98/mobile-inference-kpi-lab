@@ -33,6 +33,11 @@ class OrtRunner(private val context: Context) {
     private var benchmarkFrequencyHz: Int = 5
     private var warmupIterations: Int = 0
 
+    // Cold start timing (ms)
+    private var modelLoadMs: Long = 0
+    private var sessionCreateMs: Long = 0  // Includes QNN compilation
+    private var firstInferenceMs: Float = -1f
+
     // Logging
     private val kpiRecords = mutableListOf<KpiRecord>()
     private var sessionId: String = ""
@@ -71,6 +76,11 @@ class OrtRunner(private val context: Context) {
             Log.i(TAG, "NPU FP16 precision: $useNpuFp16")
             Log.i(TAG, "Context cache: $useContextCache")
 
+            // Reset cold start timing
+            modelLoadMs = 0
+            sessionCreateMs = 0
+            firstInferenceMs = -1f
+
             // Create ONNX Runtime environment
             ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING)
             Log.i(TAG, "OrtEnvironment created")
@@ -79,13 +89,17 @@ class OrtRunner(private val context: Context) {
             val sessionOptions = OrtSession.SessionOptions()
             configureExecutionProvider(sessionOptions, executionProvider)
 
-            // Load model from assets
+            // Load model from assets (timed)
+            val loadStart = System.currentTimeMillis()
             val modelBytes = loadModelFromAssets(modelType.filename)
-            Log.i(TAG, "Model loaded: ${modelType.filename} (${modelBytes.size / 1024} KB)")
+            modelLoadMs = System.currentTimeMillis() - loadStart
+            Log.i(TAG, "Model loaded: ${modelType.filename} (${modelBytes.size / 1024} KB) in ${modelLoadMs}ms")
 
-            // Create session
+            // Create session (timed - includes QNN compilation for NPU)
+            val sessionStart = System.currentTimeMillis()
             ortSession = ortEnv!!.createSession(modelBytes, sessionOptions)
-            Log.i(TAG, "OrtSession created successfully")
+            sessionCreateMs = System.currentTimeMillis() - sessionStart
+            Log.i(TAG, "OrtSession created successfully in ${sessionCreateMs}ms")
 
             // Get input/output info
             extractIOInfo()
@@ -270,6 +284,12 @@ class OrtRunner(private val context: Context) {
         val latencyMs = runInferenceInternal()
 
         if (latencyMs >= 0) {
+            // Capture first inference time (after any warmup)
+            if (firstInferenceMs < 0) {
+                firstInferenceMs = latencyMs
+                Log.i(TAG, "First inference latency: ${latencyMs}ms")
+            }
+
             kpiRecords.add(
                 KpiRecord(
                     timestamp = System.currentTimeMillis(),
@@ -389,6 +409,13 @@ class OrtRunner(private val context: Context) {
         // Benchmark config
         sb.appendLine("# frequency_hz,$benchmarkFrequencyHz")
         sb.appendLine("# warmup_iters,$warmupIterations")
+
+        // Cold start timing
+        sb.appendLine("# model_load_ms,$modelLoadMs")
+        sb.appendLine("# session_create_ms,$sessionCreateMs")
+        val totalColdMs = modelLoadMs + sessionCreateMs + (if (firstInferenceMs >= 0) firstInferenceMs.toLong() else 0)
+        sb.appendLine("# first_inference_ms,${if (firstInferenceMs >= 0) "%.2f".format(firstInferenceMs) else "N/A"}")
+        sb.appendLine("# total_cold_ms,$totalColdMs")
 
         sb.appendLine("# session_id,$sessionId")
         sb.appendLine("#")

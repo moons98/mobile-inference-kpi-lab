@@ -161,13 +161,33 @@ ONNX Runtime은 세션 생성 시 그래프를 분할(partitioning)하여 각 Op
 
 ### 측정 KPI
 
+#### Raw Metrics (앱에서 수집)
+
 | KPI | 단위 | 수집 주기 | 설명 |
 |-----|------|----------|------|
 | **Latency** | ms | 매 추론 | 단일 추론 지연시간 |
-| **Throughput** | inf/s | 실시간 계산 | 초당 추론 횟수 |
 | **Thermal** | °C | 1초 | SoC 온도 |
 | **Power** | mW | 1초 | 전력 소비 |
 | **Memory** | MB | 5초 | VmRSS 메모리 |
+
+#### Cold Start Metrics (CSV 헤더에 기록)
+
+| 메트릭 | 단위 | 설명 |
+|--------|------|------|
+| **model_load_ms** | ms | ONNX 모델 파일 로드 시간 |
+| **session_create_ms** | ms | ORT 세션 생성 시간 (QNN 컴파일 포함) |
+| **first_inference_ms** | ms | 첫 번째 추론 지연시간 |
+| **total_cold_ms** | ms | 전체 Cold Start 시간 (위 3개 합계) |
+
+#### Summary Statistics (분석 도구에서 계산)
+
+| 메트릭 | 단위 | 설명 |
+|--------|------|------|
+| **p50, p95** | ms | Latency 백분위수 |
+| **fps** | inf/s | 초당 추론 횟수 (throughput) |
+| **first_30s_p50** | ms | 처음 30초 동안의 Latency p50 |
+| **last_30s_p50** | ms | 마지막 30초 동안의 Latency p50 |
+| **latency_drift_pct** | % | (last_30s - first_30s) / first_30s × 100 (thermal throttling 지표) |
 
 ### 데이터 Export
 
@@ -266,6 +286,10 @@ ONNX Runtime은 세션 생성 시 그래프를 분할(partitioning)하여 각 Op
 # precision,FP32
 # frequency_hz,5
 # warmup_iters,10
+# model_load_ms,45
+# session_create_ms,1823
+# first_inference_ms,12.34
+# total_cold_ms,1880
 # session_id,ort_mnv2_npu_5hz_w_1705123456789
 #
 timestamp,event_type,latency_ms,thermal_c,power_mw,memory_mb,is_foreground
@@ -274,7 +298,9 @@ timestamp,event_type,latency_ms,thermal_c,power_mw,memory_mb,is_foreground
 1705123458000,SYSTEM,,38.5,2200,,true
 ```
 
-> **Note**: `memory_mb`가 비어있으면 해당 interval에서 측정되지 않음 (5초마다 측정)
+> **Note**:
+> - `memory_mb`가 비어있으면 해당 interval에서 측정되지 않음 (5초마다 측정)
+> - `session_create_ms`는 QNN EP 사용 시 HTP 그래프 컴파일 시간을 포함
 
 ## 분석 방법
 
