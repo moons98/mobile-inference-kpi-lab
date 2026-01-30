@@ -97,12 +97,12 @@ python scripts/export_to_onnx.py --export-mobilenetv2-quantized --quant-method s
 ONNX 모델을 `android/app/src/main/assets/`에 배치:
 ```
 assets/
-├── mobilenetv2_torchvision.onnx      # FP32 MobileNetV2
-├── mobilenetv2_int8_dynamic.onnx     # INT8 Dynamic 양자화
-├── mobilenetv2_int8_qdq.onnx         # INT8 QDQ 양자화
-├── yolov8n_ultralytics.onnx          # FP32 YOLOv8n
-├── yolov8n_int8_dynamic.onnx         # INT8 Dynamic 양자화
-└── yolov8n_int8_qdq.onnx             # INT8 QDQ 양자화
+├── mobilenetv2.onnx              # FP32 MobileNetV2
+├── mobilenetv2_int8_dynamic.onnx # INT8 Dynamic 양자화
+├── mobilenetv2_int8_qdq.onnx     # INT8 QDQ 양자화
+├── yolov8n.onnx                  # FP32 YOLOv8n
+├── yolov8n_int8_dynamic.onnx     # INT8 Dynamic 양자화
+└── yolov8n_int8_qdq.onnx         # INT8 QDQ 양자화
 ```
 
 ### 2. Android 앱 빌드
@@ -136,10 +136,10 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 | 모델 | 파일명 | 입력 크기 | 양자화 |
 |------|--------|-----------|--------|
-| MobileNetV2 | `mobilenetv2_torchvision.onnx` | 1x3x224x224 | FP32 |
+| MobileNetV2 | `mobilenetv2.onnx` | 1x3x224x224 | FP32 |
 | MobileNetV2 (INT8 Dynamic) | `mobilenetv2_int8_dynamic.onnx` | 1x3x224x224 | INT8 Dynamic |
 | MobileNetV2 (INT8 QDQ) | `mobilenetv2_int8_qdq.onnx` | 1x3x224x224 | INT8 QDQ |
-| YOLOv8n | `yolov8n_ultralytics.onnx` | 1x3x640x640 | FP32 |
+| YOLOv8n | `yolov8n.onnx` | 1x3x640x640 | FP32 |
 | YOLOv8n (INT8 Dynamic) | `yolov8n_int8_dynamic.onnx` | 1x3x640x640 | INT8 Dynamic |
 | YOLOv8n (INT8 QDQ) | `yolov8n_int8_qdq.onnx` | 1x3x640x640 | INT8 QDQ |
 
@@ -158,13 +158,16 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 ### 데이터 Export
 
 1. 벤치마크 완료 후 "EXPORT CSV" 클릭
-2. 파일 위치: `/sdcard/Android/data/com.example.kpilab/files/Documents/`
-3. ADB로 추출:
+2. 파일명 형식: `kpi_{Model}_{EP}_{timestamp}.csv`
+3. 파일 위치: `/sdcard/Android/data/com.example.kpilab/files/Documents/`
+4. ADB로 추출:
    ```bash
-   adb pull /sdcard/Android/data/com.example.kpilab/files/Documents/ ./data/
+   adb pull /sdcard/Android/data/com.example.kpilab/files/Documents/ ./logs/
    ```
 
 ## CSV 포맷
+
+로그 파일명: `kpi_{Model}_{EP}_{timestamp}.csv` (예: `kpi_MobileNetV2_QNNNPU_20260130_150850.csv`)
 
 ```csv
 # device_manufacturer,Samsung
@@ -173,13 +176,20 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 # soc_model,SM8650
 # android_version,14
 # api_level,34
+# app_version,1.0
+# app_build,1
 # runtime,ONNX Runtime
+# ort_version,1.17.0
 # execution_provider,QNN_NPU
-# model,MobileNetV2 (ONNX)
+# model,MobileNetV2
+# model_file,mobilenetv2.onnx
+# precision,FP32
+# frequency_hz,5
+# warmup_iters,10
 # session_id,ort_mnv2_npu_5hz_w_1705123456789
 #
 timestamp,event_type,latency_ms,thermal_c,power_mw,memory_mb,is_foreground
-1705123456789,INFERENCE,12.34,,,, true
+1705123456789,INFERENCE,12.34,,,,true
 1705123457000,SYSTEM,,38.2,2150,245,true
 1705123458000,SYSTEM,,38.5,2200,,true
 ```
@@ -198,10 +208,13 @@ pip install -r requirements.txt
 
 ```bash
 # 단일 로그 분석
-python analysis/scripts/parse_logs.py data/kpi_log_xxx.csv
+python analysis/scripts/parse_logs.py logs/kpi_MobileNetV2_QNNNPU_xxx.csv
+
+# 여러 로그 비교 분석
+python analysis/scripts/parse_logs.py logs/
 
 # 시각화
-python analysis/scripts/plot_kpi.py data/kpi_log_xxx.csv
+python analysis/scripts/plot_kpi.py logs/kpi_MobileNetV2_QNNNPU_xxx.csv logs/
 
 # Jupyter notebook
 jupyter notebook analysis/notebooks/

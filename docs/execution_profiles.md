@@ -189,10 +189,10 @@ data class BenchmarkConfig(
 
 | 모델 | 파일명 | 입력 크기 | 포맷 | 양자화 |
 |------|--------|-----------|------|--------|
-| MobileNetV2 | `mobilenetv2_torchvision.onnx` | 1x3x224x224 | NCHW | FP32 |
+| MobileNetV2 | `mobilenetv2.onnx` | 1x3x224x224 | NCHW | FP32 |
 | MobileNetV2 (INT8 Dynamic) | `mobilenetv2_int8_dynamic.onnx` | 1x3x224x224 | NCHW | INT8 Dynamic |
 | MobileNetV2 (INT8 QDQ) | `mobilenetv2_int8_qdq.onnx` | 1x3x224x224 | NCHW | INT8 QDQ |
-| YOLOv8n | `yolov8n_ultralytics.onnx` | 1x3x640x640 | NCHW | FP32 |
+| YOLOv8n | `yolov8n.onnx` | 1x3x640x640 | NCHW | FP32 |
 | YOLOv8n (INT8 Dynamic) | `yolov8n_int8_dynamic.onnx` | 1x3x640x640 | NCHW | INT8 Dynamic |
 | YOLOv8n (INT8 QDQ) | `yolov8n_int8_qdq.onnx` | 1x3x640x640 | NCHW | INT8 QDQ |
 
