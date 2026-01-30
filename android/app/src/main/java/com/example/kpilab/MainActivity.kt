@@ -255,7 +255,6 @@ class MainActivity : AppCompatActivity() {
         binding.radioFreq10.isEnabled = enabled
 
         // Options
-        binding.checkWarmup.isEnabled = enabled
         binding.checkFp16.isEnabled = enabled
         binding.checkCache.isEnabled = enabled
         binding.radioGroupDuration.isEnabled = enabled
@@ -292,7 +291,6 @@ class MainActivity : AppCompatActivity() {
             modelType = modelType,
             executionProvider = executionProvider,
             frequencyHz = frequencyHz,
-            warmUpEnabled = binding.checkWarmup.isChecked,
             durationMinutes = durationMinutes,
             useNpuFp16 = binding.checkFp16.isChecked,
             useContextCache = binding.checkCache.isChecked
@@ -374,24 +372,43 @@ class MainActivity : AppCompatActivity() {
             val modelName = benchmarkRunner.currentModel?.displayName
                 ?.replace(" ", "")
                 ?.replace("-", "")
+                ?.replace("(", "")
+                ?.replace(")", "")
                 ?: "Unknown"
             val ep = benchmarkRunner.getActiveExecutionProvider()
                 .replace("_", "")
                 .uppercase()
-            val filename = "kpi_${modelName}_${ep}_${timestamp}.csv"
+            val baseFilename = "kpi_${modelName}_${ep}_${timestamp}"
 
             // Save to app's external files directory
             val exportDir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
             if (exportDir != null) {
-                val file = File(exportDir, filename)
-                FileWriter(file).use { writer ->
+                // Save CSV
+                val csvFile = File(exportDir, "${baseFilename}.csv")
+                FileWriter(csvFile).use { writer ->
                     writer.write(csvData)
                 }
+                Log.i(TAG, "Exported $recordCount records to: ${csvFile.absolutePath}")
 
-                Log.i(TAG, "Exported $recordCount records to: ${file.absolutePath}")
+                // Save ORT logs alongside CSV
+                var logExported = false
+                benchmarkRunner.getOrtLogInfo()?.let { ortInfo ->
+                    if (ortInfo.rawLogs.isNotBlank()) {
+                        val logFile = File(exportDir, "${baseFilename}_ort.log")
+                        FileWriter(logFile).use { writer ->
+                            writer.write(ortInfo.toSummary())
+                            writer.write("\n\n=== Raw Logs ===\n")
+                            writer.write(ortInfo.rawLogs)
+                        }
+                        Log.i(TAG, "ORT logs exported: ${logFile.absolutePath}")
+                        logExported = true
+                    }
+                }
+
+                val logMsg = if (logExported) " + ORT log" else ""
                 Toast.makeText(
                     this,
-                    "Exported $recordCount records to:\n${file.name}",
+                    "Exported $recordCount records$logMsg to:\n${csvFile.name}",
                     Toast.LENGTH_LONG
                 ).show()
             } else {
