@@ -55,6 +55,7 @@ build/
 analysis/data/*.csv
 analysis/data/*.json
 results/
+outputs/
 *.png
 *.pdf
 
