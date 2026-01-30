@@ -33,6 +33,7 @@ captures/
 models/original/*.onnx
 models/converted/
 models/optimized/
+android/app/src/main/assets/*.onnx
 
 # Python
 __pycache__/
@@ -53,6 +54,7 @@ build/
 # Analysis data
 analysis/data/*.csv
 analysis/data/*.json
+results/
 *.png
 *.pdf
 
@@ -70,3 +72,6 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# data
+scripts/calibration_data
