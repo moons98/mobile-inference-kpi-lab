@@ -140,7 +140,9 @@ class BenchmarkRunner(
             val runner = OrtRunner(context)
             val success = runner.initialize(
                 config.modelType,
-                config.executionProvider
+                config.executionProvider,
+                config.useNpuFp16,
+                config.useContextCache
             )
             if (success) {
                 ortRunner = runner

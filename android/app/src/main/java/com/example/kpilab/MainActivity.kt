@@ -3,7 +3,7 @@ package com.example.kpilab
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
-import android.widget.RadioButton
+import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -27,8 +27,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var benchmarkRunner: BenchmarkRunner
 
     private var isForeground = true
-    private var selectedModelId = R.id.radioMobilenetV2
-    private lateinit var modelRadioButtons: List<RadioButton>
+
+    // All available model types for the spinner
+    private val modelTypes = OnnxModelType.values()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,7 +39,7 @@ class MainActivity : AppCompatActivity() {
 
         initializeComponents()
         setupUI()
-        setupModelRadioButtons()
+        setupModelSpinner()
         observeProgress()
     }
 
@@ -66,22 +67,14 @@ class MainActivity : AppCompatActivity() {
         binding.btnExport.isEnabled = false
     }
 
-    private fun setupModelRadioButtons() {
-        modelRadioButtons = listOf(
-            binding.radioMobilenetV2,
-            binding.radioMobilenetV2Quant
+    private fun setupModelSpinner() {
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            modelTypes.map { it.displayName }
         )
-
-        modelRadioButtons.forEach { radioButton ->
-            radioButton.setOnClickListener {
-                selectModelRadio(radioButton.id)
-            }
-        }
-    }
-
-    private fun selectModelRadio(id: Int) {
-        selectedModelId = id
-        modelRadioButtons.forEach { it.isChecked = (it.id == id) }
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.spinnerModel.adapter = adapter
     }
 
     private fun observeProgress() {
@@ -146,9 +139,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setControlsEnabled(enabled: Boolean) {
         // Model selection
-        binding.radioGroupModel.isEnabled = enabled
-        binding.radioMobilenetV2.isEnabled = enabled
-        binding.radioMobilenetV2Quant.isEnabled = enabled
+        binding.spinnerModel.isEnabled = enabled
 
         // Execution provider selection
         binding.radioGroupPath.isEnabled = enabled
@@ -164,18 +155,16 @@ class MainActivity : AppCompatActivity() {
 
         // Options
         binding.checkWarmup.isEnabled = enabled
+        binding.checkFp16.isEnabled = enabled
+        binding.checkCache.isEnabled = enabled
         binding.radioGroupDuration.isEnabled = enabled
         binding.radioDuration5.isEnabled = enabled
         binding.radioDuration10.isEnabled = enabled
     }
 
     private fun buildConfig(): BenchmarkConfig {
-        // Model type
-        val modelType = when (selectedModelId) {
-            R.id.radioMobilenetV2 -> OnnxModelType.MOBILENET_V2
-            R.id.radioMobilenetV2Quant -> OnnxModelType.MOBILENET_V2_QUANTIZED
-            else -> OnnxModelType.MOBILENET_V2
-        }
+        // Model type from spinner selection
+        val modelType = modelTypes[binding.spinnerModel.selectedItemPosition]
 
         // Execution provider
         val executionProvider = when (binding.radioGroupPath.checkedRadioButtonId) {
@@ -203,7 +192,9 @@ class MainActivity : AppCompatActivity() {
             executionProvider = executionProvider,
             frequencyHz = frequencyHz,
             warmUpEnabled = binding.checkWarmup.isChecked,
-            durationMinutes = durationMinutes
+            durationMinutes = durationMinutes,
+            useNpuFp16 = binding.checkFp16.isChecked,
+            useContextCache = binding.checkCache.isChecked
         )
     }
 

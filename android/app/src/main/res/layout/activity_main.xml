@@ -43,28 +43,12 @@
                     android:textColor="@color/text_secondary"
                     android:layout_marginBottom="8dp" />
 
-                <LinearLayout
-                    android:id="@+id/radioGroupModel"
+                <Spinner
+                    android:id="@+id/spinnerModel"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-
-                    <RadioButton
-                        android:id="@+id/radioMobilenetV2"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="MobileNetV2"
-                        android:checked="true" />
-
-                    <RadioButton
-                        android:id="@+id/radioMobilenetV2Quant"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="MobileNetV2 (INT8)" />
-
-                </LinearLayout>
+                    android:layout_height="48dp"
+                    android:background="@android:drawable/btn_dropdown"
+                    android:spinnerMode="dropdown" />
 
             </LinearLayout>
 
@@ -202,6 +186,22 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="Warm-up enabled"
+                    android:layout_marginBottom="8dp" />
+
+                <CheckBox
+                    android:id="@+id/checkFp16"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="NPU FP16 precision (faster, FP32 models only)"
+                    android:checked="true"
+                    android:layout_marginBottom="8dp" />
+
+                <CheckBox
+                    android:id="@+id/checkCache"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="QNN context cache (faster reload)"
+                    android:checked="false"
                     android:layout_marginBottom="8dp" />
 
                 <TextView

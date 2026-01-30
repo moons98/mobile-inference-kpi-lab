@@ -13,7 +13,13 @@ data class BenchmarkConfig(
     // Benchmark settings
     val frequencyHz: Int = 5,
     val warmUpEnabled: Boolean = false,
-    val durationMinutes: Int = 5
+    val durationMinutes: Int = 5,
+
+    // NPU precision: true = FP16, false = FP32 (only affects FP32 models on NPU)
+    val useNpuFp16: Boolean = true,
+
+    // QNN context cache: caches compiled HTP graph for faster subsequent loads
+    val useContextCache: Boolean = false
 ) {
     /**
      * Calculate interval between inferences in milliseconds
@@ -35,7 +41,11 @@ data class BenchmarkConfig(
 
         val modelStr = when (modelType) {
             OnnxModelType.MOBILENET_V2 -> "mnv2"
-            OnnxModelType.MOBILENET_V2_QUANTIZED -> "mnv2_q"
+            OnnxModelType.MOBILENET_V2_INT8_DYNAMIC -> "mnv2_dyn"
+            OnnxModelType.MOBILENET_V2_INT8_QDQ -> "mnv2_qdq"
+            OnnxModelType.YOLOV8N -> "yolov8n"
+            OnnxModelType.YOLOV8N_INT8_DYNAMIC -> "yolov8n_dyn"
+            OnnxModelType.YOLOV8N_INT8_QDQ -> "yolov8n_qdq"
         }
 
         val epStr = when (executionProvider) {
@@ -45,11 +55,14 @@ data class BenchmarkConfig(
         }
 
         val warmStr = if (warmUpEnabled) "w" else "nw"
-        return "ort_${modelStr}_${epStr}_${frequencyHz}hz_${warmStr}_${timestamp}"
+        val precStr = if (useNpuFp16) "fp16" else "fp32"
+        return "ort_${modelStr}_${epStr}_${precStr}_${frequencyHz}hz_${warmStr}_${timestamp}"
     }
 
     override fun toString(): String {
+        val precStr = if (useNpuFp16) "FP16" else "FP32"
+        val cacheStr = if (useContextCache) "cached" else "no-cache"
         return "BenchmarkConfig(model=${modelType.displayName}, ep=${executionProvider.displayName}, " +
-                "freq=${frequencyHz}Hz, warmUp=$warmUpEnabled, duration=${durationMinutes}min)"
+                "prec=$precStr, cache=$cacheStr, freq=${frequencyHz}Hz, warmUp=$warmUpEnabled, duration=${durationMinutes}min)"
     }
 }

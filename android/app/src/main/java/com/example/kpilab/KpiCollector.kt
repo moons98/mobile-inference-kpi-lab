@@ -140,47 +140,44 @@ class KpiCollector(private val context: Context) {
 
     private fun logAvailableThermalZones() {
         val thermalDir = File("/sys/class/thermal/")
-        Log.i(TAG, "=== Available thermal zones ===")
+        Log.i(TAG, "=== Thermal zones summary ===")
         if (thermalDir.exists() && thermalDir.isDirectory) {
             val zones = thermalDir.listFiles()?.filter { it.name.startsWith("thermal_zone") }
             Log.i(TAG, "Found ${zones?.size ?: 0} thermal zones")
 
-            // Try to read type of each zone
+            // Only log key zones (CPU, GPU, NPU related)
+            val keyTypes = listOf("cpu", "gpu", "nsp", "aoss", "ddr")
+            var keyZoneCount = 0
+
             zones?.forEach { zone ->
                 try {
                     val typeFile = File(zone, "type")
                     val tempFile = File(zone, "temp")
-                    val typeExists = typeFile.exists()
-                    val tempExists = tempFile.exists()
-                    val tempCanRead = tempFile.canRead()
 
-                    if (typeExists && tempExists) {
+                    if (typeFile.exists() && tempFile.exists() && tempFile.canRead()) {
                         val type = BufferedReader(FileReader(typeFile)).use { it.readLine() }
-                        val temp = if (tempCanRead) {
-                            try {
+                        // Only log if it matches key types
+                        if (keyTypes.any { type.lowercase().contains(it) }) {
+                            val temp = try {
                                 BufferedReader(FileReader(tempFile)).use { it.readLine() }
-                            } catch (e: Exception) {
-                                "read_error: ${e.message}"
-                            }
-                        } else {
-                            "no_permission"
+                            } catch (e: Exception) { "error" }
+                            Log.i(TAG, "  ${zone.name}: type=$type, temp=$temp")
+                            keyZoneCount++
                         }
-                        Log.i(TAG, "  ${zone.name}: type=$type, temp=$temp, canRead=$tempCanRead")
-                    } else {
-                        Log.i(TAG, "  ${zone.name}: typeExists=$typeExists, tempExists=$tempExists")
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "  ${zone.name}: error=${e.message}")
+                    // Skip errors silently
                 }
             }
+            Log.i(TAG, "Logged $keyZoneCount key thermal zones (cpu/gpu/npu/aoss/ddr)")
         } else {
-            Log.w(TAG, "Thermal directory does not exist or is not a directory")
+            Log.w(TAG, "Thermal directory does not exist")
         }
 
         // Also try battery temperature
         val batteryTemp = readBatteryTemperature()
         Log.i(TAG, "Battery temperature fallback: $batteryTemp °C")
-        Log.i(TAG, "================================")
+        Log.i(TAG, "=============================")
     }
 
     /**

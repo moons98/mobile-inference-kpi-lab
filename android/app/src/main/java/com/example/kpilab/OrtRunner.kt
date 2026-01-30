@@ -3,8 +3,6 @@ package com.example.kpilab
 import ai.onnxruntime.*
 import android.content.Context
 import android.util.Log
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.*
 
@@ -28,9 +26,8 @@ class OrtRunner(private val context: Context) {
     private var inputShape: LongArray = longArrayOf()
     private var outputName: String = ""
 
-    // Pre-allocated input tensor data
+    // Pre-allocated input tensor data (all models use FLOAT input)
     private var inputFloatData: FloatArray? = null
-    private var inputByteData: ByteArray? = null
 
     // Logging
     private val kpiRecords = mutableListOf<KpiRecord>()
@@ -47,18 +44,28 @@ class OrtRunner(private val context: Context) {
         val isForeground: Boolean
     )
 
+    // Store settings for configureExecutionProvider
+    private var useNpuFp16: Boolean = true
+    private var useContextCache: Boolean = false
+
     /**
      * Initialize ONNX Runtime session with specified model and execution provider
      */
     fun initialize(
         modelType: OnnxModelType,
-        executionProvider: ExecutionProvider
+        executionProvider: ExecutionProvider,
+        useNpuFp16: Boolean = true,
+        useContextCache: Boolean = false
     ): Boolean {
         return try {
             currentModel = modelType
+            this.useNpuFp16 = useNpuFp16
+            this.useContextCache = useContextCache
             Log.i(TAG, "=== OrtRunner Initialization ===")
             Log.i(TAG, "Model: ${modelType.displayName}")
             Log.i(TAG, "Requested EP: ${executionProvider.displayName}")
+            Log.i(TAG, "NPU FP16 precision: $useNpuFp16")
+            Log.i(TAG, "Context cache: $useContextCache")
 
             // Create ONNX Runtime environment
             ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING)
@@ -108,7 +115,20 @@ class OrtRunner(private val context: Context) {
                     qnnOptions["backend_path"] = "libQnnHtp.so"
                     qnnOptions["htp_performance_mode"] = "burst"
                     qnnOptions["htp_graph_finalization_optimization_mode"] = "3"
-                    qnnOptions["enable_htp_fp16_precision"] = "1"
+                    qnnOptions["enable_htp_fp16_precision"] = if (useNpuFp16) "1" else "0"
+
+                    // Context cache options
+                    if (useContextCache) {
+                        val model = currentModel
+                        if (model != null) {
+                            val cacheDir = context.cacheDir
+                            val precStr = if (useNpuFp16) "fp16" else "fp32"
+                            val cachePath = "${cacheDir.absolutePath}/qnn_${model.filename}_${precStr}.bin"
+                            qnnOptions["qnn_context_cache_enable"] = "1"
+                            qnnOptions["qnn_context_cache_path"] = cachePath
+                            Log.i(TAG, "Context cache enabled: $cachePath")
+                        }
+                    }
 
                     // Log options
                     qnnOptions.forEach { (key, value) ->
@@ -186,19 +206,15 @@ class OrtRunner(private val context: Context) {
         val model = currentModel ?: return
 
         // ONNX uses NCHW format
+        // All models expect FLOAT input (even quantized models - quantization is internal)
         val totalElements = model.inputChannels * model.inputHeight * model.inputWidth
 
-        if (model.dataType == DataType.FLOAT32) {
-            inputFloatData = FloatArray(totalElements) {
-                (Math.random() * 255).toFloat() / 255.0f
-            }
-        } else {
-            inputByteData = ByteArray(totalElements) {
-                (Math.random() * 255).toInt().toByte()
-            }
+        inputFloatData = FloatArray(totalElements) {
+            (Math.random() * 255).toFloat() / 255.0f
         }
 
-        Log.i(TAG, "Input data allocated: $totalElements elements (${model.dataType})")
+        val quantStr = if (model.isQuantized) " (internally quantized)" else ""
+        Log.i(TAG, "Input data allocated: $totalElements FLOAT elements$quantStr")
     }
 
     private fun logSessionInfo() {
@@ -274,21 +290,12 @@ class OrtRunner(private val context: Context) {
         return try {
             val startTime = System.nanoTime()
 
-            // Create input tensor
-            val inputTensor = if (model.dataType == DataType.FLOAT32) {
-                OnnxTensor.createTensor(
-                    env,
-                    FloatBuffer.wrap(inputFloatData!!),
-                    inputShape
-                )
-            } else {
-                OnnxTensor.createTensor(
-                    env,
-                    ByteBuffer.wrap(inputByteData!!),
-                    inputShape,
-                    OnnxJavaType.UINT8
-                )
-            }
+            // Create input tensor (all models use FLOAT input)
+            val inputTensor = OnnxTensor.createTensor(
+                env,
+                FloatBuffer.wrap(inputFloatData!!),
+                inputShape
+            )
 
             // Run inference
             val inputs = Collections.singletonMap(inputName, inputTensor)
@@ -409,7 +416,6 @@ class OrtRunner(private val context: Context) {
         ortEnv = null
 
         inputFloatData = null
-        inputByteData = null
         currentModel = null
 
         Log.i(TAG, "Resources released")
@@ -426,32 +432,67 @@ enum class OnnxModelType(
     val inputHeight: Int,
     val inputChannels: Int,
     val outputShape: IntArray,
-    val dataType: DataType
+    val isQuantized: Boolean  // Whether model uses internal quantization (INT8)
 ) {
+    // MobileNetV2 models (224x224, ImageNet classification)
     MOBILENET_V2(
-        displayName = "MobileNetV2 (ONNX)",
+        displayName = "MobileNetV2",
         filename = "mobilenetv2.onnx",
         inputWidth = 224,
         inputHeight = 224,
         inputChannels = 3,
         outputShape = intArrayOf(1, 1000),
-        dataType = DataType.FLOAT32
+        isQuantized = false
     ),
-    MOBILENET_V2_QUANTIZED(
-        displayName = "MobileNetV2 INT8 (ONNX)",
-        filename = "mobilenetv2_quantized.onnx",
+    MOBILENET_V2_INT8_DYNAMIC(
+        displayName = "MobileNetV2 INT8 (Dynamic)",
+        filename = "mobilenetv2_int8_dynamic.onnx",
         inputWidth = 224,
         inputHeight = 224,
         inputChannels = 3,
         outputShape = intArrayOf(1, 1000),
-        dataType = DataType.UINT8
+        isQuantized = true  // Dynamic quant: input is FLOAT, quantized internally
+    ),
+    MOBILENET_V2_INT8_QDQ(
+        displayName = "MobileNetV2 INT8 (QDQ)",
+        filename = "mobilenetv2_int8_qdq.onnx",
+        inputWidth = 224,
+        inputHeight = 224,
+        inputChannels = 3,
+        outputShape = intArrayOf(1, 1000),
+        isQuantized = true  // QDQ: input is FLOAT, Q node quantizes it
+    ),
+    // YOLOv8n models (640x640, object detection)
+    YOLOV8N(
+        displayName = "YOLOv8n",
+        filename = "yolov8n.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        outputShape = intArrayOf(1, 84, 8400),
+        isQuantized = false
+    ),
+    YOLOV8N_INT8_DYNAMIC(
+        displayName = "YOLOv8n INT8 (Dynamic)",
+        filename = "yolov8n_int8_dynamic.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        outputShape = intArrayOf(1, 84, 8400),
+        isQuantized = true  // Dynamic quant: input is FLOAT, quantized internally
+    ),
+    YOLOV8N_INT8_QDQ(
+        displayName = "YOLOv8n INT8 (QDQ)",
+        filename = "yolov8n_int8_qdq.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        outputShape = intArrayOf(1, 84, 8400),
+        isQuantized = true  // QDQ: input is FLOAT, Q node quantizes it
     );
 
     val inputShape: LongArray
         get() = longArrayOf(1, inputChannels.toLong(), inputHeight.toLong(), inputWidth.toLong())  // NCHW
-
-    val isQuantized: Boolean
-        get() = dataType != DataType.FLOAT32
 }
 
 /**
@@ -463,10 +504,3 @@ enum class ExecutionProvider(val displayName: String) {
     CPU("CPU")
 }
 
-/**
- * Data type for model inputs
- */
-enum class DataType {
-    FLOAT32,
-    UINT8
-}
