@@ -285,77 +285,102 @@ def load_all_logs(directory: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def print_single_report(file_path: str):
-    """Print detailed report for a single log file."""
-    print(f"Loading: {file_path}")
+def generate_single_report(file_path: str) -> Tuple[str, dict, KpiMetrics]:
+    """
+    Generate detailed report string for a single log file.
+
+    Args:
+        file_path: Path to CSV file
+
+    Returns:
+        Tuple of (report_string, metadata, metrics)
+    """
+    lines = []
+    lines.append(f"Loading: {file_path}")
 
     # Load metadata
     metadata = load_metadata(file_path)
     if metadata:
-        print("\n=== Metadata ===")
-        print(f"  Device: {metadata.get('device_manufacturer', 'N/A')} {metadata.get('device_model', 'N/A')}")
-        print(f"  SoC: {metadata.get('soc_model', 'N/A')}")
-        print(f"  EP: {metadata.get('execution_provider', 'N/A')}")
-        print(f"  Model: {metadata.get('model', 'N/A')}")
+        lines.append("\n=== Metadata ===")
+        lines.append(f"  Device: {metadata.get('device_manufacturer', 'N/A')} {metadata.get('device_model', 'N/A')}")
+        lines.append(f"  SoC: {metadata.get('soc_model', 'N/A')}")
+        lines.append(f"  EP: {metadata.get('execution_provider', 'N/A')}")
+        lines.append(f"  Model: {metadata.get('model', 'N/A')}")
 
     df = load_log(file_path)
 
-    print(f"\nTotal records: {len(df)}")
-    print(f"Duration: {df['elapsed_seconds'].max():.1f} seconds")
+    lines.append(f"\nTotal records: {len(df)}")
+    lines.append(f"Duration: {df['elapsed_seconds'].max():.1f} seconds")
 
     metrics = calculate_metrics(df, metadata)
 
     # Cold Start metrics
     if metrics.cold_start:
-        print("\n=== Cold Start ===")
-        print(f"  Model Load: {metrics.cold_start.model_load_ms:.0f} ms")
-        print(f"  Session Create (QNN compile): {metrics.cold_start.session_create_ms:.0f} ms")
-        print(f"  First Inference: {metrics.cold_start.first_inference_ms:.2f} ms")
-        print(f"  Total Cold: {metrics.cold_start.total_cold_ms:.0f} ms")
+        lines.append("\n=== Cold Start ===")
+        lines.append(f"  Model Load: {metrics.cold_start.model_load_ms:.0f} ms")
+        lines.append(f"  Session Create (QNN compile): {metrics.cold_start.session_create_ms:.0f} ms")
+        lines.append(f"  First Inference: {metrics.cold_start.first_inference_ms:.2f} ms")
+        lines.append(f"  Total Cold: {metrics.cold_start.total_cold_ms:.0f} ms")
 
-    print("\n=== Sustained Performance ===")
-    print(f"\nLatency:")
-    print(f"  P50: {metrics.latency_p50:.2f} ms")
-    print(f"  P95: {metrics.latency_p95:.2f} ms")
-    print(f"  Mean: {metrics.latency_mean:.2f} ms (±{metrics.latency_std:.2f})")
-    print(f"  Min: {metrics.latency_min:.2f} ms")
-    print(f"  Max: {metrics.latency_max:.2f} ms")
-    print(f"  Count: {metrics.inference_count}")
+    lines.append("\n=== Sustained Performance ===")
+    lines.append(f"\nLatency:")
+    lines.append(f"  P50: {metrics.latency_p50:.2f} ms")
+    lines.append(f"  P95: {metrics.latency_p95:.2f} ms")
+    lines.append(f"  Mean: {metrics.latency_mean:.2f} ms (±{metrics.latency_std:.2f})")
+    lines.append(f"  Min: {metrics.latency_min:.2f} ms")
+    lines.append(f"  Max: {metrics.latency_max:.2f} ms")
+    lines.append(f"  Count: {metrics.inference_count}")
 
-    print(f"\nThroughput:")
-    print(f"  FPS: {metrics.fps:.2f} inf/s")
+    lines.append(f"\nThroughput:")
+    lines.append(f"  FPS: {metrics.fps:.2f} inf/s")
 
-    print(f"\nThermal Drift:")
-    print(f"  First 30s P50: {metrics.first_30s_p50:.2f} ms")
-    print(f"  Last 30s P50: {metrics.last_30s_p50:.2f} ms")
+    lines.append(f"\nThermal Drift:")
+    lines.append(f"  First 30s P50: {metrics.first_30s_p50:.2f} ms")
+    lines.append(f"  Last 30s P50: {metrics.last_30s_p50:.2f} ms")
     drift_pct = ((metrics.last_30s_p50 - metrics.first_30s_p50) / metrics.first_30s_p50 * 100) if metrics.first_30s_p50 > 0 else 0
-    print(f"  Drift: {drift_pct:+.1f}%")
+    lines.append(f"  Drift: {drift_pct:+.1f}%")
 
-    print(f"\nThermal:")
-    print(f"  Start: {metrics.thermal_start:.1f} °C")
-    print(f"  End: {metrics.thermal_end:.1f} °C")
-    print(f"  Max: {metrics.thermal_max:.1f} °C")
-    print(f"  Slope: {metrics.thermal_slope:.2f} °C/min")
+    lines.append(f"\nThermal:")
+    lines.append(f"  Start: {metrics.thermal_start:.1f} °C")
+    lines.append(f"  End: {metrics.thermal_end:.1f} °C")
+    lines.append(f"  Max: {metrics.thermal_max:.1f} °C")
+    lines.append(f"  Slope: {metrics.thermal_slope:.2f} °C/min")
 
-    print(f"\nPower:")
-    print(f"  Mean: {metrics.power_mean:.1f} mW (±{metrics.power_std:.1f})")
+    lines.append(f"\nPower:")
+    lines.append(f"  Mean: {metrics.power_mean:.1f} mW (±{metrics.power_std:.1f})")
 
-    print(f"\nMemory:")
-    print(f"  Peak: {metrics.memory_peak} MB")
-    print(f"  Mean: {metrics.memory_mean:.1f} MB")
+    lines.append(f"\nMemory:")
+    lines.append(f"  Peak: {metrics.memory_peak} MB")
+    lines.append(f"  Mean: {metrics.memory_mean:.1f} MB")
 
+    return "\n".join(lines), metadata, metrics
+
+
+def print_single_report(file_path: str):
+    """Print detailed report for a single log file."""
+    report, metadata, metrics = generate_single_report(file_path)
+    print(report)
     return metadata, metrics
 
 
-def print_comparison_table(file_paths: list):
-    """Print comparison table for multiple log files."""
-    print("=" * 130)
-    print("Comparison Report")
-    print("=" * 130)
+def generate_comparison_table(file_paths: list) -> str:
+    """
+    Generate comparison table string for multiple log files.
+
+    Args:
+        file_paths: List of paths to CSV files
+
+    Returns:
+        Comparison table as string
+    """
+    lines = []
+    lines.append("=" * 130)
+    lines.append("Comparison Report")
+    lines.append("=" * 130)
 
     # Header
-    print(f"\n{'File':<25} {'EP':<10} {'Model':<15} {'P50':<8} {'P95':<8} {'FPS':<8} {'Cold':<8} {'Drift%':<8} {'Power':<8}")
-    print("-" * 130)
+    lines.append(f"\n{'File':<25} {'EP':<10} {'Model':<15} {'P50':<8} {'P95':<8} {'FPS':<8} {'Cold':<8} {'Drift%':<8} {'Power':<8}")
+    lines.append("-" * 130)
 
     for file_path in file_paths:
         metadata = load_metadata(file_path)
@@ -372,7 +397,7 @@ def print_comparison_table(file_paths: list):
         # Drift percentage
         drift_pct = ((metrics.last_30s_p50 - metrics.first_30s_p50) / metrics.first_30s_p50 * 100) if metrics.first_30s_p50 > 0 else 0
 
-        print(f"{name:<25} {ep:<10} {model:<15} "
+        lines.append(f"{name:<25} {ep:<10} {model:<15} "
               f"{metrics.latency_p50:<8.2f} "
               f"{metrics.latency_p95:<8.2f} "
               f"{metrics.fps:<8.1f} "
@@ -380,27 +405,41 @@ def print_comparison_table(file_paths: list):
               f"{drift_pct:<+8.1f} "
               f"{metrics.power_mean:<8.1f}")
 
-    print()
+    lines.append("")
+    return "\n".join(lines)
+
+
+def print_comparison_table(file_paths: list):
+    """Print comparison table for multiple log files."""
+    report = generate_comparison_table(file_paths)
+    print(report)
 
 
 if __name__ == "__main__":
     import sys
     import argparse
+    from datetime import datetime
 
     parser = argparse.ArgumentParser(description="Parse and analyze KPI log files")
     parser.add_argument("paths", nargs="+", help="Log files or directories to analyze")
     parser.add_argument("--compare", "-c", action="store_true", help="Show comparison table")
+    parser.add_argument("--output", "-o", help="Output file path (txt). If not specified, auto-generates in input location")
+    parser.add_argument("--print", "-p", action="store_true", help="Print to console instead of saving to file")
 
     args = parser.parse_args()
 
     # Collect all log files
     log_files = []
+    input_dir = None
     for p in args.paths:
         path = Path(p)
         if path.is_dir():
+            input_dir = path
             # Support both old (kpi_log_*) and new (kpi_Model_EP_*) filename formats
             log_files.extend(sorted(path.glob("kpi_*.csv")))
         elif path.exists():
+            if input_dir is None:
+                input_dir = path.parent
             log_files.append(path)
         else:
             print(f"Warning: {p} not found")
@@ -409,10 +448,33 @@ if __name__ == "__main__":
         print("No log files found")
         sys.exit(1)
 
-    print(f"Found {len(log_files)} log file(s)\n")
+    header = f"Found {len(log_files)} log file(s)\n"
 
-    # Compare mode or single report mode
-    if args.compare or len(log_files) > 1:
-        print_comparison_table([str(f) for f in log_files])
+    # Generate report
+    is_comparison = args.compare or len(log_files) > 1
+    if is_comparison:
+        report = generate_comparison_table([str(f) for f in log_files])
     else:
-        print_single_report(str(log_files[0]))
+        report, _, _ = generate_single_report(str(log_files[0]))
+
+    full_report = header + report
+
+    # Determine output path
+    if args.print:
+        # Print to console
+        print(full_report)
+    else:
+        # Save to file
+        if args.output:
+            output_path = Path(args.output)
+        else:
+            # Auto-generate output path in input location
+            if is_comparison:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = input_dir / f"comparison_report_{timestamp}.txt"
+            else:
+                # Single file: {input_stem}_report.txt
+                output_path = input_dir / f"{log_files[0].stem}_report.txt"
+
+        output_path.write_text(full_report, encoding='utf-8')
+        print(f"Report saved to: {output_path}")
