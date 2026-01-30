@@ -44,16 +44,16 @@ class ExperimentSetLoader(private val context: Context) {
 
         // Try external storage first
         val externalSets = loadAllFromExternal()
-        if (externalSets.isNotEmpty()) {
-            Log.i(TAG, "Loaded ${externalSets.size} sets from external storage")
+        if (externalSets.second.isNotEmpty()) {
+            Log.i(TAG, "Loaded ${externalSets.second.size} sets from external storage")
             allSets.addAll(externalSets.second)
             defaults = externalSets.first
         }
 
         // Load from assets (merge with external)
         val assetsSets = loadAllFromAssets()
-        if (assetsSets.isNotEmpty()) {
-            Log.i(TAG, "Loaded ${assetsSets.size} sets from assets")
+        if (assetsSets.second.isNotEmpty()) {
+            Log.i(TAG, "Loaded ${assetsSets.second.size} sets from assets")
             // Only add sets that don't already exist (external has priority)
             val existingIds = allSets.map { it.id }.toSet()
             assetsSets.second.filter { it.id !in existingIds }.forEach { allSets.add(it) }

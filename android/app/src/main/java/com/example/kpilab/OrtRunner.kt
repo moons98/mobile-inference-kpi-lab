@@ -398,7 +398,7 @@ class OrtRunner(private val context: Context) {
 
         // Runtime info
         sb.appendLine("# runtime,ONNX Runtime")
-        sb.appendLine("# ort_version,${OrtEnvironment.getApiBase().getVersionString()}")
+        sb.appendLine("# ort_version,1.22.0")  // Matches build.gradle.kts dependency
         sb.appendLine("# execution_provider,$activeExecutionProvider")
 
         // Model info
