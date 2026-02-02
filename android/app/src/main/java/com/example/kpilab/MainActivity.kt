@@ -53,6 +53,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initializeComponents() {
+        // Initialize QNN libraries from assets
+        // This extracts QNN .so files and sets up ADSP_LIBRARY_PATH for DSP access
+        val qnnInitialized = OrtRunner.initializeQnnLibraries(this)
+        if (qnnInitialized) {
+            Log.i(TAG, "QNN libraries initialized successfully")
+        } else {
+            Log.w(TAG, "QNN libraries initialization failed - NPU may not work")
+        }
+
         kpiCollector = KpiCollector(this)
         benchmarkRunner = BenchmarkRunner(this, kpiCollector)
         experimentSetLoader = ExperimentSetLoader(this)

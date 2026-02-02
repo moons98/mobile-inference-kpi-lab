@@ -128,47 +128,118 @@ libQnnHtp.so (AAR 내장)        ← ORT AAR의 QNN 라이브러리
 
 ---
 
-### Custom QNN Skel 라이브러리 설정 (개발용)
+### Custom QNN 라이브러리 로딩 (앱 내장 방식) ✅
 
-시스템에 QNN Skel이 없는 단말에서 HTP를 테스트하려면 QNN SDK에서 Skel 라이브러리를 직접 push할 수 있습니다.
+시스템에 QNN 드라이버가 없거나 버전이 맞지 않는 경우, **앱 assets에 QNN 라이브러리를 번들링**하여 해결할 수 있습니다.
 
-> ⚠️ **주의**: 개발/테스트 목적으로만 사용. unsigned 라이브러리는 production 배포 불가.
+> ✅ 이 방식은 adb push 없이 APK만으로 동작하며, 일반 사용자 단말에서도 사용 가능합니다.
 
-**필요 조건**:
-- Qualcomm AI Engine Direct (QNN) SDK 설치
-- 단말 플랫폼에 맞는 Hexagon 버전 확인 (예: SM8550 = V73)
+**구현 완료**: [QnnLibraryManager.kt](../android/app/src/main/java/com/example/kpilab/QnnLibraryManager.kt)
+
+#### 아키텍처
+
+```
+APK 설치 시:
+  assets/qnn_libs/*.so → 앱 내부 저장소로 추출
+                         (/data/data/com.example.kpilab/files/qnn_libs/)
+
+ORT 세션 생성 시:
+  backend_path     = {app_files}/qnn_libs/libQnnHtp.so
+  skel_library_dir = {app_files}/qnn_libs/
+```
+
+#### 필요 라이브러리
+
+QNN SDK에서 다음 파일들을 `android/app/src/main/assets/qnn_libs/`에 복사:
+
+```
+assets/qnn_libs/
+├── libQnnHtp.so           # HTP 백엔드 (Stub)
+├── libQnnHtpPrepare.so    # HTP 그래프 준비 라이브러리 (필수!)
+├── libQnnHtpV73Stub.so    # V73 Stub (SM8550용)
+├── libQnnHtpV73Skel.so    # V73 Skel (DSP 실행)
+├── libQnnSystem.so        # QNN 시스템 라이브러리
+└── libQnnGpu.so           # GPU 백엔드 (선택)
+```
+
+**라이브러리 경로** (QNN SDK 2.42.0):
+```
+C:\Qualcomm\QNN\v2.42.0.251225\qairt\2.42.0.251225\lib\
+├── aarch64-android\           ← Stub 라이브러리 (.so)
+└── hexagon-v73\unsigned\      ← Skel 라이브러리 (.so)
+```
+
+#### 버전 호환성
+
+| ORT AAR | 빌드 시 QNN SDK | 권장 런타임 QNN SDK |
+|---------|----------------|-------------------|
+| 1.23.2  | 2.37.1         | 2.37.x ~ 2.42.x   |
+
+> **중요**: `libQnnHtpPrepare.so` 버전이 불일치하면 다음 오류 발생:
+> ```
+> Prepare lib id mismatch: expected (v2.42.0...), detected (v2.37.1...)
+> ```
+> → 반드시 같은 QNN SDK 버전의 모든 라이브러리 사용
+
+#### 동작 확인
+
+앱 시작 시 로그 확인:
+```bash
+adb logcat -s QnnLibraryManager:I OrtRunner:I
+```
+
+성공 시:
+```
+QnnLibraryManager: QNN libraries initialized at: /data/data/.../files/qnn_libs
+OrtRunner: Using custom QNN libs from: /data/data/.../files/qnn_libs
+OrtRunner: QNN SDK version: 2.42.0
+```
+
+#### 주요 코드
+
+**QnnLibraryManager.kt**:
+```kotlin
+object QnnLibraryManager {
+    fun initialize(context: Context): String? {
+        // 1. assets/qnn_libs/* → files/qnn_libs/ 추출
+        // 2. ADSP_LIBRARY_PATH 환경변수 설정
+        // 3. 라이브러리 경로 반환
+    }
+}
+```
+
+**OrtRunner.kt**:
+```kotlin
+val qnnLibPath = QnnLibraryManager.getLibraryPath()
+if (qnnLibPath != null) {
+    qnnOptions["backend_path"] = "$qnnLibPath/libQnnHtp.so"
+    qnnOptions["skel_library_dir"] = qnnLibPath
+}
+```
+
+---
+
+### Custom QNN Skel 라이브러리 설정 (adb push 방식, 레거시)
+
+> ⚠️ 이 방식은 개발자 단말에서만 사용 가능합니다. 위의 앱 내장 방식을 권장합니다.
+
+개발/디버깅 목적으로 QNN SDK 라이브러리를 adb로 직접 push할 수 있습니다.
 
 **설정 방법**:
 
-1. **QNN SDK에서 Skel 라이브러리 위치 확인**:
-   ```
-   C:\Qualcomm\QNN\{version}\qairt\{version}\lib\hexagon-v{XX}\unsigned\
-   ├── libQnnHtpV73Skel.so    ← 필수 (DSP에서 실행)
-   └── libQnnHtpV73.so        ← 필수 (HTP 구현체)
-   ```
+```bash
+# 디렉토리 생성
+adb shell mkdir -p /data/local/tmp/qnn
 
-2. **단말에 Push**:
-   ```bash
-   # 디렉토리 생성
-   adb shell mkdir -p /data/local/tmp/qnn
+# 라이브러리 push
+adb push libQnnHtp.so /data/local/tmp/qnn/
+adb push libQnnHtpV73Skel.so /data/local/tmp/qnn/
 
-   # Skel 라이브러리 push
-   adb push libQnnHtpV73Skel.so /data/local/tmp/qnn/
-   adb push libQnnHtpV73.so /data/local/tmp/qnn/
+# 권한 설정
+adb shell chmod 755 /data/local/tmp/qnn/*.so
+```
 
-   # 권한 설정
-   adb shell chmod 755 /data/local/tmp/qnn/*.so
-   ```
-
-3. **앱 코드에서 경로 설정** ([OrtRunner.kt](../android/app/src/main/java/com/example/kpilab/OrtRunner.kt#L147-L156)):
-   ```kotlin
-   // QNN EP 옵션에 skel_library_dir 추가
-   val customSkelPath = "/data/local/tmp/qnn"
-   val skelFile = java.io.File("$customSkelPath/libQnnHtpV73Skel.so")
-   if (skelFile.exists()) {
-       qnnOptions["skel_library_dir"] = customSkelPath
-   }
-   ```
+> **주의**: `/data/local/tmp/`는 DSP에서 접근 불가할 수 있음. 앱 내장 방식 사용 권장.
 
 **버전 호환성**:
 | ORT AAR 버전 | 내장 QNN SDK | 권장 Skel 버전 |
@@ -389,9 +460,41 @@ ndk {
 
 ## 로그 수집
 
+### ORT 로깅 레벨
+
+ORT 로깅 레벨은 [OrtRunner.kt:93](../android/app/src/main/java/com/example/kpilab/OrtRunner.kt#L93)에서 설정:
+
+```kotlin
+ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO)
+```
+
+| 레벨 | 설명 | 로그 크기 | 용도 |
+|------|------|----------|------|
+| `VERBOSE` | 최상세 | ~8MB/5분 | QNN 디버깅 |
+| `INFO` | 정보 (기본) | ~50KB/5분 | 일반 사용 |
+| `WARNING` | 경고 | ~10KB | 프로덕션 |
+| `ERROR` | 에러만 | 최소 | 프로덕션 |
+
+**권장**: `INFO` 레벨 사용 (그래프 파티셔닝 정보 포함, QNN verbose 로그 제외)
+
+### VERBOSE 레벨 주의사항
+
+VERBOSE 레벨 사용 시 다음과 같은 반복 로그가 대량 발생:
+
+| 메시지 | 발생 빈도 | 의미 |
+|--------|----------|------|
+| `Async property not supported` | 추론마다 | 동기 모드 사용 중 (정상) |
+| `Skipping preexecution checks` | 추론마다 | 비동기 검사 불필요 (정상) |
+| `Polling not available` | 추론마다 | FastRPC 사용 (정상) |
+
+> 이 메시지들은 **에러가 아닌 정보성 로그**입니다. QNN 디버깅 시에만 VERBOSE 사용을 권장합니다.
+
 ### ORT 로그 확인
 ```bash
-# 실시간 로그
+# 실시간 로그 (INFO 레벨)
+adb logcat -s onnxruntime:I OrtRunner:I
+
+# QNN 디버깅 시 (VERBOSE)
 adb logcat -s onnxruntime:V OrtRunner:I
 
 # QNN 관련만
@@ -401,6 +504,27 @@ adb logcat | grep -E "QNN|qnn|Qnn"
 ### 앱 로그 추출
 ```bash
 adb pull /sdcard/Android/data/com.example.kpilab/files/Documents/ ./logs/
+```
+
+### ORT 로그 파일 (_ort.log)
+
+벤치마크 실행 시 `*_ort.log` 파일이 함께 생성됩니다:
+
+```
+logs/
+├── kpi_MobileNetV2_QNNNPU_20260202_165132.csv      # KPI 데이터
+└── kpi_MobileNetV2_QNNNPU_20260202_165132_ort.log  # ORT 로그
+```
+
+**_ort.log 구조**:
+```
+=== ORT Graph Partitioning Info ===
+Total nodes: 1
+QNN nodes: 1
+CPU fallback nodes: 0
+
+=== Partition Details ===
+[상세 ORT 로그...]
 ```
 
 ### 전체 logcat 저장
@@ -559,3 +683,72 @@ private val THERMAL_PATHS = listOf(
 # parse_logs.py
 df['memory_mb'] = pd.to_numeric(df['memory_mb'], errors='coerce')
 ```
+
+---
+
+### 9. QNN HTP 초기화 실패 (시스템 QNN 드라이버 없음)
+
+**문제**: SM8550 (kalama) 플랫폼에서 QNN HTP 초기화 실패
+
+**증상**:
+```
+QNN SetupBackend failed Failed to create device.
+Error: QNN_DEVICE_ERROR_INVALID_CONFIG
+DspTransport.openSession qnn_open failed, 0x80000406
+```
+
+**원인 분석**:
+- 단말에 SNPE 드라이버만 있고 QNN 드라이버 없음
+- ORT AAR에 QNN Stub은 포함되어 있지만, 시스템에 Skel 라이브러리 없음
+- `/data/local/tmp/`는 DSP에서 접근 권한 없음
+
+**해결**: 앱 내장 QNN 라이브러리 방식 구현
+1. QNN SDK 라이브러리를 `assets/qnn_libs/`에 포함
+2. 앱 시작 시 `/data/data/app/files/qnn_libs/`로 추출
+3. `backend_path`, `skel_library_dir` 옵션으로 경로 지정
+
+**핵심 코드**: [QnnLibraryManager.kt](../android/app/src/main/java/com/example/kpilab/QnnLibraryManager.kt)
+
+**결과**: NPU 추론 성공 (1.9ms latency)
+
+---
+
+### 10. libQnnHtpPrepare.so 버전 불일치
+
+**문제**: QNN 라이브러리 일부만 번들링 시 버전 불일치 오류
+
+**증상**:
+```
+Prepare lib id mismatch: expected (v2.42.0.251225135753_193295),
+                         detected (v2.37.1.250807093845_124904)
+```
+
+**원인**: ORT AAR (2.37.1) + 커스텀 Skel (2.42.0) 혼합 사용 시, `libQnnHtpPrepare.so`는 ORT 버전 사용
+
+**해결**: QNN SDK 전체 라이브러리 세트를 동일 버전으로 번들링
+- `libQnnHtp.so`
+- `libQnnHtpPrepare.so` ← 필수 (84MB)
+- `libQnnHtpV73Stub.so`
+- `libQnnHtpV73Skel.so`
+- `libQnnSystem.so`
+
+---
+
+### 11. ORT 로그 파일 과대 (7.8MB)
+
+**문제**: 5분 벤치마크 시 `_ort.log` 파일이 7.8MB, 71,000줄
+
+**원인**: `ORT_LOGGING_LEVEL_VERBOSE` 설정으로 QNN DSP 로그가 추론마다 출력
+
+**주요 반복 로그**:
+```
+QnnDsp <V> Async property not supported. Skipping preexecution checks
+```
+
+**해결**: 로깅 레벨을 `INFO`로 변경
+```kotlin
+// OrtRunner.kt
+ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO)
+```
+
+**결과**: 로그 크기 7.8MB → ~50KB (99% 감소)

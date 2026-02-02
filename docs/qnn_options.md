@@ -30,9 +30,25 @@ QNN 백엔드 라이브러리 경로:
 
 | 값 | 설명 |
 |----|------|
-| `libQnnHtp.so` | NPU (Hexagon Tensor Processor) |
-| `libQnnGpu.so` | GPU (Adreno) |
-| `libQnnCpu.so` | CPU |
+| `libQnnHtp.so` | NPU (Hexagon Tensor Processor) - 시스템 경로 |
+| `libQnnGpu.so` | GPU (Adreno) - 시스템 경로 |
+| `{custom_path}/libQnnHtp.so` | NPU - 커스텀 경로 |
+
+**커스텀 경로 사용** ([QnnLibraryManager.kt](../android/app/src/main/java/com/example/kpilab/QnnLibraryManager.kt)):
+```kotlin
+val qnnLibPath = QnnLibraryManager.getLibraryPath()  // /data/data/.../files/qnn_libs
+qnnOptions["backend_path"] = "$qnnLibPath/libQnnHtp.so"
+```
+
+### skel_library_dir
+
+DSP에서 실행할 Skel 라이브러리 디렉토리:
+
+```kotlin
+qnnOptions["skel_library_dir"] = "/data/data/.../files/qnn_libs"
+```
+
+> **중요**: 시스템에 QNN 드라이버가 없는 경우 필수. Skel 라이브러리(`libQnnHtpV73Skel.so`)가 이 경로에 있어야 함.
 
 ### htp_performance_mode
 
@@ -157,6 +173,48 @@ python scripts/graph_transform.py \
 | `--replace-hardswish` | HardSwish를 QNN 호환 연산으로 대체 |
 | `--fuse-bn` | Conv + BatchNorm 융합 |
 | `--validate` | 변환 후 출력 검증 |
+
+---
+
+## Custom QNN 라이브러리 번들링
+
+시스템에 QNN 드라이버가 없는 경우, 앱에 QNN 라이브러리를 번들링하여 사용할 수 있습니다.
+
+### 구조
+
+```
+assets/qnn_libs/
+├── libQnnHtp.so           # HTP 백엔드 (2.6MB)
+├── libQnnHtpPrepare.so    # 그래프 준비 (84MB) ← 필수!
+├── libQnnHtpV73Stub.so    # V73 Stub (0.6MB)
+├── libQnnHtpV73Skel.so    # V73 Skel (10MB)
+├── libQnnSystem.so        # 시스템 (2.7MB)
+└── libQnnGpu.so           # GPU 백엔드 (6.4MB, 선택)
+```
+
+### 설정 코드
+
+```kotlin
+// MainActivity.kt - 앱 시작 시
+OrtRunner.initializeQnnLibraries(this)
+
+// OrtRunner.kt - 세션 생성 시
+val qnnLibPath = QnnLibraryManager.getLibraryPath()
+if (qnnLibPath != null) {
+    qnnOptions["backend_path"] = "$qnnLibPath/libQnnHtp.so"
+    qnnOptions["skel_library_dir"] = qnnLibPath
+}
+```
+
+### 버전 호환성
+
+| ORT 버전 | 빌드 시 QNN | 번들 QNN | 호환성 |
+|---------|------------|---------|--------|
+| 1.23.2  | 2.37.1     | 2.37.x  | ✅ 완벽 |
+| 1.23.2  | 2.37.1     | 2.42.x  | ✅ 동작 (API 호환) |
+| 1.23.2  | 2.37.1     | 2.25.x  | ❌ 실패 |
+
+> **주의**: 모든 라이브러리는 **동일한 QNN SDK 버전**에서 가져와야 합니다.
 
 ---
 

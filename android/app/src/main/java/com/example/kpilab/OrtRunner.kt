@@ -14,6 +14,15 @@ class OrtRunner(private val context: Context) {
 
     companion object {
         private const val TAG = "OrtRunner"
+
+        /**
+         * Initialize QNN libraries. Should be called once at app startup.
+         * This extracts QNN libraries from assets and sets up ADSP_LIBRARY_PATH.
+         */
+        fun initializeQnnLibraries(context: Context): Boolean {
+            val path = QnnLibraryManager.initialize(context)
+            return path != null
+        }
     }
 
     private var ortEnv: OrtEnvironment? = null
@@ -88,9 +97,9 @@ class OrtRunner(private val context: Context) {
             firstInferenceMs = -1f
 
             // Create ONNX Runtime environment
-            // VERBOSE level enables detailed logging including graph partitioning info
-            // Check logcat with tag "onnxruntime" for fallback ops details
-            ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE)
+            // INFO level captures graph partitioning info without verbose QNN DSP logs
+            // Use VERBOSE for debugging QNN issues
+            ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO)
             Log.i(TAG, "OrtEnvironment created")
 
             // Create session options with execution provider
@@ -139,21 +148,25 @@ class OrtRunner(private val context: Context) {
 
                     // QNN EP options for HTP (NPU)
                     val qnnOptions = mutableMapOf<String, String>()
-                    qnnOptions["backend_path"] = "libQnnHtp.so"
+
+                    // Use custom QNN library paths from QnnLibraryManager
+                    val qnnLibPath = QnnLibraryManager.getLibraryPath()
+                    if (qnnLibPath != null) {
+                        // Custom backend path (Stub library)
+                        qnnOptions["backend_path"] = "$qnnLibPath/libQnnHtp.so"
+                        // Custom skel library directory for DSP
+                        qnnOptions["skel_library_dir"] = qnnLibPath
+                        Log.i(TAG, "Using custom QNN libs from: $qnnLibPath")
+                        Log.i(TAG, "QNN SDK version: ${QnnLibraryManager.QNN_SDK_VERSION}")
+                    } else {
+                        // Fallback to bundled/system libraries
+                        qnnOptions["backend_path"] = "libQnnHtp.so"
+                        Log.i(TAG, "Using bundled/system QNN libs")
+                    }
+
                     qnnOptions["htp_performance_mode"] = "burst"
                     qnnOptions["htp_graph_finalization_optimization_mode"] = "3"
                     qnnOptions["enable_htp_fp16_precision"] = if (useNpuFp16) "1" else "0"
-
-                    // Custom skel library path (for devices without system QNN drivers)
-                    // Push skel to device: adb push libQnnHtpV73Skel.so /data/local/tmp/qnn/
-                    val customSkelPath = "/data/local/tmp/qnn"
-                    val skelFile = java.io.File("$customSkelPath/libQnnHtpV73Skel.so")
-                    if (skelFile.exists()) {
-                        qnnOptions["skel_library_dir"] = customSkelPath
-                        Log.i(TAG, "Custom skel library dir: $customSkelPath")
-                    } else {
-                        Log.i(TAG, "No custom skel at $customSkelPath, using system default")
-                    }
 
                     // Context cache options
                     if (useContextCache) {
@@ -174,7 +187,8 @@ class OrtRunner(private val context: Context) {
                     }
 
                     // Store options for CSV export (exclude cache path for brevity)
-                    qnnOptionsStr = "backend=HTP;perf=burst;fp16=${if (useNpuFp16) "1" else "0"};cache=${if (useContextCache) "1" else "0"}"
+                    val libSource = if (qnnLibPath != null) "custom" else "bundled"
+                    qnnOptionsStr = "backend=HTP;perf=burst;fp16=${if (useNpuFp16) "1" else "0"};cache=${if (useContextCache) "1" else "0"};libs=$libSource"
 
                     options.addQnn(qnnOptions)
                     activeExecutionProvider = "QNN_NPU"
@@ -192,7 +206,16 @@ class OrtRunner(private val context: Context) {
                     Log.i(TAG, "=== Configuring QNN Execution Provider (GPU) ===")
 
                     val qnnOptions = mutableMapOf<String, String>()
-                    qnnOptions["backend_path"] = "libQnnGpu.so"
+
+                    // Use custom QNN library path if available
+                    val qnnLibPath = QnnLibraryManager.getLibraryPath()
+                    if (qnnLibPath != null) {
+                        qnnOptions["backend_path"] = "$qnnLibPath/libQnnGpu.so"
+                        Log.i(TAG, "Using custom QNN GPU lib from: $qnnLibPath")
+                    } else {
+                        qnnOptions["backend_path"] = "libQnnGpu.so"
+                        Log.i(TAG, "Using bundled/system QNN GPU lib")
+                    }
 
                     qnnOptionsStr = "backend=GPU"
 
@@ -428,7 +451,7 @@ class OrtRunner(private val context: Context) {
 
         // Runtime info
         sb.appendLine("# runtime,ONNX Runtime")
-        sb.appendLine("# ort_version,1.22.0")  // Matches build.gradle.kts dependency
+        sb.appendLine("# ort_version,1.23.2")  // Matches build.gradle.kts dependency
         sb.appendLine("# execution_provider,$activeExecutionProvider")
 
         // Model info
