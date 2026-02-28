@@ -36,8 +36,6 @@
 | **B** | QNN_NPU | FP16 (runtime) | CPU | NPU | CPU |
 | **C** | QNN_NPU | INT8 (QDQ) | CPU | NPU | CPU |
 
-> GPU inference 비교는 보조(optional).
-
 **반드시 측정:**
 
 📊 Coverage & Partition

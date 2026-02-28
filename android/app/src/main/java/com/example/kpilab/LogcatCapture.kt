@@ -146,6 +146,7 @@ class LogcatCapture {
 
             // Format B (ORT 1.x): "GetCapability] Number of partitions supported by QNN EP: 1,
             //   number of nodes in the graph: 233, number of nodes supported by QNN: 233"
+            // ORT calls GetCapability multiple times (per optimization pass); use the last value.
             if (line.contains("GetCapability", ignoreCase = true) &&
                 line.contains("number of nodes in the graph", ignoreCase = true)) {
                 partitionInfo.add(line.trim())
@@ -153,9 +154,9 @@ class LogcatCapture {
                 val qnnNodesMatch = Regex("number of nodes supported by QNN:\\s*(\\d+)", RegexOption.IGNORE_CASE).find(line)
                 val graphCount = graphNodesMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
                 val qnnCount = qnnNodesMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                totalNodes += graphCount
-                qnnNodes += qnnCount
-                cpuNodes += (graphCount - qnnCount)
+                totalNodes = graphCount
+                qnnNodes = qnnCount
+                cpuNodes = graphCount - qnnCount
             }
 
             // Parse fallback ops
@@ -164,6 +165,15 @@ class LogcatCapture {
             if (line.contains("not supported", ignoreCase = true)) {
                 val opMatch = Regex("\\[([^\\]]+)\\]").find(line)
                     ?: Regex("Op\\s+(\\w+)").find(line)
+                opMatch?.groupValues?.get(1)?.let {
+                    if (!fallbackOps.contains(it)) fallbackOps.add(it)
+                }
+                partitionInfo.add(line.trim())
+            }
+
+            // Example: "Validation FAILED for 1 nodes in NodeUnit (QuantizeLinear) :"
+            if (line.contains("Validation FAILED", ignoreCase = true)) {
+                val opMatch = Regex("NodeUnit\\s*\\(([^)]+)\\)").find(line)
                 opMatch?.groupValues?.get(1)?.let {
                     if (!fallbackOps.contains(it)) fallbackOps.add(it)
                 }

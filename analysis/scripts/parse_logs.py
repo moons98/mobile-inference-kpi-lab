@@ -163,6 +163,7 @@ def load_ort_log(csv_path: str) -> Optional[dict]:
 
                 # Format B (ORT 1.x): "GetCapability] Number of partitions supported by QNN EP: 1,
                 #   number of nodes in the graph: 233, number of nodes supported by QNN: 233"
+                # ORT calls GetCapability multiple times (per optimization pass); use the last value.
                 match = re.search(
                     r'GetCapability.*number of nodes in the graph:\s*(\d+).*number of nodes supported by QNN:\s*(\d+)',
                     line, re.IGNORECASE
@@ -170,9 +171,18 @@ def load_ort_log(csv_path: str) -> Optional[dict]:
                 if match:
                     graph_count = int(match.group(1))
                     qnn_count = int(match.group(2))
-                    ort_info['total_nodes'] += graph_count
-                    ort_info['qnn_nodes'] += qnn_count
-                    ort_info['cpu_nodes'] += (graph_count - qnn_count)
+                    ort_info['total_nodes'] = graph_count
+                    ort_info['qnn_nodes'] = qnn_count
+                    ort_info['cpu_nodes'] = graph_count - qnn_count
+
+        # Parse fallback ops from raw logs
+        # Example: "Validation FAILED for 1 nodes in NodeUnit (QuantizeLinear) :"
+        for line in content.split('\n'):
+            match = re.search(r'Validation FAILED.*NodeUnit\s*\(([^)]+)\)', line)
+            if match:
+                op = match.group(1)
+                if op not in ort_info['fallback_ops']:
+                    ort_info['fallback_ops'].append(op)
 
         # Always check for QNN errors in raw logs
         for line in content.split('\n'):
