@@ -353,7 +353,7 @@ adb shell ls /vendor/lib64/ | grep -i qnn
 
 **증상**:
 ```
-Failed to load model: mobilenetv2.onnx
+Failed to load model: yolov8n.onnx
 ```
 
 **해결**:
@@ -512,8 +512,8 @@ adb pull /sdcard/Android/data/com.example.kpilab/files/Documents/ ./logs/
 
 ```
 logs/
-├── kpi_MobileNetV2_QNNNPU_20260202_165132.csv      # KPI 데이터
-└── kpi_MobileNetV2_QNNNPU_20260202_165132_ort.log  # ORT 로그
+├── kpi_YOLOv8n_QNNNPU_20260202_165132.csv      # KPI 데이터
+└── kpi_YOLOv8n_QNNNPU_20260202_165132_ort.log  # ORT 로그
 ```
 
 **_ort.log 구조**:
@@ -638,17 +638,17 @@ ortRunner?.let {
 
 **증상**:
 ```
-Failed to load model: mobilenetv2_torchvision.onnx
+Failed to load model: yolov8n.onnx
 ```
 
 **원인**:
-- Export 스크립트: `mobilenetv2.onnx`
-- 앱 코드: `mobilenetv2_torchvision.onnx`
+- Export 스크립트: `yolov8n.onnx`
+- 앱 코드: `yolov8n.onnx`
 
 **해결**: `OnnxModelType` enum의 `fileName`을 export 스크립트와 일치시킴
 ```kotlin
 enum class OnnxModelType(val displayName: String, val fileName: String) {
-    MOBILENET_V2("MobileNetV2", "mobilenetv2.onnx"),
+    YOLOV8N("YOLOv8n", "yolov8n.onnx"),
     // ...
 }
 ```

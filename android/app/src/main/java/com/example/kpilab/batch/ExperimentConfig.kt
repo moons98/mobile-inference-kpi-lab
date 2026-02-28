@@ -23,7 +23,7 @@ data class ExperimentConfig(
         val modelType = try {
             OnnxModelType.valueOf(model)
         } catch (e: IllegalArgumentException) {
-            OnnxModelType.MOBILENET_V2
+            OnnxModelType.YOLOV8N
         }
 
         val ep = try {

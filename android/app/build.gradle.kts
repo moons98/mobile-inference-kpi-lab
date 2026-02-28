@@ -45,7 +45,7 @@ android {
 
     // 모델 파일 압축 방지
     androidResources {
-        noCompress += listOf("onnx", "ort")
+        noCompress += listOf("onnx", "ort", "jpg")
     }
 }
 

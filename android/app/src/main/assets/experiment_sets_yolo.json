@@ -53,6 +53,15 @@
         { "model": "YOLOV8N_INT8_DYNAMIC", "executionProvider": "QNN_NPU" },
         { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU" }
       ]
+    },
+    {
+      "id": "exec_path_precision",
+      "name": "[실험1] Execution Path & Precision",
+      "experiments": [
+        { "model": "YOLOV8N", "executionProvider": "CPU", "useNpuFp16": false },
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+      ]
     }
   ]
 }

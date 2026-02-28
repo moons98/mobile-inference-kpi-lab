@@ -2,6 +2,10 @@ package com.example.kpilab
 
 import ai.onnxruntime.*
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
 import android.util.Log
 import java.nio.FloatBuffer
 import java.util.*
@@ -35,8 +39,15 @@ class OrtRunner(private val context: Context) {
     private var inputShape: LongArray = longArrayOf()
     private var outputName: String = ""
 
-    // Pre-allocated input tensor data (all models use FLOAT input)
-    private var inputFloatData: FloatArray? = null
+    // Source image bitmap (kept alive for per-iteration preprocessing)
+    private var sourceBitmap: Bitmap? = null
+
+    // Letterbox parameters for coordinate transform in postprocessing
+    private var letterboxPadLeft: Float = 0f
+    private var letterboxPadTop: Float = 0f
+    private var letterboxScale: Float = 1f
+    private var originalImageWidth: Int = 0
+    private var originalImageHeight: Int = 0
 
     // Benchmark config info for CSV export
     private var benchmarkFrequencyHz: Int = 5
@@ -53,15 +64,33 @@ class OrtRunner(private val context: Context) {
     private var outputShapeStr: String = ""
     private var qnnOptionsStr: String = ""
 
+    // Graph partitioning info (set by BenchmarkRunner after logcat parsing)
+    private var ortTotalNodes: Int = 0
+    private var ortQnnNodes: Int = 0
+    private var ortCpuNodes: Int = 0
+    private var ortFallbackOps: List<String> = emptyList()
+
     // Logging
     private val kpiRecords = mutableListOf<KpiRecord>()
     private var sessionId: String = ""
     private var isForeground: Boolean = true
 
+    /**
+     * Raw inference result with timing and output data.
+     */
+    data class InferenceResult(
+        val inferenceMs: Float,
+        val outputData: FloatArray
+    )
+
     data class KpiRecord(
         val timestamp: Long,
         val eventType: Int, // 0: INFERENCE, 1: SYSTEM
-        val latencyMs: Float,
+        val latencyMs: Float,         // Total E2E = preprocess + inference + postprocess
+        val preprocessMs: Float,      // Image preprocessing time
+        val inferenceMs: Float,       // Model inference time only
+        val postprocessMs: Float,     // NMS + coordinate transform time
+        val detectionCount: Int,      // Number of detections after NMS
         val thermalC: Float,
         val powerMw: Float,
         val memoryMb: Int,
@@ -122,8 +151,8 @@ class OrtRunner(private val context: Context) {
             // Get input/output info
             extractIOInfo()
 
-            // Allocate input data
-            allocateInputData()
+            // Load source image into memory (preprocessing runs per-iteration)
+            loadSourceImage()
 
             // Log session info
             logSessionInfo()
@@ -273,19 +302,70 @@ class OrtRunner(private val context: Context) {
         }
     }
 
-    private fun allocateInputData() {
-        val model = currentModel ?: return
+    /**
+     * Load source image from assets into memory.
+     * The bitmap is kept alive for per-iteration preprocessing.
+     */
+    private fun loadSourceImage() {
+        sourceBitmap = context.assets.open("sample_image.jpg").use { inputStream ->
+            BitmapFactory.decodeStream(inputStream)
+        }
+        originalImageWidth = sourceBitmap!!.width
+        originalImageHeight = sourceBitmap!!.height
+        Log.i(TAG, "Source image loaded: ${originalImageWidth}x${originalImageHeight}")
+    }
 
-        // ONNX uses NCHW format
-        // All models expect FLOAT input (even quantized models - quantization is internal)
-        val totalElements = model.inputChannels * model.inputHeight * model.inputWidth
+    /**
+     * Preprocess source image for inference (runs every iteration).
+     * Letterbox resize to model input size, normalize to [0,1], HWC->CHW.
+     * Returns the CHW float array ready for model input.
+     */
+    private fun preprocessFrame(): FloatArray {
+        val model = currentModel!!
+        val bitmap = sourceBitmap!!
+        val targetW = model.inputWidth   // 640
+        val targetH = model.inputHeight  // 640
 
-        inputFloatData = FloatArray(totalElements) {
-            (Math.random() * 255).toFloat() / 255.0f
+        // Letterbox resize: scale to fit target while preserving aspect ratio
+        val scaleW = targetW.toFloat() / bitmap.width
+        val scaleH = targetH.toFloat() / bitmap.height
+        letterboxScale = minOf(scaleW, scaleH)
+
+        val newW = (bitmap.width * letterboxScale).toInt()
+        val newH = (bitmap.height * letterboxScale).toInt()
+
+        letterboxPadLeft = (targetW - newW) / 2f
+        letterboxPadTop = (targetH - newH) / 2f
+
+        // Resize bitmap
+        val resized = Bitmap.createScaledBitmap(bitmap, newW, newH, true)
+
+        // Create letterboxed bitmap (filled with YOLO letterbox gray = 114)
+        val letterboxed = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(letterboxed)
+        canvas.drawColor(Color.rgb(114, 114, 114))
+        canvas.drawBitmap(resized, letterboxPadLeft, letterboxPadTop, null)
+
+        // Extract pixels
+        val pixels = IntArray(targetW * targetH)
+        letterboxed.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+
+        // Convert to CHW float array, normalized to [0.0, 1.0]
+        val planeSize = targetH * targetW
+        val chw = FloatArray(3 * planeSize)
+
+        for (i in pixels.indices) {
+            val pixel = pixels[i]
+            chw[i] = ((pixel shr 16) and 0xFF) / 255.0f              // R plane
+            chw[planeSize + i] = ((pixel shr 8) and 0xFF) / 255.0f   // G plane
+            chw[2 * planeSize + i] = (pixel and 0xFF) / 255.0f       // B plane
         }
 
-        val quantStr = if (model.isQuantized) " (internally quantized)" else ""
-        Log.i(TAG, "Input data allocated: $totalElements FLOAT elements$quantStr")
+        // Cleanup intermediate bitmaps (source bitmap is kept alive)
+        resized.recycle()
+        letterboxed.recycle()
+
+        return chw
     }
 
     private fun logSessionInfo() {
@@ -311,12 +391,24 @@ class OrtRunner(private val context: Context) {
     }
 
     /**
-     * Run warm-up iterations to stabilize performance
+     * Run warm-up iterations to stabilize performance.
+     * Includes full E2E pipeline (preprocess + inference + postprocess).
      */
     fun runWarmUp(iterations: Int = 10) {
-        Log.i(TAG, "Running $iterations warm-up iterations...")
+        Log.i(TAG, "Running $iterations warm-up iterations (full E2E)...")
         for (i in 0 until iterations) {
-            runInferenceInternal()
+            val inputData = preprocessFrame()
+            val result = runInferenceInternal(inputData)
+            if (result != null) {
+                YoloPostProcessor.process(
+                    output = result.outputData,
+                    originalWidth = originalImageWidth,
+                    originalHeight = originalImageHeight,
+                    padLeft = letterboxPadLeft,
+                    padTop = letterboxPadTop,
+                    scale = letterboxScale
+                )
+            }
         }
         Log.i(TAG, "Warm-up completed")
     }
@@ -331,46 +423,82 @@ class OrtRunner(private val context: Context) {
     }
 
     /**
-     * Run a single inference and return latency
+     * Run a single E2E inference: preprocess + inference + postprocess.
+     * Preprocessing runs every iteration to measure true per-frame E2E cost.
+     * Returns total E2E latency in ms.
      */
     fun runInference(): Float {
-        val latencyMs = runInferenceInternal()
+        val model = currentModel ?: return -1f
 
-        if (latencyMs >= 0) {
-            // Capture first inference time (after any warmup)
-            if (firstInferenceMs < 0) {
-                firstInferenceMs = latencyMs
-                Log.i(TAG, "First inference latency: ${latencyMs}ms")
+        // Preprocess (every iteration)
+        val preStart = System.nanoTime()
+        val inputData = preprocessFrame()
+        val preEnd = System.nanoTime()
+        val preprocessMs = ((preEnd - preStart) / 1_000_000.0).toFloat()
+
+        // Inference
+        val inferenceResult = runInferenceInternal(inputData) ?: return -1f
+
+        // Postprocess
+        val postStart = System.nanoTime()
+        val detections = YoloPostProcessor.process(
+            output = inferenceResult.outputData,
+            originalWidth = originalImageWidth,
+            originalHeight = originalImageHeight,
+            padLeft = letterboxPadLeft,
+            padTop = letterboxPadTop,
+            scale = letterboxScale
+        )
+        val postEnd = System.nanoTime()
+        val postprocessMs = ((postEnd - postStart) / 1_000_000.0).toFloat()
+
+        val totalMs = preprocessMs + inferenceResult.inferenceMs + postprocessMs
+
+        // Capture first inference time (after any warmup)
+        if (firstInferenceMs < 0) {
+            firstInferenceMs = totalMs
+            Log.i(TAG, "First E2E: total=${totalMs}ms (pre=${preprocessMs}ms, " +
+                    "inf=${inferenceResult.inferenceMs}ms, post=${postprocessMs}ms), " +
+                    "detections=${detections.size}")
+            if (detections.isNotEmpty()) {
+                detections.take(5).forEach { det ->
+                    Log.i(TAG, "  ${det.className} (${det.confidence}): " +
+                            "[${det.x1}, ${det.y1}, ${det.x2}, ${det.y2}]")
+                }
             }
-
-            kpiRecords.add(
-                KpiRecord(
-                    timestamp = System.currentTimeMillis(),
-                    eventType = 0,
-                    latencyMs = latencyMs,
-                    thermalC = 0f,
-                    powerMw = 0f,
-                    memoryMb = 0,
-                    isForeground = isForeground
-                )
-            )
         }
 
-        return latencyMs
+        kpiRecords.add(
+            KpiRecord(
+                timestamp = System.currentTimeMillis(),
+                eventType = 0,
+                latencyMs = totalMs,
+                preprocessMs = preprocessMs,
+                inferenceMs = inferenceResult.inferenceMs,
+                postprocessMs = postprocessMs,
+                detectionCount = detections.size,
+                thermalC = 0f,
+                powerMw = 0f,
+                memoryMb = 0,
+                isForeground = isForeground
+            )
+        )
+
+        return totalMs
     }
 
-    private fun runInferenceInternal(): Float {
-        val env = ortEnv ?: return -1f
-        val session = ortSession ?: return -1f
-        val model = currentModel ?: return -1f
+    private fun runInferenceInternal(inputData: FloatArray? = null): InferenceResult? {
+        val env = ortEnv ?: return null
+        val session = ortSession ?: return null
+        val data = inputData ?: return null
 
         return try {
             val startTime = System.nanoTime()
 
-            // Create input tensor (all models use FLOAT input)
+            // Create input tensor from preprocessed image data
             val inputTensor = OnnxTensor.createTensor(
                 env,
-                FloatBuffer.wrap(inputFloatData!!),
+                FloatBuffer.wrap(data),
                 inputShape
             )
 
@@ -380,14 +508,23 @@ class OrtRunner(private val context: Context) {
 
             val endTime = System.nanoTime()
 
+            // Extract output tensor data before closing
+            val outputTensor = results.get(0) as OnnxTensor
+            val outputBuffer = outputTensor.floatBuffer
+            val outputArray = FloatArray(outputBuffer.remaining())
+            outputBuffer.get(outputArray)
+
             // Clean up
             inputTensor.close()
             results.close()
 
-            ((endTime - startTime) / 1_000_000.0).toFloat()
+            InferenceResult(
+                inferenceMs = ((endTime - startTime) / 1_000_000.0).toFloat(),
+                outputData = outputArray
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Inference failed: ${e.message}", e)
-            -1f
+            null
         }
     }
 
@@ -400,6 +537,10 @@ class OrtRunner(private val context: Context) {
                 timestamp = System.currentTimeMillis(),
                 eventType = 1,
                 latencyMs = 0f,
+                preprocessMs = 0f,
+                inferenceMs = 0f,
+                postprocessMs = 0f,
+                detectionCount = 0,
                 thermalC = thermalC,
                 powerMw = powerMw,
                 memoryMb = memoryMb,
@@ -421,6 +562,19 @@ class OrtRunner(private val context: Context) {
     fun setBenchmarkConfig(frequencyHz: Int, warmupIters: Int) {
         this.benchmarkFrequencyHz = frequencyHz
         this.warmupIterations = warmupIters
+    }
+
+    /**
+     * Set graph partitioning info from ORT logcat analysis.
+     * Called by BenchmarkRunner after logcat parsing, before CSV export.
+     */
+    fun setPartitionInfo(totalNodes: Int, qnnNodes: Int, cpuNodes: Int, fallbackOps: List<String>) {
+        this.ortTotalNodes = totalNodes
+        this.ortQnnNodes = qnnNodes
+        this.ortCpuNodes = cpuNodes
+        this.ortFallbackOps = fallbackOps
+        val coverage = if (totalNodes > 0) "%.1f".format(qnnNodes * 100.0 / totalNodes) else "N/A"
+        Log.i(TAG, "Partition info: total=$totalNodes, qnn=$qnnNodes, cpu=$cpuNodes, coverage=$coverage%")
     }
 
     /**
@@ -475,25 +629,33 @@ class OrtRunner(private val context: Context) {
         val totalColdMs = modelLoadMs + sessionCreateMs + (if (firstInferenceMs >= 0) firstInferenceMs.toLong() else 0)
         sb.appendLine("# first_inference_ms,${if (firstInferenceMs >= 0) "%.2f".format(firstInferenceMs) else "N/A"}")
         sb.appendLine("# total_cold_ms,$totalColdMs")
+        sb.appendLine("# preprocess_mode,per_iteration")
+
+        // Graph partitioning info
+        sb.appendLine("# ort_total_nodes,$ortTotalNodes")
+        sb.appendLine("# ort_qnn_nodes,$ortQnnNodes")
+        sb.appendLine("# ort_cpu_nodes,$ortCpuNodes")
+        val coverageStr = if (ortTotalNodes > 0) "%.1f".format(ortQnnNodes * 100.0 / ortTotalNodes) else "N/A"
+        sb.appendLine("# ort_coverage_percent,$coverageStr")
+        sb.appendLine("# ort_fallback_ops,${ortFallbackOps.joinToString(";")}")
 
         sb.appendLine("# session_id,$sessionId")
-        sb.appendLine("#")
-        sb.appendLine("# NOTE: Graph partitioning and fallback ops info available in logcat")
-        sb.appendLine("#       Filter: adb logcat -s onnxruntime:V")
-        sb.appendLine("#")
 
         // CSV header
-        sb.appendLine("timestamp,event_type,latency_ms,thermal_c,power_mw,memory_mb,is_foreground")
+        sb.appendLine("timestamp,event_type,latency_ms,preprocess_ms,inference_ms,postprocess_ms,detection_count,thermal_c,power_mw,memory_mb,is_foreground")
 
         for (record in kpiRecords) {
             val eventType = if (record.eventType == 0) "INFERENCE" else "SYSTEM"
             val latency = if (record.eventType == 0) "%.2f".format(record.latencyMs) else ""
+            val preprocess = if (record.eventType == 0) "%.2f".format(record.preprocessMs) else ""
+            val inference = if (record.eventType == 0) "%.2f".format(record.inferenceMs) else ""
+            val postprocess = if (record.eventType == 0) "%.2f".format(record.postprocessMs) else ""
+            val detCount = if (record.eventType == 0) record.detectionCount.toString() else ""
             val thermal = if (record.eventType == 1) "%.1f".format(record.thermalC) else ""
             val power = if (record.eventType == 1) "%.1f".format(record.powerMw) else ""
-            // memory: -1 means "not sampled this interval", show as empty
             val memory = if (record.eventType == 1 && record.memoryMb >= 0) record.memoryMb.toString() else ""
 
-            sb.appendLine("${record.timestamp},$eventType,$latency,$thermal,$power,$memory,${record.isForeground}")
+            sb.appendLine("${record.timestamp},$eventType,$latency,$preprocess,$inference,$postprocess,$detCount,$thermal,$power,$memory,${record.isForeground}")
         }
 
         return sb.toString()
@@ -532,7 +694,8 @@ class OrtRunner(private val context: Context) {
         ortEnv?.close()
         ortEnv = null
 
-        inputFloatData = null
+        sourceBitmap?.recycle()
+        sourceBitmap = null
         currentModel = null
 
         Log.i(TAG, "Resources released")
@@ -552,37 +715,6 @@ enum class OnnxModelType(
     val isQuantized: Boolean,  // Whether model uses internal quantization (INT8)
     val precision: String      // FP32, INT8_DYNAMIC, INT8_QDQ
 ) {
-    // MobileNetV2 models (224x224, ImageNet classification)
-    MOBILENET_V2(
-        displayName = "MobileNetV2",
-        filename = "mobilenetv2.onnx",
-        inputWidth = 224,
-        inputHeight = 224,
-        inputChannels = 3,
-        outputShape = intArrayOf(1, 1000),
-        isQuantized = false,
-        precision = "FP32"
-    ),
-    MOBILENET_V2_INT8_DYNAMIC(
-        displayName = "MobileNetV2 INT8 (Dynamic)",
-        filename = "mobilenetv2_int8_dynamic.onnx",
-        inputWidth = 224,
-        inputHeight = 224,
-        inputChannels = 3,
-        outputShape = intArrayOf(1, 1000),
-        isQuantized = true,  // Dynamic quant: input is FLOAT, quantized internally
-        precision = "INT8_DYNAMIC"
-    ),
-    MOBILENET_V2_INT8_QDQ(
-        displayName = "MobileNetV2 INT8 (QDQ)",
-        filename = "mobilenetv2_int8_qdq.onnx",
-        inputWidth = 224,
-        inputHeight = 224,
-        inputChannels = 3,
-        outputShape = intArrayOf(1, 1000),
-        isQuantized = true,  // QDQ: input is FLOAT, Q node quantizes it
-        precision = "INT8_QDQ"
-    ),
     // YOLOv8n models (640x640, object detection)
     YOLOV8N(
         displayName = "YOLOv8n",

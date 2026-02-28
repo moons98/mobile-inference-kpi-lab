@@ -112,8 +112,8 @@ qnnOptions["qnn_context_cache_path"] = "${cacheDir}/qnn_${model}_${precision}.bi
 
 ### 캐시 파일 명명
 ```
-qnn_mobilenetv2.onnx_fp16.bin   # MobileNetV2 FP16
-qnn_mobilenetv2.onnx_fp32.bin   # MobileNetV2 FP32
+qnn_yolov8n.onnx_fp16.bin   # YOLOv8n FP16
+qnn_yolov8n.onnx_fp32.bin   # YOLOv8n FP32
 qnn_yolov8n.onnx_fp16.bin       # YOLOv8n FP16
 ```
 
@@ -121,7 +121,7 @@ qnn_yolov8n.onnx_fp16.bin       # YOLOv8n FP16
 
 | 모델 | Cache OFF | Cache ON | 개선율 |
 |------|-----------|----------|--------|
-| MobileNetV2 | ~2초 | ~0.3초 | 85% |
+| YOLOv8n | ~2초 | ~0.3초 | 85% |
 | YOLOv8n | ~5초 | ~0.5초 | 90% |
 
 ---
@@ -137,7 +137,7 @@ python scripts/analyze_ops.py path/to/model.onnx
 ### 출력 예시
 ```
 === ONNX Model Op Analysis ===
-Model: mobilenetv2.onnx
+Model: yolov8n.onnx
 Total ops: 154
 
 Supported by QNN HTP:

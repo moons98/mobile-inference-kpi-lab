@@ -3,7 +3,6 @@
 Download and setup calibration data for static quantization.
 
 Supported datasets:
-- ImageNet: Sample images for classification models (MobileNetV2)
 - COCO: Sample images for detection models (YOLOv8)
 
 Usage:
@@ -31,7 +30,7 @@ DATASETS = {
         "subdir": "imagenet",
         "num_images": 1000,
         "input_size": 224,
-        "models": ["MobileNetV2"],
+        "models": [],
     },
     "coco": {
         "description": "COCO validation samples for detection models",

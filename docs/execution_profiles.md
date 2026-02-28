@@ -164,7 +164,7 @@ BenchmarkRunner.stop()
 
 ```kotlin
 data class BenchmarkConfig(
-    val modelType: OnnxModelType = OnnxModelType.MOBILENET_V2,
+    val modelType: OnnxModelType = OnnxModelType.YOLOV8N,
     val executionProvider: ExecutionProvider = ExecutionProvider.QNN_NPU,
     val frequencyHz: Int = 5,
     val warmUpEnabled: Boolean = false,
@@ -189,9 +189,9 @@ data class BenchmarkConfig(
 
 | 모델 | 파일명 | 입력 크기 | 포맷 | 양자화 |
 |------|--------|-----------|------|--------|
-| MobileNetV2 | `mobilenetv2.onnx` | 1x3x224x224 | NCHW | FP32 |
-| MobileNetV2 (INT8 Dynamic) | `mobilenetv2_int8_dynamic.onnx` | 1x3x224x224 | NCHW | INT8 Dynamic |
-| MobileNetV2 (INT8 QDQ) | `mobilenetv2_int8_qdq.onnx` | 1x3x224x224 | NCHW | INT8 QDQ |
+| YOLOv8n | `yolov8n.onnx` | 1x3x640x640 | NCHW | FP32 |
+| YOLOv8n (INT8 Dynamic) | `yolov8n_int8_dynamic.onnx` | 1x3x640x640 | NCHW | INT8 Dynamic |
+| YOLOv8n (INT8 QDQ) | `yolov8n_int8_qdq.onnx` | 1x3x640x640 | NCHW | INT8 QDQ |
 | YOLOv8n | `yolov8n.onnx` | 1x3x640x640 | NCHW | FP32 |
 | YOLOv8n (INT8 Dynamic) | `yolov8n_int8_dynamic.onnx` | 1x3x640x640 | NCHW | INT8 Dynamic |
 | YOLOv8n (INT8 QDQ) | `yolov8n_int8_qdq.onnx` | 1x3x640x640 | NCHW | INT8 QDQ |
@@ -336,7 +336,7 @@ data class KpiRecord(
 # api_level,34
 # runtime,ONNX Runtime
 # execution_provider,QNN_NPU
-# model,MobileNetV2 (ONNX)
+# model,YOLOv8n
 # session_id,ort_mnv2_npu_5hz_w_1706789012345
 #
 timestamp,event_type,latency_ms,thermal_c,power_mw,memory_mb,is_foreground
@@ -404,7 +404,7 @@ data class BenchmarkProgress(
 
 ```kotlin
 BenchmarkConfig(
-    modelType = OnnxModelType.MOBILENET_V2,
+    modelType = OnnxModelType.YOLOV8N,
     executionProvider = ExecutionProvider.QNN_NPU,
     frequencyHz = 10,
     warmUpEnabled = false,
@@ -451,7 +451,7 @@ BenchmarkConfig(
 // NPU
 BenchmarkConfig(
     executionProvider = ExecutionProvider.QNN_NPU,
-    modelType = OnnxModelType.MOBILENET_V2,
+    modelType = OnnxModelType.YOLOV8N,
     frequencyHz = 5,
     durationMinutes = 5
 )
@@ -481,7 +481,7 @@ BenchmarkConfig(
 ```kotlin
 // FP32
 BenchmarkConfig(
-    modelType = OnnxModelType.MOBILENET_V2,
+    modelType = OnnxModelType.YOLOV8N,
     executionProvider = ExecutionProvider.QNN_NPU,
     useNpuFp16 = true,
     ...
@@ -489,14 +489,14 @@ BenchmarkConfig(
 
 // INT8 Dynamic
 BenchmarkConfig(
-    modelType = OnnxModelType.MOBILENET_V2_INT8_DYNAMIC,
+    modelType = OnnxModelType.YOLOV8N_INT8_DYNAMIC,
     executionProvider = ExecutionProvider.QNN_NPU,
     ...
 )
 
 // INT8 QDQ
 BenchmarkConfig(
-    modelType = OnnxModelType.MOBILENET_V2_INT8_QDQ,
+    modelType = OnnxModelType.YOLOV8N_INT8_QDQ,
     executionProvider = ExecutionProvider.QNN_NPU,
     ...
 )
@@ -509,7 +509,7 @@ BenchmarkConfig(
 ```kotlin
 // FP16 (빠름, 약간의 정밀도 손실)
 BenchmarkConfig(
-    modelType = OnnxModelType.MOBILENET_V2,
+    modelType = OnnxModelType.YOLOV8N,
     executionProvider = ExecutionProvider.QNN_NPU,
     useNpuFp16 = true,
     frequencyHz = 10,
@@ -518,7 +518,7 @@ BenchmarkConfig(
 
 // FP32 (정확, 느림)
 BenchmarkConfig(
-    modelType = OnnxModelType.MOBILENET_V2,
+    modelType = OnnxModelType.YOLOV8N,
     executionProvider = ExecutionProvider.QNN_NPU,
     useNpuFp16 = false,
     frequencyHz = 10,
@@ -533,7 +533,7 @@ BenchmarkConfig(
 ```kotlin
 // Cache OFF (매번 컴파일)
 BenchmarkConfig(
-    modelType = OnnxModelType.MOBILENET_V2,
+    modelType = OnnxModelType.YOLOV8N,
     executionProvider = ExecutionProvider.QNN_NPU,
     useContextCache = false,
     ...
@@ -541,7 +541,7 @@ BenchmarkConfig(
 
 // Cache ON (첫 실행 후 캐시 사용)
 BenchmarkConfig(
-    modelType = OnnxModelType.MOBILENET_V2,
+    modelType = OnnxModelType.YOLOV8N,
     executionProvider = ExecutionProvider.QNN_NPU,
     useContextCache = true,
     ...
@@ -590,8 +590,8 @@ lastOrtLogInfo = logcatCapture.parseOrtInfo()
 CSV export 시 `_ort.log` 파일이 함께 생성됩니다:
 
 ```
-kpi_MobileNetV2_QNNNPU_20260130_150850.csv      # KPI 데이터
-kpi_MobileNetV2_QNNNPU_20260130_150850_ort.log  # ORT 로그
+kpi_YOLOv8n_QNNNPU_20260130_150850.csv      # KPI 데이터
+kpi_YOLOv8n_QNNNPU_20260130_150850_ort.log  # ORT 로그
 ```
 
 **`_ort.log` 파일 내용**:
@@ -619,7 +619,7 @@ Logcat 필터: `OrtRunner`
 
 ```
 === OrtRunner Initialization ===
-Model: MobileNetV2 (ONNX)
+Model: YOLOv8n
 Requested EP: QNN NPU (HTP)
 === Configuring QNN Execution Provider (NPU) ===
   backend_path = libQnnHtp.so

@@ -22,7 +22,7 @@ class ColdStartMetrics:
 @dataclass
 class KpiMetrics:
     """Aggregated KPI metrics from a benchmark run."""
-    # Latency metrics
+    # Latency metrics (total E2E)
     latency_p50: float
     latency_p95: float
     latency_mean: float
@@ -31,12 +31,19 @@ class KpiMetrics:
     latency_max: float
     inference_count: int
 
+    # E2E breakdown (P50)
+    preprocess_p50: float       # Image preprocessing P50
+    inference_only_p50: float   # Model inference only P50
+    postprocess_p50: float      # NMS + coordinate transform P50
+    detection_count_mean: float # Average detection count per frame
+
     # Throughput
     fps: float  # Inferences per second
 
     # Thermal drift metrics (for sustained performance analysis)
     first_30s_p50: float  # Latency p50 in first 30 seconds
     last_30s_p50: float   # Latency p50 in last 30 seconds
+    drift_percent: float  # (last - first) / first * 100
 
     # Thermal metrics
     thermal_start: float
@@ -94,7 +101,7 @@ def load_ort_log(csv_path: str) -> Optional[dict]:
     import re
 
     # ORT log file has same name as CSV but with _ort.log suffix
-    # e.g., kpi_MobileNetV2_QNNNPU_20260130_173916.csv -> kpi_MobileNetV2_QNNNPU_20260130_173916_ort.log
+    # e.g., kpi_YOLOv8n_QNNNPU_20260130_173916.csv -> kpi_YOLOv8n_QNNNPU_20260130_173916_ort.log
     log_path = Path(str(csv_path).replace('.csv', '_ort.log'))
 
     if not log_path.exists():
@@ -274,8 +281,31 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         except (ValueError, TypeError):
             pass
 
+    # E2E breakdown metrics (handle old CSV format without these columns)
+    has_breakdown = 'inference_ms' in inference_df.columns
+    if has_breakdown:
+        preprocess_times = inference_df['preprocess_ms'].dropna()
+        inference_only_times = inference_df['inference_ms'].dropna()
+        postprocess_times = inference_df['postprocess_ms'].dropna()
+        detection_counts = inference_df['detection_count'].dropna()
+
+        preprocess_p50 = preprocess_times.quantile(0.50) if len(preprocess_times) > 0 else 0
+        inference_only_p50 = inference_only_times.quantile(0.50) if len(inference_only_times) > 0 else 0
+        postprocess_p50 = postprocess_times.quantile(0.50) if len(postprocess_times) > 0 else 0
+        detection_count_mean = detection_counts.mean() if len(detection_counts) > 0 else 0
+    else:
+        preprocess_p50 = 0
+        inference_only_p50 = latencies.quantile(0.50) if len(latencies) > 0 else 0
+        postprocess_p50 = 0
+        detection_count_mean = 0
+
+    # Drift percent
+    drift_percent = 0.0
+    if first_30s_p50 > 0:
+        drift_percent = (last_30s_p50 - first_30s_p50) / first_30s_p50 * 100
+
     return KpiMetrics(
-        # Latency
+        # Latency (total E2E)
         latency_p50=latencies.quantile(0.50) if len(latencies) > 0 else 0,
         latency_p95=latencies.quantile(0.95) if len(latencies) > 0 else 0,
         latency_mean=latencies.mean() if len(latencies) > 0 else 0,
@@ -284,12 +314,19 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         latency_max=latencies.max() if len(latencies) > 0 else 0,
         inference_count=len(latencies),
 
+        # E2E breakdown (P50)
+        preprocess_p50=preprocess_p50,
+        inference_only_p50=inference_only_p50,
+        postprocess_p50=postprocess_p50,
+        detection_count_mean=detection_count_mean,
+
         # Throughput
         fps=fps,
 
         # Thermal drift
         first_30s_p50=first_30s_p50,
         last_30s_p50=last_30s_p50,
+        drift_percent=drift_percent,
 
         # Thermal
         thermal_start=thermals.iloc[0] if len(thermals) > 0 else 0,
@@ -409,6 +446,21 @@ def generate_single_report(file_path: str) -> Tuple[str, dict, KpiMetrics]:
         lines.append(f"  First Inference: {metrics.cold_start.first_inference_ms:.2f} ms")
         lines.append(f"  Total Cold: {metrics.cold_start.total_cold_ms:.0f} ms")
 
+    # Graph Partitioning (from CSV metadata)
+    total_nodes = int(metadata.get('ort_total_nodes', 0)) if metadata else 0
+    if total_nodes > 0:
+        qnn_nodes = int(metadata.get('ort_qnn_nodes', 0))
+        cpu_nodes = int(metadata.get('ort_cpu_nodes', 0))
+        coverage = metadata.get('ort_coverage_percent', 'N/A')
+        fallback_ops = metadata.get('ort_fallback_ops', '')
+        lines.append("\n=== Graph Partitioning ===")
+        lines.append(f"  Total nodes: {total_nodes}")
+        lines.append(f"  QNN nodes: {qnn_nodes}")
+        lines.append(f"  CPU nodes: {cpu_nodes}")
+        lines.append(f"  Coverage: {coverage}%")
+        if fallback_ops:
+            lines.append(f"  Fallback ops: {fallback_ops.replace(';', ', ')}")
+
     lines.append("\n=== Sustained Performance ===")
     lines.append(f"\nLatency:")
     lines.append(f"  P50: {metrics.latency_p50:.2f} ms")
@@ -418,14 +470,20 @@ def generate_single_report(file_path: str) -> Tuple[str, dict, KpiMetrics]:
     lines.append(f"  Max: {metrics.latency_max:.2f} ms")
     lines.append(f"  Count: {metrics.inference_count}")
 
+    if metrics.inference_only_p50 > 0:
+        lines.append(f"\nE2E Breakdown (P50):")
+        lines.append(f"  Preprocess:  {metrics.preprocess_p50:.2f} ms")
+        lines.append(f"  Inference:   {metrics.inference_only_p50:.2f} ms")
+        lines.append(f"  Postprocess: {metrics.postprocess_p50:.2f} ms")
+        lines.append(f"  Avg Detections: {metrics.detection_count_mean:.1f}")
+
     lines.append(f"\nThroughput:")
     lines.append(f"  FPS: {metrics.fps:.2f} inf/s")
 
     lines.append(f"\nThermal Drift:")
     lines.append(f"  First 30s P50: {metrics.first_30s_p50:.2f} ms")
     lines.append(f"  Last 30s P50: {metrics.last_30s_p50:.2f} ms")
-    drift_pct = ((metrics.last_30s_p50 - metrics.first_30s_p50) / metrics.first_30s_p50 * 100) if metrics.first_30s_p50 > 0 else 0
-    lines.append(f"  Drift: {drift_pct:+.1f}%")
+    lines.append(f"  Drift: {metrics.drift_percent:+.1f}%")
 
     lines.append(f"\nThermal:")
     lines.append(f"  Start: {metrics.thermal_start:.1f} °C")
@@ -514,17 +572,33 @@ def generate_comparison_table(file_paths: list) -> str:
     # Section 2: Latency Performance
     lines.append(f"\n\n[2] Latency Performance")
     lines.append("-" * 120)
-    lines.append(f"{'#':<4} {'Label':<40} {'P50(ms)':<10} {'P95(ms)':<10} {'Mean(ms)':<10} {'Std(ms)':<10} {'MaxFPS':<10}")
-    lines.append("-" * 120)
+    lines.append(f"{'#':<4} {'Label':<40} {'P50(ms)':<10} {'P95(ms)':<10} {'Mean(ms)':<10} {'MaxFPS':<10}")
+    lines.append("-" * 110)
     for i, exp in enumerate(experiments, 1):
         m = exp['metrics']
-        # Theoretical max FPS = 1000ms / P50 latency
         max_fps = 1000.0 / m.latency_p50 if m.latency_p50 > 0 else 0
         lines.append(f"{i:<4} {exp['label']:<40} {m.latency_p50:<10.2f} {m.latency_p95:<10.2f} "
-                     f"{m.latency_mean:<10.2f} {m.latency_std:<10.2f} {max_fps:<10.1f}")
+                     f"{m.latency_mean:<10.2f} {max_fps:<10.1f}")
     lines.append("")
     lines.append("    P50/P95: 50th/95th percentile latency (lower=better)")
     lines.append("    MaxFPS: Theoretical max throughput = 1000/P50 (higher=better)")
+
+    # Section 2b: E2E Breakdown
+    has_breakdown_data = any(exp['metrics'].inference_only_p50 > 0 for exp in experiments)
+    if has_breakdown_data:
+        lines.append(f"\n\n[2b] E2E Breakdown (P50)")
+        lines.append("-" * 120)
+        lines.append(f"{'#':<4} {'Label':<40} {'PreProc(ms)':<12} {'Infer(ms)':<12} {'PostProc(ms)':<12} {'Dets':<8} {'Total(ms)':<10}")
+        lines.append("-" * 120)
+        for i, exp in enumerate(experiments, 1):
+            m = exp['metrics']
+            lines.append(f"{i:<4} {exp['label']:<40} {m.preprocess_p50:<12.2f} {m.inference_only_p50:<12.2f} "
+                         f"{m.postprocess_p50:<12.2f} {m.detection_count_mean:<8.1f} {m.latency_p50:<10.2f}")
+        lines.append("")
+        lines.append("    PreProc: Image preprocessing (letterbox + normalize + CHW)")
+        lines.append("    Infer: Model inference only (ONNX Runtime)")
+        lines.append("    PostProc: Confidence filter + NMS + coordinate transform")
+        lines.append("    Dets: Average detection count per frame")
 
     # Section 3: Cold Start Breakdown
     lines.append(f"\n\n[3] Cold Start Breakdown")
@@ -604,44 +678,94 @@ def generate_comparison_table(file_paths: list) -> str:
     lines.append("    Size: 모델 파일 크기 (KB)")
     lines.append("    Input Shape: 입력 텐서 shape [N,C,H,W]")
     lines.append("    QNN Options: QNN Execution Provider 옵션 (NPU/GPU 사용시)")
-    # Section 7: Graph Partitioning (if ORT logs available)
-    has_ort_logs = any(exp.get('ort_log') for exp in experiments)
-    if has_ort_logs:
-        lines.append(f"\n\n[7] Graph Partitioning (from ORT logs)")
+    # Section 7: Graph Partitioning & Coverage
+    # Try CSV metadata first, then fall back to ORT log files
+    has_partition_data = any(
+        exp.get('ort_log') or exp['metadata'].get('ort_total_nodes', '0') != '0'
+        for exp in experiments
+    )
+    if has_partition_data:
+        lines.append(f"\n\n[7] Graph Partitioning & Coverage")
         lines.append("-" * 120)
-        lines.append(f"{'#':<4} {'Label':<40} {'Total':<10} {'QNN':<10} {'CPU':<10} {'Status/Error':<40}")
+        lines.append(f"{'#':<4} {'Label':<40} {'Total':<8} {'QNN':<8} {'CPU':<8} {'Coverage':<10} {'Fallback Ops':<40}")
         lines.append("-" * 120)
         for i, exp in enumerate(experiments, 1):
+            meta = exp['metadata']
             ort = exp.get('ort_log')
-            if ort:
+
+            # Prefer CSV metadata (embedded by app), fall back to ORT log
+            total = int(meta.get('ort_total_nodes', 0))
+            qnn = int(meta.get('ort_qnn_nodes', 0))
+            cpu = int(meta.get('ort_cpu_nodes', 0))
+            fallback_ops_str = meta.get('ort_fallback_ops', '')
+
+            if total == 0 and ort:
                 total = ort.get('total_nodes', 0)
                 qnn = ort.get('qnn_nodes', 0)
                 cpu = ort.get('cpu_nodes', 0)
-                qnn_error = ort.get('qnn_error')
+                fallback_ops_str = ', '.join(ort.get('fallback_ops', []))
 
-                # Determine status
-                if qnn_error:
-                    status = f"ERROR: {qnn_error[:35]}"
-                elif qnn > 0:
-                    status = "OK (QNN active)"
-                elif total > 0 and cpu == total:
-                    status = "CPU only"
-                else:
-                    fallback = ', '.join(ort.get('fallback_ops', []))[:35] or '-'
-                    status = fallback
+            coverage = f"{qnn/total*100:.1f}%" if total > 0 else "N/A"
+            fallback_display = fallback_ops_str.replace(';', ', ')[:40] if fallback_ops_str else '-'
 
-                lines.append(f"{i:<4} {exp['label']:<40} {total:<10} {qnn:<10} {cpu:<10} {status:<40}")
-            else:
-                lines.append(f"{i:<4} {exp['label']:<40} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'(no ORT log)':<40}")
+            lines.append(f"{i:<4} {exp['label']:<40} {total:<8} {qnn:<8} {cpu:<8} {coverage:<10} {fallback_display:<40}")
         lines.append("")
         lines.append("    Total: 그래프 총 노드 수")
         lines.append("    QNN: QNN EP에서 실행되는 노드 수 (NPU/GPU)")
         lines.append("    CPU: CPU fallback 노드 수")
-        lines.append("    Status: QNN 상태 또는 에러 메시지")
-    else:
+        lines.append("    Coverage: QNN 노드 비율 (QNN/Total × 100)")
+        lines.append("    Fallback Ops: CPU로 fallback된 연산 목록")
+
+    # Section 8: Coverage vs E2E Analysis
+    # Only show when multiple experiments with partition data exist
+    exps_with_coverage = []
+    for exp in experiments:
+        meta = exp['metadata']
+        total = int(meta.get('ort_total_nodes', 0))
+        ort = exp.get('ort_log')
+        if total == 0 and ort:
+            total = ort.get('total_nodes', 0)
+        if total > 0:
+            qnn = int(meta.get('ort_qnn_nodes', 0))
+            if qnn == 0 and ort:
+                qnn = ort.get('qnn_nodes', 0)
+            coverage_pct = qnn / total * 100
+            exps_with_coverage.append((exp, coverage_pct))
+
+    if len(exps_with_coverage) >= 2:
+        lines.append(f"\n\n[8] Coverage vs E2E Analysis")
+        lines.append("-" * 120)
+        lines.append(f"{'#':<4} {'Label':<40} {'Coverage%':<12} {'E2E P50':<10} {'Infer P50':<10} {'Pre+Post':<10} {'Drift%':<10}")
+        lines.append("-" * 120)
+
+        # Find CPU baseline for comparison
+        cpu_exp = None
+        for exp, cov in exps_with_coverage:
+            if exp['ep'] == 'CPU' or cov == 0:
+                cpu_exp = exp
+                break
+
+        for i, (exp, cov) in enumerate(exps_with_coverage, 1):
+            m = exp['metrics']
+            pre_post = m.preprocess_p50 + m.postprocess_p50
+            lines.append(f"{i:<4} {exp['label']:<40} {cov:<12.1f} {m.latency_p50:<10.2f} "
+                         f"{m.inference_only_p50:<10.2f} {pre_post:<10.2f} {m.drift_percent:<+10.1f}")
+
         lines.append("")
-        lines.append("    NOTE: Graph partitioning 정보를 보려면 앱에서 벤치마크 실행 후")
-        lines.append("          생성되는 *_ort.log 파일을 CSV와 같은 폴더에 두세요.")
+        lines.append("    Coverage%: QNN offload 비율")
+        lines.append("    E2E P50: 전체 파이프라인 P50 latency (ms)")
+        lines.append("    Infer P50: 순수 추론 P50 (EP에 의해 가속)")
+        lines.append("    Pre+Post: 전후처리 합계 P50 (항상 CPU)")
+        lines.append("    Drift%: Sustained 성능 변화율 (first 30s → last 30s)")
+
+        if cpu_exp:
+            lines.append("")
+            lines.append("    * CPU baseline 대비 E2E 감소율:")
+            cpu_e2e = cpu_exp['metrics'].latency_p50
+            for exp, cov in exps_with_coverage:
+                if exp != cpu_exp and cpu_e2e > 0:
+                    reduction = (cpu_e2e - exp['metrics'].latency_p50) / cpu_e2e * 100
+                    lines.append(f"      {exp['label']}: Coverage {cov:.1f}% → E2E {reduction:+.1f}% 감소")
 
     lines.append("")
     return "\n".join(lines)

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Export models from torchvision and ultralytics to ONNX format.
+Export YOLOv8n models from ultralytics to ONNX format.
 
 Supported models:
-- MobileNetV2 (torchvision) - ImageNet classification
 - YOLOv8n (ultralytics) - Object detection
 
 Quantization methods:
@@ -12,10 +11,9 @@ Quantization methods:
 - both: Export both dynamic and static versions (default)
 
 Usage:
-    python export_to_onnx.py --export-mobilenetv2
-    python export_to_onnx.py --export-mobilenetv2-quantized              # exports both dynamic & static
-    python export_to_onnx.py --export-mobilenetv2-quantized --quant-method static
     python export_to_onnx.py --export-yolov8n
+    python export_to_onnx.py --export-yolov8n-quantized                  # exports both dynamic & static
+    python export_to_onnx.py --export-yolov8n-quantized --quant-method static
     python export_to_onnx.py --export-all                                # all models, both quant methods
     python export_to_onnx.py --list
     python export_to_onnx.py --status
@@ -31,24 +29,6 @@ CALIBRATION_DATA_PATH = None
 CALIBRATION_SAMPLES = 100
 
 MODELS = {
-    "mobilenetv2": {
-        "source": "torchvision",
-        "filename": "mobilenetv2.onnx",
-        "description": "MobileNetV2 (FP32) - torchvision export",
-        "input_shape": [1, 3, 224, 224],  # NCHW
-        "output": "1000 classes (ImageNet)",
-        "dtype": "FP32",
-    },
-    "mobilenetv2-quantized": {
-        "source": "torchvision",
-        "filename_dynamic": "mobilenetv2_int8_dynamic.onnx",  # CPU fallback
-        "filename_static": "mobilenetv2_int8_qdq.onnx",       # NPU supported
-        "description": "MobileNetV2 (INT8) - torchvision + onnxruntime quantization",
-        "input_shape": [1, 3, 224, 224],
-        "output": "1000 classes (ImageNet)",
-        "dtype": "INT8",
-        "quantize": True,
-    },
     "yolov8n": {
         "source": "ultralytics",
         "filename": "yolov8n.onnx",
@@ -70,56 +50,6 @@ MODELS = {
 }
 
 ASSETS_DIR = Path(__file__).parent.parent / "android" / "app" / "src" / "main" / "assets"
-
-
-def export_mobilenetv2(output_path: Path, quantize: bool = False) -> bool:
-    """Export MobileNetV2 from torchvision to ONNX."""
-    try:
-        import torch
-        import torchvision.models as models
-    except ImportError:
-        print("Error: torch and torchvision packages not installed")
-        print("Install with: pip install torch torchvision")
-        return False
-
-    try:
-        print("Loading MobileNetV2 from torchvision...")
-        model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
-        model.eval()
-
-        # Create dummy input
-        dummy_input = torch.randn(1, 3, 224, 224)
-
-        # Export to ONNX
-        fp32_path = output_path if not quantize else output_path.with_suffix(".fp32.onnx")
-        print(f"Exporting to ONNX: {fp32_path}")
-
-        # Use legacy JIT exporter to avoid dynamo issues with opset conversion
-        with torch.no_grad():
-            torch.onnx.export(
-                model,
-                dummy_input,
-                str(fp32_path),
-                export_params=True,
-                opset_version=17,  # Use higher opset to avoid version conversion issues
-                do_constant_folding=True,
-                input_names=["input"],
-                output_names=["output"],
-                dynamo=False,  # Use legacy exporter for stability
-            )
-
-        print(f"Exported: {fp32_path.name} ({fp32_path.stat().st_size / 1024 / 1024:.2f} MB)")
-
-        if quantize:
-            return quantize_onnx_model(fp32_path, output_path, input_shape=[1, 3, 224, 224])
-
-        return True
-
-    except Exception as e:
-        print(f"Export failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
 
 
 def export_yolov8n(output_path: Path, quantize: bool = False) -> bool:
@@ -405,19 +335,10 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
             num_samples=CALIBRATION_SAMPLES
         )
     else:
-        # Check default calibration data locations
-        default_imagenet = Path(__file__).parent / "calibration_data" / "imagenet"
+        # Check default calibration data location
         default_coco = Path(__file__).parent / "calibration_data" / "coco"
 
-        if input_shape[2] == 224 and default_imagenet.exists():
-            print(f"  Using ImageNet calibration data: {default_imagenet}")
-            calibration_reader = ImageCalibrationDataReader(
-                calibration_dir=str(default_imagenet),
-                input_name=input_name,
-                input_shape=input_shape,
-                num_samples=CALIBRATION_SAMPLES
-            )
-        elif input_shape[2] == 640 and default_coco.exists():
+        if default_coco.exists():
             print(f"  Using COCO calibration data: {default_coco}")
             calibration_reader = ImageCalibrationDataReader(
                 calibration_dir=str(default_coco),
@@ -509,9 +430,7 @@ def export_model(model_key: str, output_dir: Path) -> list:
             QUANT_METHOD = method
 
         success = False
-        if model["source"] == "torchvision":
-            success = export_mobilenetv2(dest, quantize=quantize)
-        elif model["source"] == "ultralytics":
+        if model["source"] == "ultralytics":
             success = export_yolov8n(dest, quantize=quantize)
         else:
             print(f"Unknown source: {model['source']}")
@@ -592,16 +511,6 @@ def main():
         description="Export models from torchvision/ultralytics to ONNX for mobile inference"
     )
     parser.add_argument(
-        "--export-mobilenetv2",
-        action="store_true",
-        help="Export MobileNetV2 FP32 from torchvision"
-    )
-    parser.add_argument(
-        "--export-mobilenetv2-quantized",
-        action="store_true",
-        help="Export MobileNetV2 INT8 quantized"
-    )
-    parser.add_argument(
         "--export-yolov8n",
         action="store_true",
         help="Export YOLOv8n FP32 from ultralytics"
@@ -671,10 +580,6 @@ def main():
     if args.export_all:
         exports = list(MODELS.keys())
     else:
-        if args.export_mobilenetv2:
-            exports.append("mobilenetv2")
-        if args.export_mobilenetv2_quantized:
-            exports.append("mobilenetv2-quantized")
         if args.export_yolov8n:
             exports.append("yolov8n")
         if args.export_yolov8n_quantized:
@@ -683,10 +588,9 @@ def main():
     if not exports:
         parser.print_help()
         print("\nExamples:")
-        print("  python export_to_onnx.py --export-mobilenetv2")
-        print("  python export_to_onnx.py --export-mobilenetv2-quantized                    # both dynamic & static")
-        print("  python export_to_onnx.py --export-mobilenetv2-quantized --quant-method static")
         print("  python export_to_onnx.py --export-yolov8n")
+        print("  python export_to_onnx.py --export-yolov8n-quantized                        # both dynamic & static")
+        print("  python export_to_onnx.py --export-yolov8n-quantized --quant-method static")
         print("  python export_to_onnx.py --export-all                                      # all models, both quant methods")
         print("  python export_to_onnx.py --list")
         print("  python export_to_onnx.py --status")

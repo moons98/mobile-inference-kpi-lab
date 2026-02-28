@@ -5,7 +5,7 @@ package com.example.kpilab
  */
 data class BenchmarkConfig(
     // Model selection
-    val modelType: OnnxModelType = OnnxModelType.MOBILENET_V2,
+    val modelType: OnnxModelType = OnnxModelType.YOLOV8N,
 
     // Execution provider (NPU/GPU/CPU)
     val executionProvider: ExecutionProvider = ExecutionProvider.QNN_NPU,
@@ -39,9 +39,6 @@ data class BenchmarkConfig(
         val timestamp = System.currentTimeMillis()
 
         val modelStr = when (modelType) {
-            OnnxModelType.MOBILENET_V2 -> "mnv2"
-            OnnxModelType.MOBILENET_V2_INT8_DYNAMIC -> "mnv2_dyn"
-            OnnxModelType.MOBILENET_V2_INT8_QDQ -> "mnv2_qdq"
             OnnxModelType.YOLOV8N -> "yolov8n"
             OnnxModelType.YOLOV8N_INT8_DYNAMIC -> "yolov8n_dyn"
             OnnxModelType.YOLOV8N_INT8_QDQ -> "yolov8n_qdq"

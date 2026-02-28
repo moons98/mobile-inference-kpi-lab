@@ -271,6 +271,16 @@ class BenchmarkRunner(
         logcatCapture.stopCapture()
         lastOrtLogInfo = logcatCapture.parseOrtInfo()
         Log.i(TAG, "Logcat capture stopped, captured ${lastOrtLogInfo?.rawLogs?.lines()?.size ?: 0} lines")
+
+        // Pass partition info to OrtRunner for CSV export
+        lastOrtLogInfo?.let { ortInfo ->
+            runner.setPartitionInfo(
+                totalNodes = ortInfo.totalNodes,
+                qnnNodes = ortInfo.qnnNodes,
+                cpuNodes = ortInfo.cpuNodes,
+                fallbackOps = ortInfo.fallbackOps
+            )
+        }
     }
 
     private suspend fun collectSystemMetrics(durationMs: Long, runner: OrtRunner) {

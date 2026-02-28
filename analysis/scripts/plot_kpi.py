@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from parse_logs import load_log, split_events, calculate_metrics
+from parse_logs import load_log, load_metadata, load_ort_log, split_events, calculate_metrics
 
 
 def setup_style():
@@ -248,6 +248,17 @@ def plot_kpi_dashboard(
     ax.set_title('Latency Distribution')
     ax.legend()
 
+    # Add E2E breakdown annotation if available
+    if 'inference_ms' in inference_df.columns:
+        pre_p50 = inference_df['preprocess_ms'].quantile(0.50)
+        inf_p50 = inference_df['inference_ms'].quantile(0.50)
+        post_p50 = inference_df['postprocess_ms'].quantile(0.50)
+        det_mean = inference_df['detection_count'].mean() if 'detection_count' in inference_df.columns else 0
+        ax.text(0.02, 0.98,
+                f'E2E P50 Breakdown:\n  Pre: {pre_p50:.1f}ms\n  Inf: {inf_p50:.1f}ms\n  Post: {post_p50:.1f}ms\n  Dets: {det_mean:.1f}',
+                transform=ax.transAxes, fontsize=8, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
     # 3. Thermal (bottom-left)
     ax = axes[1, 0]
     thermal_data = system_df[system_df['thermal_c'] > 0]
@@ -304,10 +315,12 @@ def compare_experiments(
     # Load all data
     data_list = []
     metrics_list = []
+    metadata_list = []
 
     for file_path in log_files:
         df = load_log(file_path)
-        metrics = calculate_metrics(df)
+        metadata = load_metadata(file_path)
+        metrics = calculate_metrics(df, metadata)
         inference_df, system_df = split_events(df)
         data_list.append({
             'df': df,
@@ -315,6 +328,7 @@ def compare_experiments(
             'system_df': system_df
         })
         metrics_list.append(metrics)
+        metadata_list.append(metadata)
 
     # Color scheme:
     # - NPU FP32: red shades
@@ -434,24 +448,63 @@ def compare_experiments(
     ax.axis('off')
 
     table_data = []
-    headers = ['#', 'Label', 'P50', 'P95', 'Slope', 'Power']
+    has_e2e = any(m.inference_only_p50 > 0 for m in metrics_list)
+    has_coverage = any(meta.get('ort_total_nodes', '0') != '0' for meta in metadata_list)
 
-    for i, (label, m) in enumerate(zip(labels, metrics_list)):
-        table_data.append([
-            f'{i+1}',
-            label[:35] + '...' if len(label) > 35 else label,
-            f'{m.latency_p50:.1f}',
-            f'{m.latency_p95:.1f}',
-            f'{m.thermal_slope:.2f}',
-            f'{m.power_mean:.1f}'
-        ])
+    if has_e2e:
+        if has_coverage:
+            headers = ['#', 'Label', 'Cov%', 'E2E', 'P95', 'Inf', 'Drift%']
+            col_widths = [0.04, 0.30, 0.08, 0.09, 0.09, 0.09, 0.09]
+        else:
+            headers = ['#', 'Label', 'E2E', 'P95', 'Inf', 'Post', 'Drift%']
+            col_widths = [0.04, 0.30, 0.09, 0.09, 0.09, 0.09, 0.09]
+    else:
+        headers = ['#', 'Label', 'P50', 'P95', 'Slope', 'Power', '']
+        col_widths = [0.05, 0.35, 0.10, 0.10, 0.10, 0.10, 0.10]
+
+    for i, (label, m, meta) in enumerate(zip(labels, metrics_list, metadata_list)):
+        total = int(meta.get('ort_total_nodes', 0))
+        qnn = int(meta.get('ort_qnn_nodes', 0))
+        cov_str = f'{qnn/total*100:.0f}' if total > 0 else '-'
+
+        if has_e2e:
+            if has_coverage:
+                table_data.append([
+                    f'{i+1}',
+                    label[:28] + '..' if len(label) > 28 else label,
+                    cov_str,
+                    f'{m.latency_p50:.1f}',
+                    f'{m.latency_p95:.1f}',
+                    f'{m.inference_only_p50:.1f}',
+                    f'{m.drift_percent:+.1f}'
+                ])
+            else:
+                table_data.append([
+                    f'{i+1}',
+                    label[:28] + '..' if len(label) > 28 else label,
+                    f'{m.latency_p50:.1f}',
+                    f'{m.latency_p95:.1f}',
+                    f'{m.inference_only_p50:.1f}',
+                    f'{m.postprocess_p50:.1f}',
+                    f'{m.drift_percent:+.1f}'
+                ])
+        else:
+            table_data.append([
+                f'{i+1}',
+                label[:33] + '...' if len(label) > 33 else label,
+                f'{m.latency_p50:.1f}',
+                f'{m.latency_p95:.1f}',
+                f'{m.thermal_slope:.2f}',
+                f'{m.power_mean:.1f}',
+                ''
+            ])
 
     table = ax.table(
         cellText=table_data,
         colLabels=headers,
         loc='center',
         cellLoc='center',
-        colWidths=[0.06, 0.4, 0.12, 0.12, 0.12, 0.12]
+        colWidths=col_widths
     )
     table.auto_set_font_size(False)
     table.set_fontsize(9)
