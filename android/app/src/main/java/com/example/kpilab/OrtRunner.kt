@@ -103,7 +103,8 @@ class OrtRunner(private val context: Context) {
         private set
 
     // Store settings for configureExecutionProvider
-    private var useNpuFp16: Boolean = true
+    var useNpuFp16: Boolean = true
+        private set
     private var useContextCache: Boolean = false
 
     /**

@@ -489,11 +489,23 @@ class BenchmarkRunner(
 
         return try {
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val modelName = currentModel?.filenameSafeName ?: "Unknown"
+            val model = currentModel
+            // Base model name without quantization (e.g., "YOLOv8n")
+            val baseName = model?.displayName
+                ?.replace(Regex("\\s+INT8.*$"), "")
+                ?.replace(" ", "")
+                ?: "Unknown"
+            // Precision tag: FP16 if NPU+fp16 enabled on FP32 model, else model's native precision
+            val precision = when {
+                model != null && !model.isQuantized
+                        && ortRunner?.useNpuFp16 == true
+                        && getActiveExecutionProvider() != "CPU" -> "FP16"
+                else -> model?.precision ?: "FP32"
+            }.replace("_", "")
             val ep = getActiveExecutionProvider()
                 .replace("_", "")
                 .uppercase()
-            val baseFilename = "kpi_${modelName}_${ep}_${timestamp}"
+            val baseFilename = "kpi_${baseName}_${precision}_${ep}_${timestamp}"
 
             val exportDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
             if (exportDir != null) {

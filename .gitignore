@@ -76,3 +76,6 @@ temp/
 
 # data
 scripts/calibration_data
+
+#
+deprecated/

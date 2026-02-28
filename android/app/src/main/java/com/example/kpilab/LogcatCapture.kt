@@ -131,8 +131,7 @@ class LogcatCapture {
             }
 
             // Parse node placement info from ORT
-            // Example: "All nodes placed on [QNNExecutionProvider]. Number of nodes: 77"
-            // Example: "All nodes placed on [CPUExecutionProvider]. Number of nodes: 55"
+            // Format A: "All nodes placed on [QNNExecutionProvider]. Number of nodes: 77"
             if (line.contains("nodes placed on", ignoreCase = true)) {
                 partitionInfo.add(line.trim())
                 val nodeCountMatch = Regex("Number of nodes:\\s*(\\d+)").find(line)
@@ -143,6 +142,20 @@ class LogcatCapture {
                     line.contains("CPUExecutionProvider") -> cpuNodes += nodeCount
                 }
                 totalNodes += nodeCount
+            }
+
+            // Format B (ORT 1.x): "GetCapability] Number of partitions supported by QNN EP: 1,
+            //   number of nodes in the graph: 233, number of nodes supported by QNN: 233"
+            if (line.contains("GetCapability", ignoreCase = true) &&
+                line.contains("number of nodes in the graph", ignoreCase = true)) {
+                partitionInfo.add(line.trim())
+                val graphNodesMatch = Regex("number of nodes in the graph:\\s*(\\d+)", RegexOption.IGNORE_CASE).find(line)
+                val qnnNodesMatch = Regex("number of nodes supported by QNN:\\s*(\\d+)", RegexOption.IGNORE_CASE).find(line)
+                val graphCount = graphNodesMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                val qnnCount = qnnNodesMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                totalNodes += graphCount
+                qnnNodes += qnnCount
+                cpuNodes += (graphCount - qnnCount)
             }
 
             // Parse fallback ops

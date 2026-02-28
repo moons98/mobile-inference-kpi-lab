@@ -148,9 +148,8 @@ def load_ort_log(csv_path: str) -> Optional[dict]:
             ort_info['qnn_nodes'] = 0
             ort_info['cpu_nodes'] = 0
 
-            # Parse node placement from raw ORT logs
-            # Pattern: "All nodes placed on [QNNExecutionProvider]. Number of nodes: 77"
             for line in content.split('\n'):
+                # Format A: "All nodes placed on [QNNExecutionProvider]. Number of nodes: 77"
                 match = re.search(r'nodes placed on \[(\w+)\].*Number of nodes:\s*(\d+)', line)
                 if match:
                     ep_name = match.group(1)
@@ -160,6 +159,20 @@ def load_ort_log(csv_path: str) -> Optional[dict]:
                         ort_info['qnn_nodes'] += node_count
                     elif 'CPU' in ep_name:
                         ort_info['cpu_nodes'] += node_count
+                    continue
+
+                # Format B (ORT 1.x): "GetCapability] Number of partitions supported by QNN EP: 1,
+                #   number of nodes in the graph: 233, number of nodes supported by QNN: 233"
+                match = re.search(
+                    r'GetCapability.*number of nodes in the graph:\s*(\d+).*number of nodes supported by QNN:\s*(\d+)',
+                    line, re.IGNORECASE
+                )
+                if match:
+                    graph_count = int(match.group(1))
+                    qnn_count = int(match.group(2))
+                    ort_info['total_nodes'] += graph_count
+                    ort_info['qnn_nodes'] += qnn_count
+                    ort_info['cpu_nodes'] += (graph_count - qnn_count)
 
         # Always check for QNN errors in raw logs
         for line in content.split('\n'):
@@ -528,10 +541,20 @@ def generate_comparison_table(file_paths: list) -> str:
         metrics = calculate_metrics(df, metadata)
         ort_log = load_ort_log(file_path)  # Load ORT log if available
 
-        # Extract short label (remove kpi_ prefix and timestamp)
+        # Generate label: {base_model}_{precision}_{ep}
         name = Path(file_path).stem
-        label = re.sub(r'^kpi_', '', name)
-        label = re.sub(r'_\d{8}_\d{6}$', '', label)
+        model_raw = metadata.get('model', 'Unknown')
+        # Extract base model name (strip quantization info like "INT8 (QDQ)")
+        base_model = re.sub(r'\s+INT8.*$', '', model_raw)
+        ep_raw = metadata.get('execution_provider', 'CPU')
+        ep_short = {'QNN_NPU': 'NPU', 'QNN_GPU': 'GPU', 'CPU': 'CPU'}.get(ep_raw, ep_raw)
+        precision = metadata.get('precision', 'FP32')
+        qnn_opts = metadata.get('qnn_options', '')
+        if 'fp16=1' in qnn_opts and precision == 'FP32':
+            precision = 'FP16'
+        # Compact precision: INT8_DYNAMIC -> INT8Dyn, INT8_QDQ -> INT8QDQ
+        prec_short = precision.replace('_DYNAMIC', 'Dyn').replace('_', '')
+        label = f"{base_model}_{prec_short}_{ep_short}"
 
         experiments.append({
             'label': label,
