@@ -86,7 +86,7 @@ class OrtRunner(private val context: Context) {
 
     data class KpiRecord(
         val timestamp: Long,
-        val eventType: Int, // 0: INFERENCE, 1: SYSTEM
+        val eventType: EventType,
         val latencyMs: Float,         // Total E2E = preprocess + inference + postprocess
         val preprocessMs: Float,      // Image preprocessing time
         val inferenceMs: Float,       // Model inference time only
@@ -472,7 +472,7 @@ class OrtRunner(private val context: Context) {
         kpiRecords.add(
             KpiRecord(
                 timestamp = System.currentTimeMillis(),
-                eventType = 0,
+                eventType = EventType.INFERENCE,
                 latencyMs = totalMs,
                 preprocessMs = preprocessMs,
                 inferenceMs = inferenceResult.inferenceMs,
@@ -534,7 +534,7 @@ class OrtRunner(private val context: Context) {
         kpiRecords.add(
             KpiRecord(
                 timestamp = System.currentTimeMillis(),
-                eventType = 1,
+                eventType = EventType.SYSTEM,
                 latencyMs = 0f,
                 preprocessMs = 0f,
                 inferenceMs = 0f,
@@ -644,17 +644,18 @@ class OrtRunner(private val context: Context) {
         sb.appendLine("timestamp,event_type,latency_ms,preprocess_ms,inference_ms,postprocess_ms,detection_count,thermal_c,power_mw,memory_mb,is_foreground")
 
         for (record in kpiRecords) {
-            val eventType = if (record.eventType == 0) "INFERENCE" else "SYSTEM"
-            val latency = if (record.eventType == 0) "%.2f".format(record.latencyMs) else ""
-            val preprocess = if (record.eventType == 0) "%.2f".format(record.preprocessMs) else ""
-            val inference = if (record.eventType == 0) "%.2f".format(record.inferenceMs) else ""
-            val postprocess = if (record.eventType == 0) "%.2f".format(record.postprocessMs) else ""
-            val detCount = if (record.eventType == 0) record.detectionCount.toString() else ""
-            val thermal = if (record.eventType == 1) "%.1f".format(record.thermalC) else ""
-            val power = if (record.eventType == 1) "%.1f".format(record.powerMw) else ""
-            val memory = if (record.eventType == 1 && record.memoryMb >= 0) record.memoryMb.toString() else ""
+            val isInference = record.eventType == EventType.INFERENCE
+            val isSystem = record.eventType == EventType.SYSTEM
+            val latency = if (isInference) "%.2f".format(record.latencyMs) else ""
+            val preprocess = if (isInference) "%.2f".format(record.preprocessMs) else ""
+            val inference = if (isInference) "%.2f".format(record.inferenceMs) else ""
+            val postprocess = if (isInference) "%.2f".format(record.postprocessMs) else ""
+            val detCount = if (isInference) record.detectionCount.toString() else ""
+            val thermal = if (isSystem) "%.1f".format(record.thermalC) else ""
+            val power = if (isSystem) "%.1f".format(record.powerMw) else ""
+            val memory = if (isSystem && record.memoryMb >= 0) record.memoryMb.toString() else ""
 
-            sb.appendLine("${record.timestamp},$eventType,$latency,$preprocess,$inference,$postprocess,$detCount,$thermal,$power,$memory,${record.isForeground}")
+            sb.appendLine("${record.timestamp},${record.eventType.name},$latency,$preprocess,$inference,$postprocess,$detCount,$thermal,$power,$memory,${record.isForeground}")
         }
 
         return sb.toString()
