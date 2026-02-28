@@ -104,7 +104,8 @@ class BenchmarkRunner(
 
     val isRunning: Boolean
         get() = _progress.value.state == BenchmarkState.RUNNING ||
-                _progress.value.state == BenchmarkState.WARMING_UP
+                _progress.value.state == BenchmarkState.WARMING_UP ||
+                _progress.value.state == BenchmarkState.INITIALIZING
 
     val isBatchRunning: Boolean
         get() = _batchProgress.value.isRunning
@@ -132,6 +133,10 @@ class BenchmarkRunner(
                 Log.i(TAG, "Benchmark cancelled")
             } catch (e: Exception) {
                 Log.e(TAG, "Benchmark error: ${e.message}", e)
+                _progress.value = BenchmarkProgress(
+                    state = BenchmarkState.ERROR,
+                    errorMessage = "Benchmark failed: ${e.message}"
+                )
             } finally {
                 cleanup()
             }
@@ -181,34 +186,33 @@ class BenchmarkRunner(
         Log.i(TAG, "Logcat capture started")
 
         // Create and initialize ONNX Runtime runner
+        Log.i(TAG, "Initializing ONNX Runtime runner")
+        val runner = OrtRunner(context)
         val initialized = withContext(Dispatchers.IO) {
-            Log.i(TAG, "Initializing ONNX Runtime runner")
-            val runner = OrtRunner(context)
-            val success = runner.initialize(
+            runner.initialize(
                 config.modelType,
                 config.executionProvider,
                 config.useNpuFp16,
                 config.useContextCache
             )
-            if (success) {
-                ortRunner = runner
-            }
-            success
         }
 
         if (!initialized) {
-            Log.e(TAG, "Failed to initialize runner")
+            val detail = runner.lastError ?: "Unknown error"
+            Log.e(TAG, "Failed to initialize runner: $detail")
+            // Release partially-initialized runner to avoid resource leaks
+            runner.release()
             // Stop logcat capture even on failure - it may contain useful error info
             logcatCapture.stopCapture()
             lastOrtLogInfo = logcatCapture.parseOrtInfo()
             _progress.value = BenchmarkProgress(
                 state = BenchmarkState.ERROR,
-                errorMessage = "Failed to initialize ${config.executionProvider.displayName}"
+                errorMessage = "Init failed (${config.executionProvider.displayName}): $detail"
             )
             return
         }
 
-        val runner = ortRunner ?: return
+        ortRunner = runner
 
         // Start session
         val sessionId = config.generateSessionId()
@@ -333,7 +337,10 @@ class BenchmarkRunner(
         if (logcatCapture.isCapturing()) {
             logcatCapture.stopCapture()
         }
-        _progress.value = BenchmarkProgress(state = BenchmarkState.IDLE)
+        // Preserve ERROR state so the user can see the error message
+        if (_progress.value.state != BenchmarkState.ERROR) {
+            _progress.value = BenchmarkProgress(state = BenchmarkState.IDLE)
+        }
         config = null
         Log.i(TAG, "Cleanup completed")
     }
@@ -442,8 +449,8 @@ class BenchmarkRunner(
                         Log.i(TAG, "Experiment CSV saved: $csvPath")
                     }
 
-                    // Cooldown between experiments (except for last one)
-                    if (index < experimentSet.experiments.size - 1 && isActive) {
+                    // Cooldown between experiments (skip if experiment failed, skip for last)
+                    if (csvPath != null && index < experimentSet.experiments.size - 1 && isActive) {
                         Log.i(TAG, "Cooldown for $COOLDOWN_SECONDS seconds...")
                         _batchProgress.value = _batchProgress.value.copy(isCoolingDown = true)
 

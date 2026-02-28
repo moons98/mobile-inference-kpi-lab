@@ -98,6 +98,10 @@ class OrtRunner(private val context: Context) {
         val isForeground: Boolean
     )
 
+    // Last initialization error detail (surfaced to UI via BenchmarkRunner)
+    var lastError: String? = null
+        private set
+
     // Store settings for configureExecutionProvider
     private var useNpuFp16: Boolean = true
     private var useContextCache: Boolean = false
@@ -111,6 +115,7 @@ class OrtRunner(private val context: Context) {
         useNpuFp16: Boolean = true,
         useContextCache: Boolean = false
     ): Boolean {
+        lastError = null
         return try {
             currentModel = modelType
             this.useNpuFp16 = useNpuFp16
@@ -162,7 +167,7 @@ class OrtRunner(private val context: Context) {
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize: ${e.message}", e)
-            e.printStackTrace()
+            lastError = e.message
             false
         }
     }
@@ -363,7 +368,11 @@ class OrtRunner(private val context: Context) {
         }
 
         // Cleanup intermediate bitmaps (source bitmap is kept alive)
-        resized.recycle()
+        // Note: createScaledBitmap returns the SAME object when no scaling is needed,
+        // so only recycle if it's a different bitmap than the source.
+        if (resized !== bitmap) {
+            resized.recycle()
+        }
         letterboxed.recycle()
 
         return chw
