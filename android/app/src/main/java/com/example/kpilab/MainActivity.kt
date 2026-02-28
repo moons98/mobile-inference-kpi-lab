@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.kpilab.batch.BatchProgress
@@ -44,6 +45,7 @@ class MainActivity : AppCompatActivity() {
         setupUI()
         setupModelSpinner()
         setupBatchMode()
+        setupEpOptionVisibility()
         observeProgress()
         observeBatchProgress()
     }
@@ -56,6 +58,11 @@ class MainActivity : AppCompatActivity() {
             Log.i(TAG, "QNN libraries initialized successfully")
         } else {
             Log.w(TAG, "QNN libraries initialization failed - NPU may not work")
+            Toast.makeText(
+                this,
+                "QNN initialization failed - NPU/GPU may not work",
+                Toast.LENGTH_LONG
+            ).show()
         }
 
         kpiCollector = KpiCollector(this)
@@ -71,7 +78,7 @@ class MainActivity : AppCompatActivity() {
         // Start/Stop button
         binding.btnStartStop.setOnClickListener {
             if (benchmarkRunner.isRunning || benchmarkRunner.isBatchRunning) {
-                stopBenchmark()
+                confirmStop()
             } else {
                 startBenchmark()
             }
@@ -104,6 +111,40 @@ class MainActivity : AppCompatActivity() {
 
         // Initial state
         updateBatchModeUI()
+    }
+
+    /**
+     * Show/hide QNN-specific options (FP16, context cache) based on selected EP.
+     * These options are only relevant for NPU; hidden for CPU, visible but FP16 disabled for GPU.
+     */
+    private fun setupEpOptionVisibility() {
+        binding.radioGroupPath.setOnCheckedChangeListener { _, checkedId ->
+            updateQnnOptionsVisibility(checkedId)
+        }
+        // Apply initial state
+        updateQnnOptionsVisibility(binding.radioGroupPath.checkedRadioButtonId)
+    }
+
+    private fun updateQnnOptionsVisibility(checkedId: Int) {
+        when (checkedId) {
+            R.id.radioNpuGpuCpu -> {
+                // NPU: show all QNN options
+                binding.layoutQnnOptions.visibility = View.VISIBLE
+                binding.checkFp16.isEnabled = true
+                binding.checkCache.isEnabled = true
+            }
+            R.id.radioGpuCpu -> {
+                // GPU: show cache option but FP16 is NPU-only
+                binding.layoutQnnOptions.visibility = View.VISIBLE
+                binding.checkFp16.isEnabled = false
+                binding.checkFp16.isChecked = false
+                binding.checkCache.isEnabled = true
+            }
+            R.id.radioCpuOnly -> {
+                // CPU: hide all QNN options
+                binding.layoutQnnOptions.visibility = View.GONE
+            }
+        }
     }
 
     private fun updateBatchModeUI() {
@@ -188,6 +229,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUI(progress: BenchmarkProgress) {
+        // Show error dialog on initialization failure
+        if (progress.state == BenchmarkState.ERROR && progress.errorMessage != null) {
+            Toast.makeText(this, progress.errorMessage, Toast.LENGTH_LONG).show()
+        }
+
         // Update status text
         binding.tvStatus.text = when (progress.state) {
             BenchmarkState.IDLE -> "Idle"
@@ -195,13 +241,29 @@ class MainActivity : AppCompatActivity() {
             BenchmarkState.WARMING_UP -> "Warming up..."
             BenchmarkState.RUNNING -> "Running"
             BenchmarkState.STOPPING -> "Stopping..."
+            BenchmarkState.ERROR -> "Error"
         }
 
-        // Update progress
+        val isRunning = progress.state == BenchmarkState.RUNNING ||
+                        progress.state == BenchmarkState.WARMING_UP ||
+                        progress.state == BenchmarkState.INITIALIZING
+
+        // Update progress bar
+        binding.progressBar.visibility = if (isRunning) View.VISIBLE else View.GONE
+        binding.progressBar.progress = progress.progressPercent
+
+        // Update progress text
         binding.tvProgress.text = "${progress.formatElapsed()} / ${progress.formatTotal()}"
 
         // Update metrics
         binding.tvInferences.text = progress.inferenceCount.toString()
+
+        // Throughput
+        binding.tvThroughput.text = if (progress.throughput > 0) {
+            progress.formatThroughput()
+        } else {
+            "-- inf/s"
+        }
 
         binding.tvLatency.text = if (progress.lastLatencyMs >= 0) {
             String.format("%.1f ms", progress.lastLatencyMs)
@@ -221,11 +283,13 @@ class MainActivity : AppCompatActivity() {
             "-- mW"
         }
 
-        // Update button state
-        val isRunning = progress.state == BenchmarkState.RUNNING ||
-                        progress.state == BenchmarkState.WARMING_UP ||
-                        progress.state == BenchmarkState.INITIALIZING
+        binding.tvMemory.text = if (progress.lastMemoryMb > 0) {
+            "${progress.lastMemoryMb} MB"
+        } else {
+            "-- MB"
+        }
 
+        // Update button state
         binding.btnStartStop.text = if (isRunning) {
             getString(R.string.stop_benchmark)
         } else {
@@ -260,9 +324,16 @@ class MainActivity : AppCompatActivity() {
         binding.radioFreq10.isEnabled = enabled
 
         // Options
-        binding.checkFp16.isEnabled = enabled
-        binding.checkCache.isEnabled = enabled
+        if (enabled) {
+            // Restore QNN options visibility based on selected EP
+            updateQnnOptionsVisibility(binding.radioGroupPath.checkedRadioButtonId)
+        } else {
+            binding.checkFp16.isEnabled = false
+            binding.checkCache.isEnabled = false
+        }
         binding.radioGroupDuration.isEnabled = enabled
+        binding.radioDuration1.isEnabled = enabled
+        binding.radioDuration2.isEnabled = enabled
         binding.radioDuration5.isEnabled = enabled
         binding.radioDuration10.isEnabled = enabled
     }
@@ -287,6 +358,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         val durationMinutes = when (binding.radioGroupDuration.checkedRadioButtonId) {
+            R.id.radioDuration1 -> 1
+            R.id.radioDuration2 -> 2
             R.id.radioDuration5 -> 5
             R.id.radioDuration10 -> 10
             else -> 5
@@ -351,7 +424,25 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Batch started: ${selectedSet.name}", Toast.LENGTH_SHORT).show()
     }
 
-    private fun stopBenchmark() {
+    /**
+     * Show confirmation dialog before stopping a running benchmark.
+     */
+    private fun confirmStop() {
+        val message = if (benchmarkRunner.isBatchRunning) {
+            "Stop the batch experiment? Current experiment data will be lost."
+        } else {
+            "Stop the benchmark?"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Stop Benchmark")
+            .setMessage(message)
+            .setPositiveButton("Stop") { _, _ -> doStop() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun doStop() {
         Log.i(TAG, "Stopping benchmark")
         if (benchmarkRunner.isBatchRunning) {
             benchmarkRunner.stopBatch()

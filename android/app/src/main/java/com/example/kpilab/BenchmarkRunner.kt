@@ -24,7 +24,8 @@ enum class BenchmarkState {
     INITIALIZING,
     WARMING_UP,
     RUNNING,
-    STOPPING
+    STOPPING,
+    ERROR
 }
 
 /**
@@ -38,7 +39,8 @@ data class BenchmarkProgress(
     val lastLatencyMs: Float = -1f,
     val lastThermalC: Float = -1f,
     val lastPowerMw: Float = -1f,
-    val lastMemoryMb: Int = 0
+    val lastMemoryMb: Int = 0,
+    val errorMessage: String? = null
 ) {
     val progressPercent: Int
         get() = if (totalMs > 0) ((elapsedMs * 100) / totalMs).toInt() else 0
@@ -199,7 +201,10 @@ class BenchmarkRunner(
             // Stop logcat capture even on failure - it may contain useful error info
             logcatCapture.stopCapture()
             lastOrtLogInfo = logcatCapture.parseOrtInfo()
-            _progress.value = BenchmarkProgress(state = BenchmarkState.IDLE)
+            _progress.value = BenchmarkProgress(
+                state = BenchmarkState.ERROR,
+                errorMessage = "Failed to initialize ${config.executionProvider.displayName}"
+            )
             return
         }
 

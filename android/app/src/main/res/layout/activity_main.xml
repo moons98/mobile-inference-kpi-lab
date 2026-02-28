@@ -235,21 +235,30 @@
                 android:orientation="vertical"
                 android:padding="16dp">
 
-                <CheckBox
-                    android:id="@+id/checkFp16"
-                    android:layout_width="wrap_content"
+                <!-- QNN-specific options (hidden when CPU selected) -->
+                <LinearLayout
+                    android:id="@+id/layoutQnnOptions"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="NPU FP16 precision (faster, FP32 models only)"
-                    android:checked="true"
-                    android:layout_marginBottom="8dp" />
+                    android:orientation="vertical">
 
-                <CheckBox
-                    android:id="@+id/checkCache"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="QNN context cache (faster reload)"
-                    android:checked="false"
-                    android:layout_marginBottom="8dp" />
+                    <CheckBox
+                        android:id="@+id/checkFp16"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="NPU FP16 precision (faster, FP32 models only)"
+                        android:checked="true"
+                        android:layout_marginBottom="8dp" />
+
+                    <CheckBox
+                        android:id="@+id/checkCache"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="QNN context cache (faster reload)"
+                        android:checked="false"
+                        android:layout_marginBottom="8dp" />
+
+                </LinearLayout>
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -265,6 +274,20 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal">
+
+                    <RadioButton
+                        android:id="@+id/radioDuration1"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="1 min" />
+
+                    <RadioButton
+                        android:id="@+id/radioDuration2"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="2 min" />
 
                     <RadioButton
                         android:id="@+id/radioDuration5"
@@ -437,6 +460,17 @@
 
                 </LinearLayout>
 
+                <!-- Progress Bar -->
+                <ProgressBar
+                    android:id="@+id/progressBar"
+                    style="@android:style/Widget.ProgressBar.Horizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="100"
+                    android:progress="0"
+                    android:layout_marginBottom="8dp"
+                    android:visibility="gone" />
+
                 <!-- Progress Row -->
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -482,6 +516,31 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:text="0"
+                        android:textColor="@color/text_primary"
+                        android:textAlignment="textEnd" />
+
+                </LinearLayout>
+
+                <!-- Throughput Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="8dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Throughput"
+                        android:textColor="@color/text_secondary" />
+
+                    <TextView
+                        android:id="@+id/tvThroughput"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="-- inf/s"
                         android:textColor="@color/text_primary"
                         android:textAlignment="textEnd" />
 
@@ -541,7 +600,8 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal">
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="8dp">
 
                     <TextView
                         android:layout_width="0dp"
@@ -556,6 +616,30 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:text="-- mW"
+                        android:textColor="@color/text_primary"
+                        android:textAlignment="textEnd" />
+
+                </LinearLayout>
+
+                <!-- Memory Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Memory"
+                        android:textColor="@color/text_secondary" />
+
+                    <TextView
+                        android:id="@+id/tvMemory"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="-- MB"
                         android:textColor="@color/text_primary"
                         android:textAlignment="textEnd" />
 
