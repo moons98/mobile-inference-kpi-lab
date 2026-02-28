@@ -29,7 +29,7 @@ data class BatchProgress(
      */
     val progressPercent: Int
         get() = if (totalExperiments > 0) {
-            ((currentExperimentIndex - 1) * 100) / totalExperiments
+            (completedExperiments.size * 100) / totalExperiments
         } else {
             0
         }

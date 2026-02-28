@@ -1,7 +1,5 @@
 package com.example.kpilab
 
-import kotlin.math.exp
-
 /**
  * YOLO detection result.
  */

@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.util.Log
 import java.nio.FloatBuffer
 import java.util.*
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * ONNX Runtime-based inference runner with QNN Execution Provider support.
@@ -70,8 +71,8 @@ class OrtRunner(private val context: Context) {
     private var ortCpuNodes: Int = 0
     private var ortFallbackOps: List<String> = emptyList()
 
-    // Logging
-    private val kpiRecords = mutableListOf<KpiRecord>()
+    // Logging (thread-safe: accessed from inference loop + system metrics coroutine)
+    private val kpiRecords: MutableList<KpiRecord> = CopyOnWriteArrayList()
     private var sessionId: String = ""
     private var isForeground: Boolean = true
 
@@ -493,19 +494,17 @@ class OrtRunner(private val context: Context) {
         val data = inputData ?: return null
 
         return try {
-            val startTime = System.nanoTime()
-
-            // Create input tensor from preprocessed image data
+            // Create input tensor from preprocessed image data (not timed)
             val inputTensor = OnnxTensor.createTensor(
                 env,
                 FloatBuffer.wrap(data),
                 inputShape
             )
 
-            // Run inference
+            // Run inference (timed separately from tensor creation)
             val inputs = Collections.singletonMap(inputName, inputTensor)
+            val startTime = System.nanoTime()
             val results = session.run(inputs)
-
             val endTime = System.nanoTime()
 
             // Extract output tensor data before closing

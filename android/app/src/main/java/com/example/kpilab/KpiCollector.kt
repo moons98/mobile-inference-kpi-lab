@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
-import android.os.HardwarePropertiesManager
 import android.util.Log
 import java.io.BufferedReader
 import java.io.File
@@ -115,9 +114,7 @@ class KpiCollector(private val context: Context) {
             if (exists && canRead) {
                 // Try to actually read it
                 try {
-                    val reader = BufferedReader(FileReader(path))
-                    val value = reader.readLine()
-                    reader.close()
+                    val value = BufferedReader(FileReader(path)).use { it.readLine() }
                     val parsed = value?.trim()?.toIntOrNull()
                     Log.i(TAG, "  $path: exists=$exists, canRead=$canRead, value='$value', parsed=$parsed")
                     if (parsed != null) {
@@ -190,20 +187,16 @@ class KpiCollector(private val context: Context) {
         val path = thermalPath
         if (path != null) {
             try {
-                val reader = BufferedReader(FileReader(path))
-                val tempStr = reader.readLine()
-                reader.close()
+                val tempStr = BufferedReader(FileReader(path)).use { it.readLine() }
 
                 val tempRaw = tempStr?.trim()?.toIntOrNull()
                 if (tempRaw != null) {
                     // Most devices report in millidegrees Celsius
-                    val result = if (tempRaw > 1000) {
+                    return if (tempRaw > 1000) {
                         tempRaw / 1000f
                     } else {
                         tempRaw.toFloat()
                     }
-                    // Log occasionally (every ~100 calls would spam, so just first few)
-                    return result
                 } else {
                     Log.w(TAG, "readThermal: tempStr='$tempStr' could not be parsed")
                 }
@@ -284,21 +277,20 @@ class KpiCollector(private val context: Context) {
      */
     fun readMemory(): Int {
         return try {
-            val reader = BufferedReader(FileReader(PROC_STATUS))
-            var line: String?
             var vmRssKb = -1
-
-            while (reader.readLine().also { line = it } != null) {
-                if (line!!.startsWith("VmRSS:")) {
-                    // Format: "VmRSS:     12345 kB"
-                    val parts = line!!.trim().split(Regex("\\s+"))
-                    if (parts.size >= 2) {
-                        vmRssKb = parts[1].toIntOrNull() ?: -1
+            BufferedReader(FileReader(PROC_STATUS)).use { reader ->
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    if (line!!.startsWith("VmRSS:")) {
+                        // Format: "VmRSS:     12345 kB"
+                        val parts = line!!.trim().split(Regex("\\s+"))
+                        if (parts.size >= 2) {
+                            vmRssKb = parts[1].toIntOrNull() ?: -1
+                        }
+                        break
                     }
-                    break
                 }
             }
-            reader.close()
 
             if (vmRssKb > 0) {
                 vmRssKb / 1024  // Convert to MB
