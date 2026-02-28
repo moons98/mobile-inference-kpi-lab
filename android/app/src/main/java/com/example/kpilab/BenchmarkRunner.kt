@@ -466,9 +466,10 @@ class BenchmarkRunner(
     }
 
     /**
-     * Export current data and save to file, returning the file path
+     * Export current data and save to file, returning the file path.
+     * Saves both CSV and ORT log file alongside it.
      */
-    private fun exportAndSaveCsv(): String? {
+    fun exportAndSaveCsv(): String? {
         val csvData = exportCsv()
         if (csvData.isEmpty()) {
             return null
@@ -476,12 +477,7 @@ class BenchmarkRunner(
 
         return try {
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val modelName = currentModel?.displayName
-                ?.replace(" ", "")
-                ?.replace("-", "")
-                ?.replace("(", "")
-                ?.replace(")", "")
-                ?: "Unknown"
+            val modelName = currentModel?.filenameSafeName ?: "Unknown"
             val ep = getActiveExecutionProvider()
                 .replace("_", "")
                 .uppercase()

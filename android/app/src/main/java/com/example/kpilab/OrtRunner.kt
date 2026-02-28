@@ -749,6 +749,10 @@ enum class OnnxModelType(
 
     val inputShape: LongArray
         get() = longArrayOf(1, inputChannels.toLong(), inputHeight.toLong(), inputWidth.toLong())  // NCHW
+
+    /** Filename-safe version of displayName for CSV export filenames */
+    val filenameSafeName: String
+        get() = displayName.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
 }
 
 /**

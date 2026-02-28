@@ -1,7 +1,6 @@
 package com.example.kpilab
 
 import android.os.Bundle
-import android.os.Environment
 import android.util.Log
 import android.view.View
 import android.widget.ArrayAdapter
@@ -15,9 +14,6 @@ import com.example.kpilab.databinding.ActivityMainBinding
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.io.File
-import java.io.FileWriter
-import java.text.SimpleDateFormat
-import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
@@ -36,7 +32,7 @@ class MainActivity : AppCompatActivity() {
     private var experimentSets: List<ExperimentSet> = emptyList()
 
     // All available model types for the spinner
-    private val modelTypes = OnnxModelType.values()
+    private val modelTypes = OnnxModelType.entries
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -367,65 +363,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun exportData() {
-        val csvData = benchmarkRunner.exportCsv()
         val recordCount = benchmarkRunner.getRecordCount()
-
-        if (csvData.isEmpty() || recordCount == 0) {
+        if (recordCount == 0) {
             Toast.makeText(this, "No data to export", Toast.LENGTH_SHORT).show()
             return
         }
 
-        try {
-            // Generate filename with model name, EP, and timestamp
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val modelName = benchmarkRunner.currentModel?.displayName
-                ?.replace(" ", "")
-                ?.replace("-", "")
-                ?.replace("(", "")
-                ?.replace(")", "")
-                ?: "Unknown"
-            val ep = benchmarkRunner.getActiveExecutionProvider()
-                .replace("_", "")
-                .uppercase()
-            val baseFilename = "kpi_${modelName}_${ep}_${timestamp}"
-
-            // Save to app's external files directory
-            val exportDir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-            if (exportDir != null) {
-                // Save CSV
-                val csvFile = File(exportDir, "${baseFilename}.csv")
-                FileWriter(csvFile).use { writer ->
-                    writer.write(csvData)
-                }
-                Log.i(TAG, "Exported $recordCount records to: ${csvFile.absolutePath}")
-
-                // Save ORT logs alongside CSV
-                var logExported = false
-                benchmarkRunner.getOrtLogInfo()?.let { ortInfo ->
-                    if (ortInfo.rawLogs.isNotBlank()) {
-                        val logFile = File(exportDir, "${baseFilename}_ort.log")
-                        FileWriter(logFile).use { writer ->
-                            writer.write(ortInfo.toSummary())
-                            writer.write("\n\n=== Raw Logs ===\n")
-                            writer.write(ortInfo.rawLogs)
-                        }
-                        Log.i(TAG, "ORT logs exported: ${logFile.absolutePath}")
-                        logExported = true
-                    }
-                }
-
-                val logMsg = if (logExported) " + ORT log" else ""
-                Toast.makeText(
-                    this,
-                    "Exported $recordCount records$logMsg to:\n${csvFile.name}",
-                    Toast.LENGTH_LONG
-                ).show()
-            } else {
-                Toast.makeText(this, "Export directory unavailable", Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Export failed: ${e.message}", e)
-            Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        val csvPath = benchmarkRunner.exportAndSaveCsv()
+        if (csvPath != null) {
+            val filename = File(csvPath).name
+            Toast.makeText(
+                this,
+                "Exported $recordCount records to:\n$filename",
+                Toast.LENGTH_LONG
+            ).show()
+        } else {
+            Toast.makeText(this, "Export failed", Toast.LENGTH_SHORT).show()
         }
     }
 
