@@ -429,7 +429,7 @@ class OrtRunner(private val context: Context) {
      * Returns total E2E latency in ms.
      */
     fun runInference(): Float {
-        val model = currentModel ?: return -1f
+        currentModel ?: return -1f
 
         // Preprocess (every iteration)
         val preStart = System.nanoTime()
