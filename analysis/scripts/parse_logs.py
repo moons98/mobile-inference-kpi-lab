@@ -571,10 +571,15 @@ def generate_comparison_table(file_paths: list) -> str:
             'name': name,
             'ep': metadata.get('execution_provider', 'N/A'),
             'model': metadata.get('model', 'N/A'),
+            'precision': prec_short,
             'metrics': metrics,
             'metadata': metadata,
             'ort_log': ort_log
         })
+
+    # Sort: FP32 first, then FP16, then INT8 variants
+    prec_order = {'FP32': 0, 'FP16': 1, 'INT8QDQ': 2, 'INT8Dyn': 3, 'INT8': 4}
+    experiments.sort(key=lambda e: prec_order.get(e['precision'], 9))
 
     lines = []
     sep = "=" * 120

@@ -2,6 +2,7 @@ package com.example.kpilab
 
 import android.util.Log
 import kotlinx.coroutines.*
+import kotlinx.coroutines.CompletableDeferred
 import java.io.BufferedReader
 import java.io.InputStreamReader
 
@@ -21,11 +22,13 @@ class LogcatCapture {
 
     /**
      * Start capturing logcat for specified tags.
+     * Suspends until logcat process is ready to capture, preventing race conditions
+     * where ORT initialization logs are missed.
      *
      * @param tags List of logcat tags to filter (e.g., "onnxruntime", "OrtRunner")
      * @param scope CoroutineScope for the capture job
      */
-    fun startCapture(
+    suspend fun startCapture(
         tags: List<String> = listOf("onnxruntime", "OrtRunner"),
         scope: CoroutineScope
     ) {
@@ -40,6 +43,8 @@ class LogcatCapture {
         // Build logcat filter string: "onnxruntime:V OrtRunner:V *:S"
         val filterArgs = tags.map { "$it:V" } + "*:S"
 
+        val ready = CompletableDeferred<Unit>()
+
         captureJob = scope.launch(Dispatchers.IO) {
             try {
                 // Clear logcat buffer first
@@ -53,6 +58,8 @@ class LogcatCapture {
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
 
                 Log.i(TAG, "Started capturing logcat for tags: $tags")
+                // Signal that logcat process is ready
+                ready.complete(Unit)
 
                 while (isActive && isCapturing) {
                     val line = reader.readLine() ?: break
@@ -66,8 +73,12 @@ class LogcatCapture {
 
             } catch (e: Exception) {
                 Log.e(TAG, "Logcat capture error: ${e.message}", e)
+                ready.complete(Unit) // Don't block caller on failure
             }
         }
+
+        // Wait until logcat process is ready before returning
+        ready.await()
     }
 
     /**
