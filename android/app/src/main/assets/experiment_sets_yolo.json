@@ -18,7 +18,7 @@
     },
     {
       "id": "e2e_prepost_offload",
-      "name": "[실험2] Pre/Post Offload",
+      "name": "[실험2] Pre/Post/NMS Offload",
       "experiments": [
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
         { "model": "YOLOV8N_PRE", "executionProvider": "QNN_NPU", "useNpuFp16": true },
