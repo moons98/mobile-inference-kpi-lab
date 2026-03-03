@@ -34,6 +34,8 @@ class KpiMetrics:
     # E2E breakdown (P50)
     preprocess_p50: float       # Image preprocessing P50
     inference_only_p50: float   # Model inference only P50
+    input_create_p50: float     # Input tensor creation (JNI boundary)
+    output_copy_p50: float      # Output tensor copy (native → JVM)
     postprocess_p50: float      # NMS + coordinate transform P50
     detection_count_mean: float # Average detection count per frame
 
@@ -58,12 +60,30 @@ class KpiMetrics:
     # Memory metrics
     memory_peak: int
     memory_mean: float
+    memory_min: int
+    memory_start: int    # first sample
+    memory_end: int      # last sample
 
     # Duration
     duration_seconds: float
 
     # Cold start (optional, from metadata)
     cold_start: Optional[ColdStartMetrics] = None
+
+    # ORT Profiling: NPU compute vs framework overhead (optional, from metadata)
+    profiling_iterations: int = 0
+    profiling_avg_total_ms: float = 0.0
+    profiling_avg_npu_ms: float = 0.0
+    profiling_avg_cpu_ms: float = 0.0
+    profiling_avg_fence_ms: float = 0.0
+    profiling_avg_overhead_ms: float = 0.0
+
+    # Pipeline benchmark (optional, from metadata)
+    pipeline_sequential_fps: float = 0.0
+    pipeline_pipelined_fps: float = 0.0
+    pipeline_speedup: float = 0.0
+    pipeline_sequential_ms: float = 0.0
+    pipeline_pipelined_ms: float = 0.0
 
 
 def load_metadata(file_path: str) -> dict:
@@ -322,10 +342,58 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         postprocess_p50 = 0
         detection_count_mean = 0
 
+    # Boundary timing (new columns, may not exist in old CSVs)
+    has_boundary = 'input_create_ms' in inference_df.columns
+    if has_boundary:
+        input_create_times = inference_df['input_create_ms'].dropna()
+        output_copy_times = inference_df['output_copy_ms'].dropna()
+        input_create_p50 = input_create_times.quantile(0.50) if len(input_create_times) > 0 else 0
+        output_copy_p50 = output_copy_times.quantile(0.50) if len(output_copy_times) > 0 else 0
+    else:
+        input_create_p50 = 0
+        output_copy_p50 = 0
+
     # Drift percent
     drift_percent = 0.0
     if first_30s_p50 > 0:
         drift_percent = (last_30s_p50 - first_30s_p50) / first_30s_p50 * 100
+
+    # ORT profiling breakdown (from metadata)
+    profiling_iterations = 0
+    profiling_avg_total_ms = 0.0
+    profiling_avg_npu_ms = 0.0
+    profiling_avg_cpu_ms = 0.0
+    profiling_avg_fence_ms = 0.0
+    profiling_avg_overhead_ms = 0.0
+    if metadata:
+        try:
+            profiling_iterations = int(metadata.get('profiling_iterations', 0))
+            if profiling_iterations > 0:
+                profiling_avg_total_ms = float(metadata.get('profiling_avg_total_ms', 0))
+                profiling_avg_npu_ms = float(metadata.get('profiling_avg_npu_ms', 0))
+                profiling_avg_cpu_ms = float(metadata.get('profiling_avg_cpu_ms', 0))
+                profiling_avg_fence_ms = float(metadata.get('profiling_avg_fence_ms', 0))
+                profiling_avg_overhead_ms = float(metadata.get('profiling_avg_overhead_ms', 0))
+        except (ValueError, TypeError):
+            pass
+
+    # Pipeline benchmark results (from metadata)
+    pipeline_sequential_fps = 0.0
+    pipeline_pipelined_fps = 0.0
+    pipeline_speedup = 0.0
+    pipeline_sequential_ms = 0.0
+    pipeline_pipelined_ms = 0.0
+    if metadata:
+        try:
+            seq_fps = metadata.get('pipeline_sequential_fps', '0')
+            if seq_fps and float(seq_fps) > 0:
+                pipeline_sequential_fps = float(seq_fps)
+                pipeline_pipelined_fps = float(metadata.get('pipeline_pipelined_fps', 0))
+                pipeline_speedup = float(metadata.get('pipeline_speedup', 0))
+                pipeline_sequential_ms = float(metadata.get('pipeline_sequential_ms', 0))
+                pipeline_pipelined_ms = float(metadata.get('pipeline_pipelined_ms', 0))
+        except (ValueError, TypeError):
+            pass
 
     return KpiMetrics(
         # Latency (total E2E)
@@ -340,6 +408,8 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         # E2E breakdown (P50)
         preprocess_p50=preprocess_p50,
         inference_only_p50=inference_only_p50,
+        input_create_p50=input_create_p50,
+        output_copy_p50=output_copy_p50,
         postprocess_p50=postprocess_p50,
         detection_count_mean=detection_count_mean,
 
@@ -364,12 +434,30 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         # Memory
         memory_peak=int(memories.max()) if len(memories) > 0 else 0,
         memory_mean=memories.mean() if len(memories) > 0 else 0,
+        memory_min=int(memories.min()) if len(memories) > 0 else 0,
+        memory_start=int(memories.iloc[0]) if len(memories) > 0 else 0,
+        memory_end=int(memories.iloc[-1]) if len(memories) > 0 else 0,
 
         # Duration
         duration_seconds=duration,
 
         # Cold start
-        cold_start=cold_start
+        cold_start=cold_start,
+
+        # ORT Profiling
+        profiling_iterations=profiling_iterations,
+        profiling_avg_total_ms=profiling_avg_total_ms,
+        profiling_avg_npu_ms=profiling_avg_npu_ms,
+        profiling_avg_cpu_ms=profiling_avg_cpu_ms,
+        profiling_avg_fence_ms=profiling_avg_fence_ms,
+        profiling_avg_overhead_ms=profiling_avg_overhead_ms,
+
+        # Pipeline benchmark
+        pipeline_sequential_fps=pipeline_sequential_fps,
+        pipeline_pipelined_fps=pipeline_pipelined_fps,
+        pipeline_speedup=pipeline_speedup,
+        pipeline_sequential_ms=pipeline_sequential_ms,
+        pipeline_pipelined_ms=pipeline_pipelined_ms
     )
 
 
@@ -495,10 +583,29 @@ def generate_single_report(file_path: str) -> Tuple[str, dict, KpiMetrics]:
 
     if metrics.inference_only_p50 > 0:
         lines.append(f"\nE2E Breakdown (P50):")
-        lines.append(f"  Preprocess:  {metrics.preprocess_p50:.2f} ms")
-        lines.append(f"  Inference:   {metrics.inference_only_p50:.2f} ms")
-        lines.append(f"  Postprocess: {metrics.postprocess_p50:.2f} ms")
+        lines.append(f"  Preprocess:     {metrics.preprocess_p50:.2f} ms")
+        lines.append(f"  Input create:   {metrics.input_create_p50:.2f} ms")
+        lines.append(f"  Inference:      {metrics.inference_only_p50:.2f} ms")
+        lines.append(f"  Output copy:    {metrics.output_copy_p50:.2f} ms")
+        lines.append(f"  Postprocess:    {metrics.postprocess_p50:.2f} ms")
         lines.append(f"  Avg Detections: {metrics.detection_count_mean:.1f}")
+
+    if metrics.profiling_iterations > 0:
+        lines.append(f"\nORT Profiling ({metrics.profiling_iterations} iterations):")
+        lines.append(f"  session.run() avg:  {metrics.profiling_avg_total_ms:.2f} ms")
+        lines.append(f"  NPU compute avg:    {metrics.profiling_avg_npu_ms:.2f} ms")
+        lines.append(f"  CPU compute avg:    {metrics.profiling_avg_cpu_ms:.2f} ms")
+        lines.append(f"  Fence (sync) avg:   {metrics.profiling_avg_fence_ms:.2f} ms")
+        lines.append(f"  ORT overhead avg:   {metrics.profiling_avg_overhead_ms:.2f} ms")
+        if metrics.profiling_avg_total_ms > 0:
+            npu_ratio = metrics.profiling_avg_npu_ms / metrics.profiling_avg_total_ms * 100
+            lines.append(f"  NPU ratio:          {npu_ratio:.1f}%")
+
+    if metrics.pipeline_sequential_fps > 0:
+        lines.append(f"\nPipeline Benchmark:")
+        lines.append(f"  Sequential:  {metrics.pipeline_sequential_ms:.2f} ms/frame ({metrics.pipeline_sequential_fps:.1f} FPS)")
+        lines.append(f"  Pipelined:   {metrics.pipeline_pipelined_ms:.2f} ms/frame ({metrics.pipeline_pipelined_fps:.1f} FPS)")
+        lines.append(f"  Speedup:     {metrics.pipeline_speedup:.2f}x")
 
     lines.append(f"\nThroughput:")
     lines.append(f"  FPS: {metrics.fps:.2f} inf/s")
@@ -517,9 +624,12 @@ def generate_single_report(file_path: str) -> Tuple[str, dict, KpiMetrics]:
     lines.append(f"\nPower:")
     lines.append(f"  Mean: {metrics.power_mean:.1f} mW (±{metrics.power_std:.1f})")
 
-    lines.append(f"\nMemory:")
+    lines.append(f"\nMemory (VmRSS):")
+    lines.append(f"  Start: {metrics.memory_start} MB")
+    lines.append(f"  End: {metrics.memory_end} MB")
     lines.append(f"  Peak: {metrics.memory_peak} MB")
     lines.append(f"  Mean: {metrics.memory_mean:.1f} MB")
+    lines.append(f"  Delta: {metrics.memory_end - metrics.memory_start:+d} MB")
 
     return "\n".join(lines), metadata, metrics
 
@@ -623,20 +733,57 @@ def generate_comparison_table(file_paths: list) -> str:
 
     # Section 2b: E2E Breakdown
     has_breakdown_data = any(exp['metrics'].inference_only_p50 > 0 for exp in experiments)
+    has_boundary_data = any(exp['metrics'].input_create_p50 > 0 for exp in experiments)
     if has_breakdown_data:
         lines.append(f"\n\n[2b] E2E Breakdown (P50)")
-        lines.append("-" * 120)
-        lines.append(f"{'#':<4} {'Label':<40} {'PreProc(ms)':<12} {'Infer(ms)':<12} {'PostProc(ms)':<12} {'Dets':<8} {'Total(ms)':<10}")
-        lines.append("-" * 120)
+        lines.append("-" * 140)
+        if has_boundary_data:
+            lines.append(f"{'#':<4} {'Label':<35} {'PreProc':<9} {'InCreate':<9} {'Infer':<9} {'OutCopy':<9} {'PostProc':<9} {'Dets':<6} {'Total':<9}")
+        else:
+            lines.append(f"{'#':<4} {'Label':<35} {'PreProc':<9} {'Infer':<9} {'PostProc':<9} {'Dets':<6} {'Total':<9}")
+        lines.append("-" * 140)
         for i, exp in enumerate(experiments, 1):
             m = exp['metrics']
-            lines.append(f"{i:<4} {exp['label']:<40} {m.preprocess_p50:<12.2f} {m.inference_only_p50:<12.2f} "
-                         f"{m.postprocess_p50:<12.2f} {m.detection_count_mean:<8.1f} {m.latency_p50:<10.2f}")
+            if has_boundary_data:
+                lines.append(f"{i:<4} {exp['label']:<35} {m.preprocess_p50:<9.2f} {m.input_create_p50:<9.2f} "
+                             f"{m.inference_only_p50:<9.2f} {m.output_copy_p50:<9.2f} "
+                             f"{m.postprocess_p50:<9.2f} {m.detection_count_mean:<6.1f} {m.latency_p50:<9.2f}")
+            else:
+                lines.append(f"{i:<4} {exp['label']:<35} {m.preprocess_p50:<9.2f} "
+                             f"{m.inference_only_p50:<9.2f} "
+                             f"{m.postprocess_p50:<9.2f} {m.detection_count_mean:<6.1f} {m.latency_p50:<9.2f}")
         lines.append("")
-        lines.append("    PreProc: Image preprocessing (letterbox + normalize + CHW)")
-        lines.append("    Infer: Model inference only (ONNX Runtime)")
+        lines.append("    PreProc:  Image preprocessing (letterbox + normalize + CHW)")
+        if has_boundary_data:
+            lines.append("    InCreate: Input tensor creation (Java→Native JNI boundary)")
+        lines.append("    Infer:    Model inference only (session.run)")
+        if has_boundary_data:
+            lines.append("    OutCopy:  Output tensor copy (Native→Java buffer copy)")
         lines.append("    PostProc: Confidence filter + NMS + coordinate transform")
-        lines.append("    Dets: Average detection count per frame")
+
+    # Section 2c: ORT Profiling (NPU compute vs framework overhead)
+    has_profiling_data = any(exp['metrics'].profiling_iterations > 0 for exp in experiments)
+    if has_profiling_data:
+        lines.append(f"\n\n[2c] ORT Profiling (session.run Breakdown)")
+        lines.append("-" * 140)
+        lines.append(f"{'#':<4} {'Label':<35} {'session.run':<12} {'NPU(ms)':<10} {'CPU(ms)':<10} {'Fence(ms)':<10} {'ORT(ms)':<10} {'NPU%':<8}")
+        lines.append("-" * 140)
+        for i, exp in enumerate(experiments, 1):
+            m = exp['metrics']
+            if m.profiling_iterations > 0:
+                npu_pct = m.profiling_avg_npu_ms / m.profiling_avg_total_ms * 100 if m.profiling_avg_total_ms > 0 else 0
+                lines.append(f"{i:<4} {exp['label']:<35} {m.profiling_avg_total_ms:<12.2f} {m.profiling_avg_npu_ms:<10.2f} "
+                             f"{m.profiling_avg_cpu_ms:<10.2f} {m.profiling_avg_fence_ms:<10.2f} "
+                             f"{m.profiling_avg_overhead_ms:<10.2f} {npu_pct:<8.1f}")
+            else:
+                lines.append(f"{i:<4} {exp['label']:<35} {'N/A':<12} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<8}")
+        lines.append("")
+        lines.append("    session.run = NPU + CPU + Fence + ORT overhead")
+        lines.append("    NPU:   QNN EP 실제 연산 시간 (HTP 커널 실행)")
+        lines.append("    CPU:   CPU fallback 노드 실행 시간")
+        lines.append("    Fence: EP 동기화 배리어 (HTP dispatch + completion wait)")
+        lines.append("    ORT:   프레임워크 오버헤드 (그래프 스케줄링, 텐서 관리, JNI)")
+        lines.append("    NPU%:  session.run() 중 실제 NPU 연산 비율")
 
     # Section 3: Cold Start Breakdown
     lines.append(f"\n\n[3] Cold Start Breakdown")
@@ -700,6 +847,29 @@ def generate_comparison_table(file_paths: list) -> str:
     lines.append("    Power: 평균 전력 소비량 (mW)")
     lines.append("    Slope: 온도 상승률 (°C/min, lower=better)")
     lines.append("    MemPeak: 최대 메모리 사용량 (MB)")
+
+    # Section 5b: Memory Analysis
+    lines.append(f"\n\n[5b] Memory Analysis (VmRSS)")
+    lines.append("-" * 120)
+    lines.append(f"{'#':<4} {'Label':<40} {'Start(MB)':<10} {'End(MB)':<10} {'Peak(MB)':<10} {'Mean(MB)':<10} {'Delta(MB)':<10} {'Verdict':<16}")
+    lines.append("-" * 120)
+    for i, exp in enumerate(experiments, 1):
+        m = exp['metrics']
+        delta = m.memory_end - m.memory_start
+        if m.memory_start > 0 and abs(delta) / m.memory_start * 100 > 10:
+            verdict = "Leak risk" if delta > 0 else "Shrinking"
+        elif delta > 20:
+            verdict = "Growing"
+        elif delta < -20:
+            verdict = "Shrinking"
+        else:
+            verdict = "Stable"
+        lines.append(f"{i:<4} {exp['label']:<40} {m.memory_start:<10} {m.memory_end:<10} "
+                     f"{m.memory_peak:<10} {m.memory_mean:<10.0f} {delta:<+10} {verdict:<16}")
+    lines.append("")
+    lines.append("    Start/End: 벤치마크 시작/종료 시점의 VmRSS")
+    lines.append("    Delta: End - Start (양수=메모리 증가, 음수=감소)")
+    lines.append("    Verdict: Stable(±20MB 이내), Growing/Shrinking(>20MB), Leak risk(>10% 증가)")
 
     # Section 6: Model Details
     lines.append(f"\n\n[6] Model Details")
@@ -804,6 +974,32 @@ def generate_comparison_table(file_paths: list) -> str:
                 if exp != cpu_exp and cpu_e2e > 0:
                     reduction = (cpu_e2e - exp['metrics'].latency_p50) / cpu_e2e * 100
                     lines.append(f"      {exp['label']}: Coverage {cov:.1f}% → E2E {reduction:+.1f}% 감소")
+
+    # Section 9: Pipeline Throughput Analysis
+    has_pipeline_data = any(exp['metrics'].pipeline_sequential_fps > 0 for exp in experiments)
+    if has_pipeline_data:
+        lines.append(f"\n\n[9] Pipeline Throughput Analysis")
+        lines.append("-" * 140)
+        lines.append(f"{'#':<4} {'Label':<35} {'Seq(ms)':<10} {'Pipe(ms)':<10} {'SeqFPS':<10} {'PipeFPS':<10} {'Speedup':<10} {'TheoFPS':<10}")
+        lines.append("-" * 140)
+        for i, exp in enumerate(experiments, 1):
+            m = exp['metrics']
+            if m.pipeline_sequential_fps > 0:
+                # Theoretical max: limited by max(infer, pre+post)
+                cpu_work = m.preprocess_p50 + m.input_create_p50 + m.output_copy_p50 + m.postprocess_p50
+                bottleneck = max(cpu_work, m.inference_only_p50)
+                theo_fps = 1000.0 / bottleneck if bottleneck > 0 else 0
+                lines.append(f"{i:<4} {exp['label']:<35} {m.pipeline_sequential_ms:<10.2f} {m.pipeline_pipelined_ms:<10.2f} "
+                             f"{m.pipeline_sequential_fps:<10.1f} {m.pipeline_pipelined_fps:<10.1f} "
+                             f"{m.pipeline_speedup:<10.2f} {theo_fps:<10.1f}")
+            else:
+                lines.append(f"{i:<4} {exp['label']:<35} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10}")
+        lines.append("")
+        lines.append("    Seq:     순차 실행 (pre→infer→post) 평균 시간")
+        lines.append("    Pipe:    파이프라인 실행 (pre+post와 infer 병렬화) 평균 시간")
+        lines.append("    Speedup: Pipe/Seq 실측 속도 향상")
+        lines.append("    TheoFPS: 이론적 최대 = 1000/max(CPU작업, Infer)")
+        lines.append("    * 실측 < 이론: 스레드 동기화, 큐잉, GC 등의 오버헤드")
 
     lines.append("")
     return "\n".join(lines)
