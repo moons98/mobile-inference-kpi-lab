@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.util.Log
+import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
@@ -81,7 +82,9 @@ class OrtRunner(private val context: Context) {
      */
     data class InferenceResult(
         val inferenceMs: Float,
-        val outputData: FloatArray
+        val outputData: FloatArray,
+        val scoresData: FloatArray? = null,   // E2E models: per-class scores [1,8400,80]
+        val nmsIndices: LongArray? = null      // E2E+NMS models: selected indices [N,3]
     )
 
     data class KpiRecord(
@@ -297,15 +300,18 @@ class OrtRunner(private val context: Context) {
             Log.i(TAG, "Input: name=$inputName, shape=$inputShapeStr, type=${tensorInfo?.type}")
         }
 
-        // Output info
+        // Output info (capture all outputs for multi-output models)
         val outputInfo = session.outputInfo
         if (outputInfo.isNotEmpty()) {
             val firstOutput = outputInfo.entries.first()
             outputName = firstOutput.key
-            val tensorInfo = firstOutput.value.info as? TensorInfo
-            val outputShape = tensorInfo?.shape ?: longArrayOf()
-            outputShapeStr = outputShape.contentToString()
-            Log.i(TAG, "Output: name=$outputName, shape=$outputShapeStr, type=${tensorInfo?.type}")
+            val shapes = outputInfo.entries.map { (name, info) ->
+                val tensorInfo = info.info as? TensorInfo
+                val shape = tensorInfo?.shape ?: longArrayOf()
+                Log.i(TAG, "Output: name=$name, shape=${shape.contentToString()}, type=${tensorInfo?.type}")
+                "$name:${shape.contentToString()}"
+            }
+            outputShapeStr = shapes.joinToString(" | ")
         }
     }
 
@@ -379,6 +385,55 @@ class OrtRunner(private val context: Context) {
         return chw
     }
 
+    /**
+     * Preprocess source image for E2E models (runs every iteration).
+     * Letterbox resize to model input size, pack as uint8 HWC byte array.
+     * Normalize and HWC->CHW are baked into the ONNX graph.
+     */
+    private fun preprocessFrameUint8(): ByteArray {
+        val model = currentModel!!
+        val bitmap = sourceBitmap!!
+        val targetW = model.inputWidth
+        val targetH = model.inputHeight
+
+        // Letterbox resize (same as preprocessFrame)
+        val scaleW = targetW.toFloat() / bitmap.width
+        val scaleH = targetH.toFloat() / bitmap.height
+        letterboxScale = minOf(scaleW, scaleH)
+
+        val newW = (bitmap.width * letterboxScale).toInt()
+        val newH = (bitmap.height * letterboxScale).toInt()
+
+        letterboxPadLeft = (targetW - newW) / 2f
+        letterboxPadTop = (targetH - newH) / 2f
+
+        val resized = Bitmap.createScaledBitmap(bitmap, newW, newH, true)
+
+        val letterboxed = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(letterboxed)
+        canvas.drawColor(Color.rgb(114, 114, 114))
+        canvas.drawBitmap(resized, letterboxPadLeft, letterboxPadTop, null)
+
+        val pixels = IntArray(targetW * targetH)
+        letterboxed.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
+
+        // Pack as HWC uint8 (no normalize, no transpose - done in ONNX graph)
+        val hwc = ByteArray(targetH * targetW * 3)
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            hwc[i * 3]     = ((p shr 16) and 0xFF).toByte()  // R
+            hwc[i * 3 + 1] = ((p shr 8) and 0xFF).toByte()   // G
+            hwc[i * 3 + 2] = (p and 0xFF).toByte()            // B
+        }
+
+        if (resized !== bitmap) {
+            resized.recycle()
+        }
+        letterboxed.recycle()
+
+        return hwc
+    }
+
     private fun logSessionInfo() {
         val session = ortSession ?: return
 
@@ -402,23 +457,58 @@ class OrtRunner(private val context: Context) {
     }
 
     /**
+     * Preprocess: dispatch to float or uint8 path based on model input format.
+     */
+    private fun preprocess(): Any = when (currentModel!!.inputFormat) {
+        InputFormat.FLOAT_NCHW -> preprocessFrame()
+        InputFormat.UINT8_NHWC -> preprocessFrameUint8()
+    }
+
+    /**
+     * Postprocess: dispatch to appropriate postprocessor based on model output format.
+     */
+    private fun postprocess(result: InferenceResult): List<Detection> =
+        when (currentModel!!.outputFormat) {
+            OutputFormat.RAW_84x8400 -> YoloPostProcessor.process(
+                output = result.outputData,
+                originalWidth = originalImageWidth,
+                originalHeight = originalImageHeight,
+                padLeft = letterboxPadLeft,
+                padTop = letterboxPadTop,
+                scale = letterboxScale
+            )
+            OutputFormat.BOXES_SCORES -> YoloPostProcessor.processBoxesScores(
+                boxes = result.outputData,
+                scores = result.scoresData!!,
+                originalWidth = originalImageWidth,
+                originalHeight = originalImageHeight,
+                padLeft = letterboxPadLeft,
+                padTop = letterboxPadTop,
+                scale = letterboxScale
+            )
+            OutputFormat.BOXES_SCORES_NMS -> YoloPostProcessor.processNmsIndices(
+                boxes = result.outputData,
+                scores = result.scoresData!!,
+                nmsIndices = result.nmsIndices!!,
+                originalWidth = originalImageWidth,
+                originalHeight = originalImageHeight,
+                padLeft = letterboxPadLeft,
+                padTop = letterboxPadTop,
+                scale = letterboxScale
+            )
+        }
+
+    /**
      * Run warm-up iterations to stabilize performance.
      * Includes full E2E pipeline (preprocess + inference + postprocess).
      */
     fun runWarmUp(iterations: Int = 10) {
         Log.i(TAG, "Running $iterations warm-up iterations (full E2E)...")
         for (i in 0 until iterations) {
-            val inputData = preprocessFrame()
+            val inputData = preprocess()
             val result = runInferenceInternal(inputData)
             if (result != null) {
-                YoloPostProcessor.process(
-                    output = result.outputData,
-                    originalWidth = originalImageWidth,
-                    originalHeight = originalImageHeight,
-                    padLeft = letterboxPadLeft,
-                    padTop = letterboxPadTop,
-                    scale = letterboxScale
-                )
+                postprocess(result)
             }
         }
         Log.i(TAG, "Warm-up completed")
@@ -443,7 +533,7 @@ class OrtRunner(private val context: Context) {
 
         // Preprocess (every iteration)
         val preStart = System.nanoTime()
-        val inputData = preprocessFrame()
+        val inputData = preprocess()
         val preEnd = System.nanoTime()
         val preprocessMs = ((preEnd - preStart) / 1_000_000.0).toFloat()
 
@@ -452,14 +542,7 @@ class OrtRunner(private val context: Context) {
 
         // Postprocess
         val postStart = System.nanoTime()
-        val detections = YoloPostProcessor.process(
-            output = inferenceResult.outputData,
-            originalWidth = originalImageWidth,
-            originalHeight = originalImageHeight,
-            padLeft = letterboxPadLeft,
-            padTop = letterboxPadTop,
-            scale = letterboxScale
-        )
+        val detections = postprocess(inferenceResult)
         val postEnd = System.nanoTime()
         val postprocessMs = ((postEnd - postStart) / 1_000_000.0).toFloat()
 
@@ -498,39 +581,71 @@ class OrtRunner(private val context: Context) {
         return totalMs
     }
 
-    private fun runInferenceInternal(inputData: FloatArray? = null): InferenceResult? {
+    private fun runInferenceInternal(inputData: Any? = null): InferenceResult? {
         val env = ortEnv ?: return null
         val session = ortSession ?: return null
+        val model = currentModel ?: return null
         val data = inputData ?: return null
 
         return try {
-            // Create input tensor from preprocessed image data (not timed)
-            val inputTensor = OnnxTensor.createTensor(
-                env,
-                FloatBuffer.wrap(data),
-                inputShape
-            )
+            // Create input tensor based on model input format (not timed)
+            val inputTensor = when (model.inputFormat) {
+                InputFormat.FLOAT_NCHW -> OnnxTensor.createTensor(
+                    env, FloatBuffer.wrap(data as FloatArray), inputShape
+                )
+                InputFormat.UINT8_NHWC -> OnnxTensor.createTensor(
+                    env, ByteBuffer.wrap(data as ByteArray), inputShape, OnnxJavaType.UINT8
+                )
+            }
 
             // Run inference (timed separately from tensor creation)
             val inputs = Collections.singletonMap(inputName, inputTensor)
             val startTime = System.nanoTime()
             val results = session.run(inputs)
             val endTime = System.nanoTime()
+            val inferenceMs = ((endTime - startTime) / 1_000_000.0).toFloat()
 
-            // Extract output tensor data before closing
-            val outputTensor = results.get(0) as OnnxTensor
-            val outputBuffer = outputTensor.floatBuffer
-            val outputArray = FloatArray(outputBuffer.remaining())
-            outputBuffer.get(outputArray)
+            // Extract outputs based on model output format
+            val result = when (model.outputFormat) {
+                OutputFormat.RAW_84x8400 -> {
+                    val buf = (results.get(0) as OnnxTensor).floatBuffer
+                    val arr = FloatArray(buf.remaining())
+                    buf.get(arr)
+                    InferenceResult(inferenceMs, arr)
+                }
+                OutputFormat.BOXES_SCORES -> {
+                    val boxesBuf = (results.get(0) as OnnxTensor).floatBuffer
+                    val boxesArr = FloatArray(boxesBuf.remaining())
+                    boxesBuf.get(boxesArr)
+
+                    val scoresBuf = (results.get(1) as OnnxTensor).floatBuffer
+                    val scoresArr = FloatArray(scoresBuf.remaining())
+                    scoresBuf.get(scoresArr)
+
+                    InferenceResult(inferenceMs, boxesArr, scoresArr)
+                }
+                OutputFormat.BOXES_SCORES_NMS -> {
+                    val boxesBuf = (results.get(0) as OnnxTensor).floatBuffer
+                    val boxesArr = FloatArray(boxesBuf.remaining())
+                    boxesBuf.get(boxesArr)
+
+                    val scoresBuf = (results.get(1) as OnnxTensor).floatBuffer
+                    val scoresArr = FloatArray(scoresBuf.remaining())
+                    scoresBuf.get(scoresArr)
+
+                    val nmsBuf = (results.get(2) as OnnxTensor).longBuffer
+                    val nmsArr = LongArray(nmsBuf.remaining())
+                    nmsBuf.get(nmsArr)
+
+                    InferenceResult(inferenceMs, boxesArr, scoresArr, nmsArr)
+                }
+            }
 
             // Clean up
             inputTensor.close()
             results.close()
 
-            InferenceResult(
-                inferenceMs = ((endTime - startTime) / 1_000_000.0).toFloat(),
-                outputData = outputArray
-            )
+            result
         } catch (e: Exception) {
             Log.e(TAG, "Inference failed: ${e.message}", e)
             null
@@ -713,6 +828,23 @@ class OrtRunner(private val context: Context) {
 }
 
 /**
+ * Input tensor format
+ */
+enum class InputFormat {
+    FLOAT_NCHW,   // Original: float32 [1, 3, 640, 640] - CPU normalize + transpose
+    UINT8_NHWC    // E2E: uint8 [1, 640, 640, 3] - normalize + transpose baked into graph
+}
+
+/**
+ * Output tensor format
+ */
+enum class OutputFormat {
+    RAW_84x8400,       // Original: [1, 84, 8400] - needs full CPU postprocessing
+    BOXES_SCORES,      // E2E no-NMS: boxes [1,8400,4] + scores [1,8400,80]
+    BOXES_SCORES_NMS   // E2E with NMS: boxes + scores + nms_indices [N,3]
+}
+
+/**
  * ONNX model types
  */
 enum class OnnxModelType(
@@ -722,8 +854,10 @@ enum class OnnxModelType(
     val inputHeight: Int,
     val inputChannels: Int,
     val outputShape: IntArray,
-    val isQuantized: Boolean,  // Whether model uses internal quantization (INT8)
-    val precision: String      // FP32, INT8_DYNAMIC, INT8_QDQ
+    val isQuantized: Boolean,
+    val precision: String,
+    val inputFormat: InputFormat = InputFormat.FLOAT_NCHW,
+    val outputFormat: OutputFormat = OutputFormat.RAW_84x8400
 ) {
     // YOLOv8n models (640x640, object detection)
     YOLOV8N(
@@ -743,7 +877,7 @@ enum class OnnxModelType(
         inputHeight = 640,
         inputChannels = 3,
         outputShape = intArrayOf(1, 84, 8400),
-        isQuantized = true,  // Dynamic quant: input is FLOAT, quantized internally
+        isQuantized = true,
         precision = "INT8_DYNAMIC"
     ),
     YOLOV8N_INT8_QDQ(
@@ -753,12 +887,53 @@ enum class OnnxModelType(
         inputHeight = 640,
         inputChannels = 3,
         outputShape = intArrayOf(1, 84, 8400),
-        isQuantized = true,  // QDQ: input is FLOAT, Q node quantizes it
+        isQuantized = true,
         precision = "INT8_QDQ"
+    ),
+
+    // E2E models: pre/post processing baked into ONNX graph
+    YOLOV8N_PRE(
+        displayName = "YOLOv8n (Pre)",
+        filename = "yolov8n_pre.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        outputShape = intArrayOf(1, 84, 8400),
+        isQuantized = false,
+        precision = "FP32",
+        inputFormat = InputFormat.UINT8_NHWC,
+        outputFormat = OutputFormat.RAW_84x8400
+    ),
+    YOLOV8N_E2E(
+        displayName = "YOLOv8n (E2E)",
+        filename = "yolov8n_e2e.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        outputShape = intArrayOf(1, 8400, 4),
+        isQuantized = false,
+        precision = "FP32",
+        inputFormat = InputFormat.UINT8_NHWC,
+        outputFormat = OutputFormat.BOXES_SCORES
+    ),
+    YOLOV8N_E2E_NMS(
+        displayName = "YOLOv8n (E2E+NMS)",
+        filename = "yolov8n_e2e_nms.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        outputShape = intArrayOf(1, 8400, 4),
+        isQuantized = false,
+        precision = "FP32",
+        inputFormat = InputFormat.UINT8_NHWC,
+        outputFormat = OutputFormat.BOXES_SCORES_NMS
     );
 
     val inputShape: LongArray
-        get() = longArrayOf(1, inputChannels.toLong(), inputHeight.toLong(), inputWidth.toLong())  // NCHW
+        get() = when (inputFormat) {
+            InputFormat.FLOAT_NCHW -> longArrayOf(1, inputChannels.toLong(), inputHeight.toLong(), inputWidth.toLong())
+            InputFormat.UINT8_NHWC -> longArrayOf(1, inputHeight.toLong(), inputWidth.toLong(), inputChannels.toLong())
+        }
 
     /** Filename-safe version of displayName for CSV export filenames */
     val filenameSafeName: String

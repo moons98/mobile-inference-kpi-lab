@@ -15,6 +15,16 @@
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
         { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false }
       ]
+    },
+    {
+      "id": "e2e_prepost_offload",
+      "name": "[실험2] Pre/Post Offload",
+      "experiments": [
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8N_PRE", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8N_E2E", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8N_E2E_NMS", "executionProvider": "QNN_NPU", "useNpuFp16": true }
+      ]
     }
   ]
 }

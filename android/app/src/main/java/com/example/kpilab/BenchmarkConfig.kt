@@ -38,11 +38,7 @@ data class BenchmarkConfig(
     fun generateSessionId(): String {
         val timestamp = System.currentTimeMillis()
 
-        val modelStr = when (modelType) {
-            OnnxModelType.YOLOV8N -> "yolov8n"
-            OnnxModelType.YOLOV8N_INT8_DYNAMIC -> "yolov8n_dyn"
-            OnnxModelType.YOLOV8N_INT8_QDQ -> "yolov8n_qdq"
-        }
+        val modelStr = modelType.name.lowercase()
 
         val epStr = when (executionProvider) {
             ExecutionProvider.QNN_NPU -> "npu"

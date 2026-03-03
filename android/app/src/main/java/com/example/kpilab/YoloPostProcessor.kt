@@ -112,6 +112,111 @@ object YoloPostProcessor {
     }
 
     /**
+     * Process pre-decoded boxes and scores from E2E model (without NMS).
+     * Boxes are already in x1,y1,x2,y2 format in 640x640 letterbox space.
+     * Applies confidence filter + per-class NMS on CPU.
+     *
+     * @param boxes Flat float array [1, 8400, 4] row-major (x1, y1, x2, y2)
+     * @param scores Flat float array [1, 8400, 80] row-major
+     */
+    fun processBoxesScores(
+        boxes: FloatArray,
+        scores: FloatArray,
+        originalWidth: Int,
+        originalHeight: Int,
+        padLeft: Float,
+        padTop: Float,
+        scale: Float
+    ): List<Detection> {
+        val candidates = mutableListOf<Detection>()
+
+        for (d in 0 until NUM_DETECTIONS) {
+            var maxScore = 0f
+            var maxClassId = 0
+            for (c in 0 until NUM_CLASSES) {
+                val score = scores[d * NUM_CLASSES + c]
+                if (score > maxScore) {
+                    maxScore = score
+                    maxClassId = c
+                }
+            }
+
+            if (maxScore < CONFIDENCE_THRESHOLD) continue
+
+            // Boxes already in corner format (x1,y1,x2,y2) in letterbox space
+            val x1 = (boxes[d * 4 + 0] - padLeft) / scale
+            val y1 = (boxes[d * 4 + 1] - padTop) / scale
+            val x2 = (boxes[d * 4 + 2] - padLeft) / scale
+            val y2 = (boxes[d * 4 + 3] - padTop) / scale
+
+            candidates.add(
+                Detection(
+                    x1 = x1.coerceIn(0f, originalWidth.toFloat()),
+                    y1 = y1.coerceIn(0f, originalHeight.toFloat()),
+                    x2 = x2.coerceIn(0f, originalWidth.toFloat()),
+                    y2 = y2.coerceIn(0f, originalHeight.toFloat()),
+                    confidence = maxScore,
+                    classId = maxClassId,
+                    className = COCO_CLASSES[maxClassId]
+                )
+            )
+        }
+
+        return nms(candidates)
+    }
+
+    /**
+     * Process pre-decoded boxes, scores, and NMS indices from full E2E model.
+     * NMS was performed in the ONNX graph; this gathers selected detections
+     * and transforms coordinates back to original image space.
+     *
+     * @param boxes Flat float array [1, 8400, 4] row-major (x1, y1, x2, y2)
+     * @param scores Flat float array [1, 8400, 80] row-major
+     * @param nmsIndices Flat long array [N, 3] row-major (batch_idx, class_idx, box_idx)
+     */
+    fun processNmsIndices(
+        boxes: FloatArray,
+        scores: FloatArray,
+        nmsIndices: LongArray,
+        originalWidth: Int,
+        originalHeight: Int,
+        padLeft: Float,
+        padTop: Float,
+        scale: Float
+    ): List<Detection> {
+        val numSelected = nmsIndices.size / 3
+        if (numSelected == 0) return emptyList()
+
+        val detections = mutableListOf<Detection>()
+
+        for (i in 0 until numSelected) {
+            val classIdx = nmsIndices[i * 3 + 1].toInt()
+            val boxIdx = nmsIndices[i * 3 + 2].toInt()
+
+            val confidence = scores[boxIdx * NUM_CLASSES + classIdx]
+
+            val x1 = (boxes[boxIdx * 4 + 0] - padLeft) / scale
+            val y1 = (boxes[boxIdx * 4 + 1] - padTop) / scale
+            val x2 = (boxes[boxIdx * 4 + 2] - padLeft) / scale
+            val y2 = (boxes[boxIdx * 4 + 3] - padTop) / scale
+
+            detections.add(
+                Detection(
+                    x1 = x1.coerceIn(0f, originalWidth.toFloat()),
+                    y1 = y1.coerceIn(0f, originalHeight.toFloat()),
+                    x2 = x2.coerceIn(0f, originalWidth.toFloat()),
+                    y2 = y2.coerceIn(0f, originalHeight.toFloat()),
+                    confidence = confidence,
+                    classId = classIdx,
+                    className = COCO_CLASSES[classIdx]
+                )
+            )
+        }
+
+        return detections.sortedByDescending { it.confidence }.take(MAX_DETECTIONS)
+    }
+
+    /**
      * Per-class Non-Maximum Suppression.
      */
     private fun nms(detections: List<Detection>): List<Detection> {
