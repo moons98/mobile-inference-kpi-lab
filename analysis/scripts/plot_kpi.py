@@ -443,77 +443,20 @@ def compare_experiments(
     ax.set_title('Power Consumption (Moving Avg)')
     ax.legend(loc='upper right', fontsize=9)
 
-    # 4. Summary table (bottom-right)
+    # 4. Memory Over Time (bottom-right)
     ax = axes[1, 1]
-    ax.axis('off')
+    for i, (data, label, color, style) in enumerate(zip(data_list, numbered_labels, colors, styles)):
+        system_df = data['system_df']
+        mem_data = system_df[system_df['memory_mb'] > 0]
+        if len(mem_data) > 0:
+            times = mem_data['elapsed_seconds'] / 60
+            memory = mem_data['memory_mb']
+            ax.plot(times, memory, color=color, linestyle=style, linewidth=2, label=f"{i+1}")
 
-    table_data = []
-    has_e2e = any(m.inference_only_p50 > 0 for m in metrics_list)
-    has_coverage = any(meta.get('ort_total_nodes', '0') != '0' for meta in metadata_list)
-
-    if has_e2e:
-        if has_coverage:
-            headers = ['#', 'Label', 'Cov%', 'E2E', 'P95', 'Inf', 'Drift%']
-            col_widths = [0.04, 0.30, 0.08, 0.09, 0.09, 0.09, 0.09]
-        else:
-            headers = ['#', 'Label', 'E2E', 'P95', 'Inf', 'Post', 'Drift%']
-            col_widths = [0.04, 0.30, 0.09, 0.09, 0.09, 0.09, 0.09]
-    else:
-        headers = ['#', 'Label', 'P50', 'P95', 'Slope', 'Power', '']
-        col_widths = [0.05, 0.35, 0.10, 0.10, 0.10, 0.10, 0.10]
-
-    for i, (label, m, meta) in enumerate(zip(labels, metrics_list, metadata_list)):
-        total = int(meta.get('ort_total_nodes', 0))
-        qnn = int(meta.get('ort_qnn_nodes', 0))
-        cov_str = f'{qnn/total*100:.0f}' if total > 0 else '-'
-
-        if has_e2e:
-            if has_coverage:
-                table_data.append([
-                    f'{i+1}',
-                    label[:28] + '..' if len(label) > 28 else label,
-                    cov_str,
-                    f'{m.latency_p50:.1f}',
-                    f'{m.latency_p95:.1f}',
-                    f'{m.inference_only_p50:.1f}',
-                    f'{m.drift_percent:+.1f}'
-                ])
-            else:
-                table_data.append([
-                    f'{i+1}',
-                    label[:28] + '..' if len(label) > 28 else label,
-                    f'{m.latency_p50:.1f}',
-                    f'{m.latency_p95:.1f}',
-                    f'{m.inference_only_p50:.1f}',
-                    f'{m.postprocess_p50:.1f}',
-                    f'{m.drift_percent:+.1f}'
-                ])
-        else:
-            table_data.append([
-                f'{i+1}',
-                label[:33] + '...' if len(label) > 33 else label,
-                f'{m.latency_p50:.1f}',
-                f'{m.latency_p95:.1f}',
-                f'{m.thermal_slope:.2f}',
-                f'{m.power_mean:.1f}',
-                ''
-            ])
-
-    table = ax.table(
-        cellText=table_data,
-        colLabels=headers,
-        loc='center',
-        cellLoc='center',
-        colWidths=col_widths
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1.0, 1.4)
-
-    # Style header row
-    for j, key in enumerate(headers):
-        table[(0, j)].set_facecolor('#4472C4')
-        table[(0, j)].set_text_props(color='white', fontweight='bold')
+    ax.set_xlabel('Time (min)')
+    ax.set_ylabel('Memory (MB)')
+    ax.set_title('Memory (VmRSS)')
+    ax.legend(loc='upper right', fontsize=9)
 
     plt.tight_layout()
 
