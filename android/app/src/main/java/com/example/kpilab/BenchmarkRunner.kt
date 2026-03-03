@@ -79,6 +79,7 @@ class BenchmarkRunner(
         private const val MEMORY_METRICS_INTERVAL_MS = 5000L  // 5 seconds
         private const val COOLDOWN_SECONDS = 30  // Cooldown between batch experiments
         private const val WARMUP_ITERATIONS = 10  // Always run warm-up for steady-state
+        private const val PROFILING_ITERATIONS = 50  // ORT profiling phase (separate from main loop)
     }
 
     private val _progress = MutableStateFlow(BenchmarkProgress())
@@ -224,6 +225,13 @@ class BenchmarkRunner(
         _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
         withContext(Dispatchers.IO) {
             runner.runWarmUp(WARMUP_ITERATIONS)
+        }
+
+        // Dedicated profiling phase: run 50 iterations with ORT profiling, then
+        // endProfiling and parse the trace file (~8 MB). This keeps the profiling
+        // file small and removes profiling overhead from the main benchmark loop.
+        withContext(Dispatchers.IO) {
+            runner.runProfilingPhase(PROFILING_ITERATIONS)
         }
 
         _progress.value = _progress.value.copy(state = BenchmarkState.RUNNING)

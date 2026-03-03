@@ -7,9 +7,12 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.util.Log
+import android.util.JsonReader
+import android.util.JsonToken
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileReader
 import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import java.util.concurrent.CopyOnWriteArrayList
@@ -516,6 +519,37 @@ class OrtRunner(private val context: Context) {
     }
 
     /**
+     * Run a dedicated profiling phase: limited iterations with ORT profiling enabled,
+     * then immediately call endProfiling and parse the (small) trace file.
+     *
+     * This separates profiling from the main benchmark loop so that:
+     * 1. The profiling file stays small (~8 MB for 50 iterations vs ~200 MB for 1500)
+     * 2. The main loop runs without profiling overhead, improving P95/P99 accuracy
+     *
+     * Must be called AFTER warmup and BEFORE the main benchmark loop.
+     */
+    fun runProfilingPhase(iterations: Int = 50) {
+        if (!profilingEnabled) {
+            Log.w(TAG, "Profiling not enabled, skipping profiling phase")
+            return
+        }
+
+        Log.i(TAG, "Running profiling phase ($iterations iterations)...")
+        for (i in 0 until iterations) {
+            val inputData = preprocess()
+            val result = runInferenceInternal(inputData)
+            if (result != null) {
+                postprocess(result)
+            }
+        }
+
+        // Collect profiling data now (small file, safe to parse)
+        profilingSummary = analyzeProfilingData()
+        profilingEnabled = false  // Prevent double-collection in endSession()
+        Log.i(TAG, "Profiling phase completed ($iterations iterations)")
+    }
+
+    /**
      * Start a new logging session
      */
     fun startSession(sessionId: String) {
@@ -805,48 +839,62 @@ class OrtRunner(private val context: Context) {
             val fileSizeKb = file.length() / 1024
             Log.i(TAG, "Profiling file size: ${fileSizeKb}KB")
 
-            // Skip parsing if profiling file is too large (> 50 MB) to avoid OOM
-            if (fileSizeKb > 50 * 1024) {
-                Log.w(TAG, "Profiling file too large (${fileSizeKb}KB), skipping analysis")
-                file.delete()
-                return null
-            }
-
-            val json = file.readText()
-            val events = JSONArray(json)
-
+            // Streaming parse — reads one event at a time, never loads full file
             var totalRunUs = 0L
             var npuComputeUs = 0L
             var cpuComputeUs = 0L
             var fenceUs = 0L
             var iterationCount = 0
 
-            for (i in 0 until events.length()) {
-                val event = events.getJSONObject(i)
-                val cat = event.optString("cat", "")
-                val dur = event.optLong("dur", 0)
+            JsonReader(FileReader(file)).use { reader ->
+                reader.beginArray()
+                while (reader.hasNext()) {
+                    var cat = ""
+                    var name = ""
+                    var dur = 0L
+                    var provider = ""
 
-                when (cat) {
-                    "Session" -> {
-                        val name = event.optString("name", "")
-                        if (name == "model_run") {
-                            totalRunUs += dur
-                            iterationCount++
+                    reader.beginObject()
+                    while (reader.hasNext()) {
+                        when (reader.nextName()) {
+                            "cat" -> cat = reader.nextString()
+                            "name" -> name = reader.nextString()
+                            "dur" -> dur = reader.nextLong()
+                            "args" -> {
+                                reader.beginObject()
+                                while (reader.hasNext()) {
+                                    if (reader.nextName() == "provider") {
+                                        provider = reader.nextString()
+                                    } else {
+                                        reader.skipValue()
+                                    }
+                                }
+                                reader.endObject()
+                            }
+                            else -> reader.skipValue()
                         }
                     }
-                    "Node" -> {
-                        val args = event.optJSONObject("args")
-                        val provider = args?.optString("provider", "") ?: ""
-                        when {
-                            provider.contains("QNN") -> npuComputeUs += dur
-                            provider.contains("CPU") -> cpuComputeUs += dur
+                    reader.endObject()
+
+                    when (cat) {
+                        "Session" -> {
+                            if (name == "model_run") {
+                                totalRunUs += dur
+                                iterationCount++
+                            }
                         }
-                    }
-                    // EP synchronization barriers (HTP dispatch + completion wait)
-                    "fence_before", "fence_after" -> {
-                        fenceUs += dur
+                        "Node" -> {
+                            when {
+                                provider.contains("QNN") -> npuComputeUs += dur
+                                provider.contains("CPU") -> cpuComputeUs += dur
+                            }
+                        }
+                        "fence_before", "fence_after" -> {
+                            fenceUs += dur
+                        }
                     }
                 }
+                reader.endArray()
             }
 
             val frameworkUs = totalRunUs - npuComputeUs - cpuComputeUs
@@ -893,7 +941,10 @@ class OrtRunner(private val context: Context) {
      * End the current logging session
      */
     fun endSession() {
-        profilingSummary = analyzeProfilingData()
+        // Only analyze profiling if not already collected by runProfilingPhase()
+        if (profilingSummary == null) {
+            profilingSummary = analyzeProfilingData()
+        }
         Log.i(TAG, "Session ended: $sessionId, records: ${kpiRecords.size}")
     }
 
