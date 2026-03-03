@@ -640,15 +640,13 @@ class OrtRunner(private val context: Context) {
         // --- Phase 2: Pipelined (overlap preprocess with inference) ---
         val pipeStart = System.nanoTime()
         var pendingResult: java.util.concurrent.Future<InferenceResult?>? = null
-        var prevResult: InferenceResult? = null
-
         for (i in 0 until iterations) {
             // Start preprocessing for current frame
             val input = preprocess()
 
             // While preprocessing ran, collect previous inference result
             if (pendingResult != null) {
-                prevResult = pendingResult.get()
+                val prevResult = pendingResult.get()
                 if (prevResult != null) postprocess(prevResult)
             }
 
@@ -660,8 +658,8 @@ class OrtRunner(private val context: Context) {
         }
         // Drain last pending result
         if (pendingResult != null) {
-            prevResult = pendingResult.get()
-            if (prevResult != null) postprocess(prevResult)
+            val lastResult = pendingResult.get()
+            if (lastResult != null) postprocess(lastResult)
         }
         val pipeMs = (System.nanoTime() - pipeStart) / 1_000_000.0
 
