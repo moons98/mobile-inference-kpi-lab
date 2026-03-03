@@ -7,6 +7,9 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import java.util.*
@@ -72,6 +75,22 @@ class OrtRunner(private val context: Context) {
     private var ortCpuNodes: Int = 0
     private var ortFallbackOps: List<String> = emptyList()
 
+    // ORT profiling: measures actual NPU compute time vs ORT framework overhead
+    private var profilingEnabled: Boolean = false
+    private var profilingSummary: ProfilingSummary? = null
+
+    // Pipeline benchmark results
+    private var pipelineResults: Map<String, Float>? = null
+
+    data class ProfilingSummary(
+        val totalRunUs: Long,       // Total session.run() time from profiling (µs)
+        val npuComputeUs: Long,     // QNN EP node execution time (µs)
+        val cpuComputeUs: Long,     // CPU EP node execution time (µs)
+        val frameworkUs: Long,      // ORT overhead = total - npu - cpu (µs)
+        val fenceUs: Long,          // fence_before + fence_after synchronization (µs)
+        val iterationCount: Int     // Number of inference iterations profiled
+    )
+
     // Logging (thread-safe: accessed from inference loop + system metrics coroutine)
     private val kpiRecords: MutableList<KpiRecord> = CopyOnWriteArrayList()
     private var sessionId: String = ""
@@ -81,7 +100,9 @@ class OrtRunner(private val context: Context) {
      * Raw inference result with timing and output data.
      */
     data class InferenceResult(
-        val inferenceMs: Float,
+        val inferenceMs: Float,         // session.run() wall time
+        val inputCreateMs: Float,       // OnnxTensor.createTensor() time (JNI + alloc)
+        val outputCopyMs: Float,        // Output tensor extraction time (native → JVM copy)
         val outputData: FloatArray,
         val scoresData: FloatArray? = null,   // E2E models: per-class scores [1,8400,80]
         val nmsIndices: LongArray? = null      // E2E+NMS models: selected indices [N,3]
@@ -92,7 +113,9 @@ class OrtRunner(private val context: Context) {
         val eventType: EventType,
         val latencyMs: Float,         // Total E2E = preprocess + inference + postprocess
         val preprocessMs: Float,      // Image preprocessing time
-        val inferenceMs: Float,       // Model inference time only
+        val inferenceMs: Float,       // Model inference time only (session.run)
+        val inputCreateMs: Float,     // Input tensor creation (JNI boundary)
+        val outputCopyMs: Float,      // Output tensor copy (native → JVM)
         val postprocessMs: Float,     // NMS + coordinate transform time
         val detectionCount: Int,      // Number of detections after NMS
         val thermalC: Float,
@@ -144,6 +167,13 @@ class OrtRunner(private val context: Context) {
             // Create session options with execution provider
             val sessionOptions = OrtSession.SessionOptions()
             configureExecutionProvider(sessionOptions, executionProvider)
+
+            // Enable ORT profiling to measure actual NPU compute vs framework overhead
+            val profilePrefix = "${context.filesDir.absolutePath}/ort_profile"
+            sessionOptions.enableProfiling(profilePrefix)
+            profilingEnabled = true
+            profilingSummary = null
+            Log.i(TAG, "ORT profiling enabled: $profilePrefix")
 
             // Load model from assets (timed)
             val loadStart = System.currentTimeMillis()
@@ -546,14 +576,17 @@ class OrtRunner(private val context: Context) {
         val postEnd = System.nanoTime()
         val postprocessMs = ((postEnd - postStart) / 1_000_000.0).toFloat()
 
-        val totalMs = preprocessMs + inferenceResult.inferenceMs + postprocessMs
+        val totalMs = preprocessMs + inferenceResult.inputCreateMs +
+                inferenceResult.inferenceMs + inferenceResult.outputCopyMs + postprocessMs
 
         // Capture first inference time (after any warmup)
         if (firstInferenceMs < 0) {
             firstInferenceMs = totalMs
             Log.i(TAG, "First E2E: total=${totalMs}ms (pre=${preprocessMs}ms, " +
-                    "inf=${inferenceResult.inferenceMs}ms, post=${postprocessMs}ms), " +
-                    "detections=${detections.size}")
+                    "inputCreate=${inferenceResult.inputCreateMs}ms, " +
+                    "inf=${inferenceResult.inferenceMs}ms, " +
+                    "outputCopy=${inferenceResult.outputCopyMs}ms, " +
+                    "post=${postprocessMs}ms), detections=${detections.size}")
             if (detections.isNotEmpty()) {
                 detections.take(5).forEach { det ->
                     Log.i(TAG, "  ${det.className} (${det.confidence}): " +
@@ -569,6 +602,8 @@ class OrtRunner(private val context: Context) {
                 latencyMs = totalMs,
                 preprocessMs = preprocessMs,
                 inferenceMs = inferenceResult.inferenceMs,
+                inputCreateMs = inferenceResult.inputCreateMs,
+                outputCopyMs = inferenceResult.outputCopyMs,
                 postprocessMs = postprocessMs,
                 detectionCount = detections.size,
                 thermalC = 0f,
@@ -581,6 +616,77 @@ class OrtRunner(private val context: Context) {
         return totalMs
     }
 
+    /**
+     * Run pipeline benchmark: overlap preprocess(N+1) with inference(N).
+     * Uses static image stream to simulate continuous frames.
+     * Measures actual pipelined throughput vs sequential baseline.
+     *
+     * @param iterations Number of frames to process
+     * @return Map with "sequential_fps", "pipeline_fps", "speedup" keys
+     */
+    fun runPipelineBenchmark(iterations: Int = 100): Map<String, Float> {
+        currentModel ?: return emptyMap()
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+        // --- Phase 1: Sequential baseline ---
+        val seqStart = System.nanoTime()
+        for (i in 0 until iterations) {
+            val input = preprocess()
+            val result = runInferenceInternal(input) ?: continue
+            postprocess(result)
+        }
+        val seqMs = (System.nanoTime() - seqStart) / 1_000_000.0
+
+        // --- Phase 2: Pipelined (overlap preprocess with inference) ---
+        val pipeStart = System.nanoTime()
+        var pendingResult: java.util.concurrent.Future<InferenceResult?>? = null
+        var prevResult: InferenceResult? = null
+
+        for (i in 0 until iterations) {
+            // Start preprocessing for current frame
+            val input = preprocess()
+
+            // While preprocessing ran, collect previous inference result
+            if (pendingResult != null) {
+                prevResult = pendingResult.get()
+                if (prevResult != null) postprocess(prevResult)
+            }
+
+            // Submit current frame's inference to worker thread
+            val capturedInput = input
+            pendingResult = executor.submit(java.util.concurrent.Callable {
+                runInferenceInternal(capturedInput)
+            })
+        }
+        // Drain last pending result
+        if (pendingResult != null) {
+            prevResult = pendingResult.get()
+            if (prevResult != null) postprocess(prevResult)
+        }
+        val pipeMs = (System.nanoTime() - pipeStart) / 1_000_000.0
+
+        executor.shutdown()
+
+        val seqFps = (iterations * 1000.0 / seqMs).toFloat()
+        val pipeFps = (iterations * 1000.0 / pipeMs).toFloat()
+        val speedup = pipeFps / seqFps
+
+        Log.i(TAG, "=== Pipeline Benchmark ($iterations iterations) ===")
+        Log.i(TAG, "  Sequential: %.1f ms total, %.1f FPS".format(seqMs, seqFps))
+        Log.i(TAG, "  Pipelined:  %.1f ms total, %.1f FPS".format(pipeMs, pipeFps))
+        Log.i(TAG, "  Speedup:    %.2fx".format(speedup))
+
+        val results = mapOf(
+            "sequential_fps" to seqFps,
+            "pipeline_fps" to pipeFps,
+            "speedup" to speedup,
+            "sequential_ms" to (seqMs / iterations).toFloat(),
+            "pipeline_ms" to (pipeMs / iterations).toFloat()
+        )
+        pipelineResults = results
+        return results
+    }
+
     private fun runInferenceInternal(inputData: Any? = null): InferenceResult? {
         val env = ortEnv ?: return null
         val session = ortSession ?: return null
@@ -588,7 +694,8 @@ class OrtRunner(private val context: Context) {
         val data = inputData ?: return null
 
         return try {
-            // Create input tensor based on model input format (not timed)
+            // Create input tensor (timed: JNI boundary + buffer allocation)
+            val inputCreateStart = System.nanoTime()
             val inputTensor = when (model.inputFormat) {
                 InputFormat.FLOAT_NCHW -> OnnxTensor.createTensor(
                     env, FloatBuffer.wrap(data as FloatArray), inputShape
@@ -597,21 +704,23 @@ class OrtRunner(private val context: Context) {
                     env, ByteBuffer.wrap(data as ByteArray), inputShape, OnnxJavaType.UINT8
                 )
             }
+            val inputCreateMs = ((System.nanoTime() - inputCreateStart) / 1_000_000.0).toFloat()
 
-            // Run inference (timed separately from tensor creation)
+            // Run inference (timed: session.run only)
             val inputs = Collections.singletonMap(inputName, inputTensor)
             val startTime = System.nanoTime()
             val results = session.run(inputs)
             val endTime = System.nanoTime()
             val inferenceMs = ((endTime - startTime) / 1_000_000.0).toFloat()
 
-            // Extract outputs based on model output format
+            // Extract outputs (timed: native → JVM buffer copy)
+            val outputCopyStart = System.nanoTime()
             val result = when (model.outputFormat) {
                 OutputFormat.RAW_84x8400 -> {
                     val buf = (results.get(0) as OnnxTensor).floatBuffer
                     val arr = FloatArray(buf.remaining())
                     buf.get(arr)
-                    InferenceResult(inferenceMs, arr)
+                    InferenceResult(inferenceMs, inputCreateMs, 0f, arr) // outputCopyMs set below
                 }
                 OutputFormat.BOXES_SCORES -> {
                     val boxesBuf = (results.get(0) as OnnxTensor).floatBuffer
@@ -622,7 +731,7 @@ class OrtRunner(private val context: Context) {
                     val scoresArr = FloatArray(scoresBuf.remaining())
                     scoresBuf.get(scoresArr)
 
-                    InferenceResult(inferenceMs, boxesArr, scoresArr)
+                    InferenceResult(inferenceMs, inputCreateMs, 0f, boxesArr, scoresArr)
                 }
                 OutputFormat.BOXES_SCORES_NMS -> {
                     val boxesBuf = (results.get(0) as OnnxTensor).floatBuffer
@@ -637,15 +746,17 @@ class OrtRunner(private val context: Context) {
                     val nmsArr = LongArray(nmsBuf.remaining())
                     nmsBuf.get(nmsArr)
 
-                    InferenceResult(inferenceMs, boxesArr, scoresArr, nmsArr)
+                    InferenceResult(inferenceMs, inputCreateMs, 0f, boxesArr, scoresArr, nmsArr)
                 }
             }
+            val outputCopyMs = ((System.nanoTime() - outputCopyStart) / 1_000_000.0).toFloat()
 
             // Clean up
             inputTensor.close()
             results.close()
 
-            result
+            // Return result with actual outputCopyMs
+            result.copy(outputCopyMs = outputCopyMs)
         } catch (e: Exception) {
             Log.e(TAG, "Inference failed: ${e.message}", e)
             null
@@ -663,6 +774,8 @@ class OrtRunner(private val context: Context) {
                 latencyMs = 0f,
                 preprocessMs = 0f,
                 inferenceMs = 0f,
+                inputCreateMs = 0f,
+                outputCopyMs = 0f,
                 postprocessMs = 0f,
                 detectionCount = 0,
                 thermalC = thermalC,
@@ -702,9 +815,109 @@ class OrtRunner(private val context: Context) {
     }
 
     /**
+     * Analyze ORT profiling data to separate NPU compute time from framework overhead.
+     * Parses the Chrome Tracing JSON produced by ORT's enableProfiling.
+     * Returns null if profiling is not enabled or parsing fails.
+     */
+    private fun analyzeProfilingData(): ProfilingSummary? {
+        if (!profilingEnabled) return null
+        val session = ortSession ?: return null
+
+        return try {
+            val profilePath = session.endProfiling()
+            Log.i(TAG, "Profiling file: $profilePath")
+
+            val file = File(profilePath)
+            if (!file.exists()) {
+                Log.w(TAG, "Profiling file not found: $profilePath")
+                return null
+            }
+
+            val fileSizeKb = file.length() / 1024
+            Log.i(TAG, "Profiling file size: ${fileSizeKb}KB")
+
+            val json = file.readText()
+            val events = JSONArray(json)
+
+            var totalRunUs = 0L
+            var npuComputeUs = 0L
+            var cpuComputeUs = 0L
+            var fenceUs = 0L
+            var iterationCount = 0
+
+            for (i in 0 until events.length()) {
+                val event = events.getJSONObject(i)
+                val cat = event.optString("cat", "")
+                val dur = event.optLong("dur", 0)
+
+                when (cat) {
+                    "Session" -> {
+                        val name = event.optString("name", "")
+                        if (name == "model_run") {
+                            totalRunUs += dur
+                            iterationCount++
+                        }
+                    }
+                    "Node" -> {
+                        val args = event.optJSONObject("args")
+                        val provider = args?.optString("provider", "") ?: ""
+                        when {
+                            provider.contains("QNN") -> npuComputeUs += dur
+                            provider.contains("CPU") -> cpuComputeUs += dur
+                        }
+                    }
+                    // EP synchronization barriers (HTP dispatch + completion wait)
+                    "fence_before", "fence_after" -> {
+                        fenceUs += dur
+                    }
+                }
+            }
+
+            val frameworkUs = totalRunUs - npuComputeUs - cpuComputeUs
+
+            // Clean up profiling file
+            file.delete()
+
+            if (iterationCount == 0) {
+                Log.w(TAG, "No profiling iterations found")
+                return null
+            }
+
+            val summary = ProfilingSummary(
+                totalRunUs = totalRunUs,
+                npuComputeUs = npuComputeUs,
+                cpuComputeUs = cpuComputeUs,
+                frameworkUs = frameworkUs,
+                fenceUs = fenceUs,
+                iterationCount = iterationCount
+            )
+
+            val avgTotalMs = totalRunUs / 1000.0 / iterationCount
+            val avgNpuMs = npuComputeUs / 1000.0 / iterationCount
+            val avgCpuMs = cpuComputeUs / 1000.0 / iterationCount
+            val avgFenceMs = fenceUs / 1000.0 / iterationCount
+            val avgFrameworkMs = frameworkUs / 1000.0 / iterationCount
+
+            Log.i(TAG, "=== ORT Profiling Summary ($iterationCount iterations) ===")
+            Log.i(TAG, "  Avg session.run():    %.2f ms".format(avgTotalMs))
+            Log.i(TAG, "  Avg NPU compute:      %.2f ms".format(avgNpuMs))
+            Log.i(TAG, "  Avg CPU compute:      %.2f ms".format(avgCpuMs))
+            Log.i(TAG, "  Avg fence (sync):     %.2f ms".format(avgFenceMs))
+            Log.i(TAG, "  Avg ORT overhead:     %.2f ms".format(avgFrameworkMs))
+            Log.i(TAG, "  NPU ratio:            %.1f%%".format(avgNpuMs / avgTotalMs * 100))
+
+            summary
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to analyze profiling: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
      * End the current logging session
      */
     fun endSession() {
+        profilingSummary = analyzeProfilingData()
         Log.i(TAG, "Session ended: $sessionId, records: ${kpiRecords.size}")
     }
 
@@ -763,10 +976,31 @@ class OrtRunner(private val context: Context) {
         sb.appendLine("# ort_coverage_percent,$coverageStr")
         sb.appendLine("# ort_fallback_ops,${ortFallbackOps.joinToString(";")}")
 
+        // ORT profiling: NPU compute vs framework overhead
+        val prof = profilingSummary
+        if (prof != null && prof.iterationCount > 0) {
+            sb.appendLine("# profiling_iterations,${prof.iterationCount}")
+            sb.appendLine("# profiling_avg_total_ms,${"%.2f".format(prof.totalRunUs / 1000.0 / prof.iterationCount)}")
+            sb.appendLine("# profiling_avg_npu_ms,${"%.2f".format(prof.npuComputeUs / 1000.0 / prof.iterationCount)}")
+            sb.appendLine("# profiling_avg_cpu_ms,${"%.2f".format(prof.cpuComputeUs / 1000.0 / prof.iterationCount)}")
+            sb.appendLine("# profiling_avg_fence_ms,${"%.2f".format(prof.fenceUs / 1000.0 / prof.iterationCount)}")
+            sb.appendLine("# profiling_avg_overhead_ms,${"%.2f".format(prof.frameworkUs / 1000.0 / prof.iterationCount)}")
+        }
+
+        // Pipeline benchmark results
+        val pipe = pipelineResults
+        if (pipe != null) {
+            sb.appendLine("# pipeline_sequential_fps,${"%.1f".format(pipe["sequential_fps"])}")
+            sb.appendLine("# pipeline_pipelined_fps,${"%.1f".format(pipe["pipeline_fps"])}")
+            sb.appendLine("# pipeline_speedup,${"%.2f".format(pipe["speedup"])}")
+            sb.appendLine("# pipeline_sequential_ms,${"%.2f".format(pipe["sequential_ms"])}")
+            sb.appendLine("# pipeline_pipelined_ms,${"%.2f".format(pipe["pipeline_ms"])}")
+        }
+
         sb.appendLine("# session_id,$sessionId")
 
         // CSV header
-        sb.appendLine("timestamp,event_type,latency_ms,preprocess_ms,inference_ms,postprocess_ms,detection_count,thermal_c,power_mw,memory_mb,is_foreground")
+        sb.appendLine("timestamp,event_type,latency_ms,preprocess_ms,inference_ms,input_create_ms,output_copy_ms,postprocess_ms,detection_count,thermal_c,power_mw,memory_mb,is_foreground")
 
         for (record in kpiRecords) {
             val isInference = record.eventType == EventType.INFERENCE
@@ -774,13 +1008,15 @@ class OrtRunner(private val context: Context) {
             val latency = if (isInference) "%.2f".format(record.latencyMs) else ""
             val preprocess = if (isInference) "%.2f".format(record.preprocessMs) else ""
             val inference = if (isInference) "%.2f".format(record.inferenceMs) else ""
+            val inputCreate = if (isInference) "%.2f".format(record.inputCreateMs) else ""
+            val outputCopy = if (isInference) "%.2f".format(record.outputCopyMs) else ""
             val postprocess = if (isInference) "%.2f".format(record.postprocessMs) else ""
             val detCount = if (isInference) record.detectionCount.toString() else ""
             val thermal = if (isSystem) "%.1f".format(record.thermalC) else ""
             val power = if (isSystem) "%.1f".format(record.powerMw) else ""
             val memory = if (isSystem && record.memoryMb >= 0) record.memoryMb.toString() else ""
 
-            sb.appendLine("${record.timestamp},${record.eventType.name},$latency,$preprocess,$inference,$postprocess,$detCount,$thermal,$power,$memory,${record.isForeground}")
+            sb.appendLine("${record.timestamp},${record.eventType.name},$latency,$preprocess,$inference,$inputCreate,$outputCopy,$postprocess,$detCount,$thermal,$power,$memory,${record.isForeground}")
         }
 
         return sb.toString()
@@ -822,6 +1058,9 @@ class OrtRunner(private val context: Context) {
         sourceBitmap?.recycle()
         sourceBitmap = null
         currentModel = null
+        profilingEnabled = false
+        profilingSummary = null
+        pipelineResults = null
 
         Log.i(TAG, "Resources released")
     }
@@ -893,7 +1132,7 @@ enum class OnnxModelType(
 
     // E2E models: pre/post processing baked into ONNX graph
     YOLOV8N_PRE(
-        displayName = "YOLOv8n (Pre)",
+        displayName = "YOLOv8n +Pre",
         filename = "yolov8n_pre.onnx",
         inputWidth = 640,
         inputHeight = 640,
@@ -905,7 +1144,7 @@ enum class OnnxModelType(
         outputFormat = OutputFormat.RAW_84x8400
     ),
     YOLOV8N_E2E(
-        displayName = "YOLOv8n (E2E)",
+        displayName = "YOLOv8n +Pre+Post",
         filename = "yolov8n_e2e.onnx",
         inputWidth = 640,
         inputHeight = 640,
@@ -917,7 +1156,7 @@ enum class OnnxModelType(
         outputFormat = OutputFormat.BOXES_SCORES
     ),
     YOLOV8N_E2E_NMS(
-        displayName = "YOLOv8n (E2E+NMS)",
+        displayName = "YOLOv8n E2E",
         filename = "yolov8n_e2e_nms.onnx",
         inputWidth = 640,
         inputHeight = 640,

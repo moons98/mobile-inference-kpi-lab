@@ -272,6 +272,12 @@ class BenchmarkRunner(
             }
         }
 
+        // Run pipeline benchmark (overlap simulation with static images)
+        _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
+        withContext(Dispatchers.IO) {
+            runner.runPipelineBenchmark(iterations = 100)
+        }
+
         // End session
         runner.endSession()
         Log.i(TAG, "Benchmark completed: $inferenceCount inferences")
