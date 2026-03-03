@@ -397,14 +397,14 @@ def compare_experiments(
         window = min(50, max(1, len(inference_df) // 10))
         if window > 1:
             rolling = latencies.rolling(window=window).mean()
-            ax.plot(times, rolling, color=color, linestyle=style, linewidth=2.5, label=f"{i+1}")
+            ax.plot(times, rolling, color=color, linestyle=style, linewidth=2.5, label=label)
         else:
-            ax.plot(times, latencies, color=color, linestyle=style, linewidth=1.5, alpha=0.8, label=f"{i+1}")
+            ax.plot(times, latencies, color=color, linestyle=style, linewidth=1.5, alpha=0.8, label=label)
 
     ax.set_xlabel('Time (min)')
     ax.set_ylabel('Latency (ms)')
     ax.set_title('Latency Over Time (Moving Avg)')
-    ax.legend(loc='upper right', fontsize=9)
+    ax.legend(loc='best', fontsize=7)
 
     # 2. Thermal Over Time (top-right) - overlaid
     ax = axes[0, 1]
@@ -414,12 +414,12 @@ def compare_experiments(
         if len(thermal_data) > 0:
             times = thermal_data['elapsed_seconds'] / 60
             temps = thermal_data['thermal_c']
-            ax.plot(times, temps, color=color, linestyle=style, linewidth=2, label=f"{i+1}")
+            ax.plot(times, temps, color=color, linestyle=style, linewidth=2, label=label)
 
     ax.set_xlabel('Time (min)')
     ax.set_ylabel('Temperature (°C)')
     ax.set_title('Thermal Over Time')
-    ax.legend(loc='upper right', fontsize=9)
+    ax.legend(loc='best', fontsize=7)
 
     # 3. Power Over Time (bottom-left) - overlaid with moving average
     ax = axes[1, 0]
@@ -434,14 +434,14 @@ def compare_experiments(
             window = min(30, max(1, len(power) // 5))
             if window > 1:
                 rolling = power.rolling(window=window).mean()
-                ax.plot(times, rolling, color=color, linestyle=style, linewidth=2, label=f"{i+1}")
+                ax.plot(times, rolling, color=color, linestyle=style, linewidth=2, label=label)
             else:
-                ax.plot(times, power, color=color, linestyle=style, linewidth=1.5, alpha=0.8, label=f"{i+1}")
+                ax.plot(times, power, color=color, linestyle=style, linewidth=1.5, alpha=0.8, label=label)
 
     ax.set_xlabel('Time (min)')
     ax.set_ylabel('Power (mW)')
     ax.set_title('Power Consumption (Moving Avg)')
-    ax.legend(loc='upper right', fontsize=9)
+    ax.legend(loc='best', fontsize=7)
 
     # 4. Memory Over Time (bottom-right)
     ax = axes[1, 1]
@@ -451,12 +451,12 @@ def compare_experiments(
         if len(mem_data) > 0:
             times = mem_data['elapsed_seconds'] / 60
             memory = mem_data['memory_mb']
-            ax.plot(times, memory, color=color, linestyle=style, linewidth=2, label=f"{i+1}")
+            ax.plot(times, memory, color=color, linestyle=style, linewidth=2, label=label)
 
     ax.set_xlabel('Time (min)')
     ax.set_ylabel('Memory (MB)')
     ax.set_title('Memory (VmRSS)')
-    ax.legend(loc='upper right', fontsize=9)
+    ax.legend(loc='best', fontsize=7)
 
     plt.tight_layout()
 
@@ -503,6 +503,20 @@ if __name__ == "__main__":
             name = re.sub(r'_\d{8}_\d{6}$', '', name)
             return name
         labels = [extract_label(f.stem) for f in log_files]
+
+        # Sort by precision to match parse_logs.py ordering
+        # FP32 first, then FP16, then INT8 variants
+        prec_order = {'FP32': 0, 'FP16': 1, 'INT8': 2}
+        def sort_key(label: str) -> int:
+            upper = label.upper()
+            for key, order in prec_order.items():
+                if key in upper:
+                    return order
+            return 9
+
+        paired = sorted(zip(log_files, labels), key=lambda x: sort_key(x[1]))
+        log_files = [p[0] for p in paired]
+        labels = [p[1] for p in paired]
 
         # Determine output directory
         if args.output_dir:
