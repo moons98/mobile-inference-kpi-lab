@@ -438,9 +438,9 @@ class BenchmarkRunner(
                     } catch (e: CancellationException) {
                         Log.i(TAG, "Batch experiment cancelled")
                         throw e
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         Log.e(TAG, "Batch experiment failed: ${e.message}", e)
-                        // Continue with next experiment
+                        // Continue with next experiment (catches OOM and other Errors too)
                         continue
                     }
 

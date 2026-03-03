@@ -12,7 +12,6 @@ import org.json.JSONObject
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.FloatBuffer
-import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -359,17 +358,16 @@ class OrtRunner(private val context: Context) {
     }
 
     /**
-     * Preprocess source image for inference (runs every iteration).
-     * Letterbox resize to model input size, normalize to [0,1], HWC->CHW.
-     * Returns the CHW float array ready for model input.
+     * Letterbox resize source image and extract ARGB pixels.
+     * Shared by both preprocessFrame() and preprocessFrameUint8().
+     * Updates letterboxScale, letterboxPadLeft, letterboxPadTop as side effects.
      */
-    private fun preprocessFrame(): FloatArray {
+    private fun letterboxPixels(): IntArray {
         val model = currentModel!!
         val bitmap = sourceBitmap!!
-        val targetW = model.inputWidth   // 640
-        val targetH = model.inputHeight  // 640
+        val targetW = model.inputWidth
+        val targetH = model.inputHeight
 
-        // Letterbox resize: scale to fit target while preserving aspect ratio
         val scaleW = targetW.toFloat() / bitmap.width
         val scaleH = targetH.toFloat() / bitmap.height
         letterboxScale = minOf(scaleW, scaleH)
@@ -380,21 +378,32 @@ class OrtRunner(private val context: Context) {
         letterboxPadLeft = (targetW - newW) / 2f
         letterboxPadTop = (targetH - newH) / 2f
 
-        // Resize bitmap
         val resized = Bitmap.createScaledBitmap(bitmap, newW, newH, true)
 
-        // Create letterboxed bitmap (filled with YOLO letterbox gray = 114)
         val letterboxed = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(letterboxed)
         canvas.drawColor(Color.rgb(114, 114, 114))
         canvas.drawBitmap(resized, letterboxPadLeft, letterboxPadTop, null)
 
-        // Extract pixels
         val pixels = IntArray(targetW * targetH)
         letterboxed.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
 
-        // Convert to CHW float array, normalized to [0.0, 1.0]
-        val planeSize = targetH * targetW
+        if (resized !== bitmap) {
+            resized.recycle()
+        }
+        letterboxed.recycle()
+
+        return pixels
+    }
+
+    /**
+     * Preprocess source image for inference (runs every iteration).
+     * Letterbox resize to model input size, normalize to [0,1], HWC->CHW.
+     * Returns the CHW float array ready for model input.
+     */
+    private fun preprocessFrame(): FloatArray {
+        val pixels = letterboxPixels()
+        val planeSize = pixels.size
         val chw = FloatArray(3 * planeSize)
 
         for (i in pixels.indices) {
@@ -403,14 +412,6 @@ class OrtRunner(private val context: Context) {
             chw[planeSize + i] = ((pixel shr 8) and 0xFF) / 255.0f   // G plane
             chw[2 * planeSize + i] = (pixel and 0xFF) / 255.0f       // B plane
         }
-
-        // Cleanup intermediate bitmaps (source bitmap is kept alive)
-        // Note: createScaledBitmap returns the SAME object when no scaling is needed,
-        // so only recycle if it's a different bitmap than the source.
-        if (resized !== bitmap) {
-            resized.recycle()
-        }
-        letterboxed.recycle()
 
         return chw
     }
@@ -421,45 +422,15 @@ class OrtRunner(private val context: Context) {
      * Normalize and HWC->CHW are baked into the ONNX graph.
      */
     private fun preprocessFrameUint8(): ByteArray {
-        val model = currentModel!!
-        val bitmap = sourceBitmap!!
-        val targetW = model.inputWidth
-        val targetH = model.inputHeight
+        val pixels = letterboxPixels()
+        val hwc = ByteArray(pixels.size * 3)
 
-        // Letterbox resize (same as preprocessFrame)
-        val scaleW = targetW.toFloat() / bitmap.width
-        val scaleH = targetH.toFloat() / bitmap.height
-        letterboxScale = minOf(scaleW, scaleH)
-
-        val newW = (bitmap.width * letterboxScale).toInt()
-        val newH = (bitmap.height * letterboxScale).toInt()
-
-        letterboxPadLeft = (targetW - newW) / 2f
-        letterboxPadTop = (targetH - newH) / 2f
-
-        val resized = Bitmap.createScaledBitmap(bitmap, newW, newH, true)
-
-        val letterboxed = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(letterboxed)
-        canvas.drawColor(Color.rgb(114, 114, 114))
-        canvas.drawBitmap(resized, letterboxPadLeft, letterboxPadTop, null)
-
-        val pixels = IntArray(targetW * targetH)
-        letterboxed.getPixels(pixels, 0, targetW, 0, 0, targetW, targetH)
-
-        // Pack as HWC uint8 (no normalize, no transpose - done in ONNX graph)
-        val hwc = ByteArray(targetH * targetW * 3)
         for (i in pixels.indices) {
             val p = pixels[i]
             hwc[i * 3]     = ((p shr 16) and 0xFF).toByte()  // R
             hwc[i * 3 + 1] = ((p shr 8) and 0xFF).toByte()   // G
             hwc[i * 3 + 2] = (p and 0xFF).toByte()            // B
         }
-
-        if (resized !== bitmap) {
-            resized.recycle()
-        }
-        letterboxed.recycle()
 
         return hwc
     }
@@ -705,7 +676,7 @@ class OrtRunner(private val context: Context) {
             val inputCreateMs = ((System.nanoTime() - inputCreateStart) / 1_000_000.0).toFloat()
 
             // Run inference (timed: session.run only)
-            val inputs = Collections.singletonMap(inputName, inputTensor)
+            val inputs = mapOf(inputName to inputTensor)
             val startTime = System.nanoTime()
             val results = session.run(inputs)
             val endTime = System.nanoTime()
@@ -834,6 +805,13 @@ class OrtRunner(private val context: Context) {
             val fileSizeKb = file.length() / 1024
             Log.i(TAG, "Profiling file size: ${fileSizeKb}KB")
 
+            // Skip parsing if profiling file is too large (> 50 MB) to avoid OOM
+            if (fileSizeKb > 50 * 1024) {
+                Log.w(TAG, "Profiling file too large (${fileSizeKb}KB), skipping analysis")
+                file.delete()
+                return null
+            }
+
             val json = file.readText()
             val events = JSONArray(json)
 
@@ -905,7 +883,7 @@ class OrtRunner(private val context: Context) {
             Log.i(TAG, "  NPU ratio:            %.1f%%".format(avgNpuMs / avgTotalMs * 100))
 
             summary
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Failed to analyze profiling: ${e.message}", e)
             null
         }
@@ -1090,7 +1068,6 @@ enum class OnnxModelType(
     val inputWidth: Int,
     val inputHeight: Int,
     val inputChannels: Int,
-    val outputShape: IntArray,
     val isQuantized: Boolean,
     val precision: String,
     val inputFormat: InputFormat = InputFormat.FLOAT_NCHW,
@@ -1103,7 +1080,6 @@ enum class OnnxModelType(
         inputWidth = 640,
         inputHeight = 640,
         inputChannels = 3,
-        outputShape = intArrayOf(1, 84, 8400),
         isQuantized = false,
         precision = "FP32"
     ),
@@ -1113,7 +1089,6 @@ enum class OnnxModelType(
         inputWidth = 640,
         inputHeight = 640,
         inputChannels = 3,
-        outputShape = intArrayOf(1, 84, 8400),
         isQuantized = true,
         precision = "INT8_DYNAMIC"
     ),
@@ -1123,7 +1098,6 @@ enum class OnnxModelType(
         inputWidth = 640,
         inputHeight = 640,
         inputChannels = 3,
-        outputShape = intArrayOf(1, 84, 8400),
         isQuantized = true,
         precision = "INT8_QDQ"
     ),
@@ -1135,7 +1109,6 @@ enum class OnnxModelType(
         inputWidth = 640,
         inputHeight = 640,
         inputChannels = 3,
-        outputShape = intArrayOf(1, 84, 8400),
         isQuantized = false,
         precision = "FP32",
         inputFormat = InputFormat.UINT8_NHWC,
@@ -1147,7 +1120,6 @@ enum class OnnxModelType(
         inputWidth = 640,
         inputHeight = 640,
         inputChannels = 3,
-        outputShape = intArrayOf(1, 8400, 4),
         isQuantized = false,
         precision = "FP32",
         inputFormat = InputFormat.UINT8_NHWC,
@@ -1159,7 +1131,6 @@ enum class OnnxModelType(
         inputWidth = 640,
         inputHeight = 640,
         inputChannels = 3,
-        outputShape = intArrayOf(1, 8400, 4),
         isQuantized = false,
         precision = "FP32",
         inputFormat = InputFormat.UINT8_NHWC,
@@ -1171,10 +1142,6 @@ enum class OnnxModelType(
             InputFormat.FLOAT_NCHW -> longArrayOf(1, inputChannels.toLong(), inputHeight.toLong(), inputWidth.toLong())
             InputFormat.UINT8_NHWC -> longArrayOf(1, inputHeight.toLong(), inputWidth.toLong(), inputChannels.toLong())
         }
-
-    /** Filename-safe version of displayName for CSV export filenames */
-    val filenameSafeName: String
-        get() = displayName.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
 }
 
 /**

@@ -91,10 +91,6 @@ QNN_LIMITED_SUPPORT_OPS = {
     "QuantizeLinear": "uint8/uint16 primarily supported",
 }
 
-# Legacy aliases for backward compatibility
-POTENTIALLY_UNSUPPORTED_OPS = QNN_UNSUPPORTED_OPS
-WELL_SUPPORTED_OPS = QNN_SUPPORTED_OPS
-
 
 def load_model(model_path: str):
     """Load ONNX model."""
@@ -138,8 +134,6 @@ def analyze_ops(model) -> dict:
         "unsupported": unsupported_details,
         "limited_support": limited_details,
         "unknown": unknown_details,
-        # Legacy field
-        "potentially_unsupported": unsupported_details + unknown_details,
     }
 
 

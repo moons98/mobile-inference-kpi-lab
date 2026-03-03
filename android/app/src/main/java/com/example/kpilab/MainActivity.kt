@@ -28,7 +28,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var benchmarkRunner: BenchmarkRunner
     private lateinit var experimentSetLoader: ExperimentSetLoader
 
-    private var isForeground = true
     private var isBatchMode = false
     private var experimentSets: List<ExperimentSet> = emptyList()
 
@@ -475,14 +474,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        isForeground = true
         benchmarkRunner.setForeground(true)
         Log.d(TAG, "App resumed (foreground)")
     }
 
     override fun onPause() {
         super.onPause()
-        isForeground = false
         benchmarkRunner.setForeground(false)
         Log.d(TAG, "App paused (background)")
     }
