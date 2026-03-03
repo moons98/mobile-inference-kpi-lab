@@ -237,13 +237,14 @@ class KpiCollector(private val context: Context) {
 
     /**
      * Read current power consumption in milliwatts
-     * Uses BatteryManager API - accuracy varies by device
+     * Uses BatteryManager API with automatic unit detection.
+     * Some devices (e.g., Samsung) report CURRENT_NOW in mA instead of μA.
      * @return Power in mW, or -1 if unavailable
      */
     fun readPower(): Float {
         return try {
-            // Get current in microamps (negative = discharging)
-            val currentMicroAmps = batteryManager.getIntProperty(
+            // Get current (unit varies by device: μA or mA)
+            val currentRaw = batteryManager.getIntProperty(
                 BatteryManager.BATTERY_PROPERTY_CURRENT_NOW
             )
 
@@ -253,16 +254,23 @@ class KpiCollector(private val context: Context) {
             }
             val voltageMv = batteryStatus?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
 
-            if (currentMicroAmps == Int.MIN_VALUE || voltageMv <= 0) {
+            if (currentRaw == Int.MIN_VALUE || voltageMv <= 0) {
                 Log.w(TAG, "Battery properties unavailable")
                 return -1f
             }
 
-            // Some devices report current as negative when discharging
-            val absCurrent = kotlin.math.abs(currentMicroAmps)
+            val absCurrent = kotlin.math.abs(currentRaw)
+
+            // Auto-detect unit: typical phone draws 100-3000 mA = 100,000-3,000,000 μA
+            // |value| >= 10,000 → already μA; |value| < 10,000 → likely mA, convert to μA
+            val currentMicroAmps = if (absCurrent >= 10_000) {
+                absCurrent.toLong()
+            } else {
+                absCurrent.toLong() * 1_000
+            }
 
             // Power (mW) = |Current (μA)| × Voltage (mV) / 10^6
-            val powerMw = (absCurrent.toLong() * voltageMv.toLong()) / 1_000_000f
+            val powerMw = (currentMicroAmps * voltageMv.toLong()) / 1_000_000f
 
             powerMw
         } catch (e: Exception) {
