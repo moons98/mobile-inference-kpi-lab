@@ -29,6 +29,14 @@
       ]
     },
     {
+      "id": "int8_perf_mode",
+      "name": "[실험4] INT8 Performance Mode: burst vs sustained_high",
+      "experiments": [
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false, "htpPerformanceMode": "burst" },
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false, "htpPerformanceMode": "sustained_high" }
+      ]
+    },
+    {
       "id": "model_scale_int8",
       "name": "[실험3] Model Scale: INT8 QDQ 효과 (n vs m)",
       "experiments": [

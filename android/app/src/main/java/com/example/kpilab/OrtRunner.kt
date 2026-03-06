@@ -134,6 +134,7 @@ class OrtRunner(private val context: Context) {
     var useNpuFp16: Boolean = true
         private set
     private var useContextCache: Boolean = false
+    private var htpPerformanceMode: String = "burst"
 
     /**
      * Initialize ONNX Runtime session with specified model and execution provider
@@ -142,13 +143,15 @@ class OrtRunner(private val context: Context) {
         modelType: OnnxModelType,
         executionProvider: ExecutionProvider,
         useNpuFp16: Boolean = true,
-        useContextCache: Boolean = false
+        useContextCache: Boolean = false,
+        htpPerformanceMode: String = "burst"
     ): Boolean {
         lastError = null
         return try {
             currentModel = modelType
             this.useNpuFp16 = useNpuFp16
             this.useContextCache = useContextCache
+            this.htpPerformanceMode = htpPerformanceMode
             Log.i(TAG, "=== OrtRunner Initialization ===")
             Log.i(TAG, "Model: ${modelType.displayName}")
             Log.i(TAG, "Requested EP: ${executionProvider.displayName}")
@@ -235,7 +238,7 @@ class OrtRunner(private val context: Context) {
                         Log.i(TAG, "Using bundled/system QNN libs")
                     }
 
-                    qnnOptions["htp_performance_mode"] = "burst"
+                    qnnOptions["htp_performance_mode"] = htpPerformanceMode
                     qnnOptions["htp_graph_finalization_optimization_mode"] = "3"
                     qnnOptions["enable_htp_fp16_precision"] = if (useNpuFp16) "1" else "0"
 
@@ -259,7 +262,7 @@ class OrtRunner(private val context: Context) {
 
                     // Store options for CSV export (exclude cache path for brevity)
                     val libSource = if (qnnLibPath != null) "custom" else "bundled"
-                    qnnOptionsStr = "backend=HTP;perf=burst;fp16=${if (useNpuFp16) "1" else "0"};cache=${if (useContextCache) "1" else "0"};libs=$libSource"
+                    qnnOptionsStr = "backend=HTP;perf=$htpPerformanceMode;fp16=${if (useNpuFp16) "1" else "0"};cache=${if (useContextCache) "1" else "0"};libs=$libSource"
 
                     options.addQnn(qnnOptions)
                     activeExecutionProvider = "QNN_NPU"

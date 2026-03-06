@@ -14,7 +14,8 @@ data class ExperimentConfig(
     val frequencyHz: Int? = null,
     val durationMinutes: Int? = null,
     val useNpuFp16: Boolean? = null,
-    val useContextCache: Boolean? = null
+    val useContextCache: Boolean? = null,
+    val htpPerformanceMode: String? = null
 ) {
     /**
      * Convert to BenchmarkConfig using defaults for missing values
@@ -38,7 +39,8 @@ data class ExperimentConfig(
             frequencyHz = frequencyHz ?: defaults.frequencyHz,
             durationMinutes = durationMinutes ?: defaults.durationMinutes,
             useNpuFp16 = useNpuFp16 ?: defaults.useNpuFp16,
-            useContextCache = useContextCache ?: defaults.useContextCache
+            useContextCache = useContextCache ?: defaults.useContextCache,
+            htpPerformanceMode = htpPerformanceMode ?: defaults.htpPerformanceMode
         )
     }
 
@@ -56,6 +58,7 @@ data class ExperimentConfig(
         } catch (e: IllegalArgumentException) {
             executionProvider
         }
-        return "$modelName / $epName"
+        val perfSuffix = if (htpPerformanceMode != null && htpPerformanceMode != "burst") " ($htpPerformanceMode)" else ""
+        return "$modelName / $epName$perfSuffix"
     }
 }

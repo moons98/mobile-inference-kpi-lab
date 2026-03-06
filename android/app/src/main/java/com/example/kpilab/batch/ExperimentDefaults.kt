@@ -8,5 +8,6 @@ data class ExperimentDefaults(
     val frequencyHz: Int = 10,
     val durationMinutes: Int = 5,
     val useNpuFp16: Boolean = true,
-    val useContextCache: Boolean = false
+    val useContextCache: Boolean = false,
+    val htpPerformanceMode: String = "burst"
 )

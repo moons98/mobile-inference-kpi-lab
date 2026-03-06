@@ -18,7 +18,10 @@ data class BenchmarkConfig(
     val useNpuFp16: Boolean = true,
 
     // QNN context cache: caches compiled HTP graph for faster subsequent loads
-    val useContextCache: Boolean = false
+    val useContextCache: Boolean = false,
+
+    // HTP performance mode: "burst", "sustained_high", "balanced", "power_saver"
+    val htpPerformanceMode: String = "burst"
 ) {
     /**
      * Calculate interval between inferences in milliseconds

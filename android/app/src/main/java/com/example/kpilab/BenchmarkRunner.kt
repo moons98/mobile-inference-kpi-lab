@@ -194,7 +194,8 @@ class BenchmarkRunner(
                 config.modelType,
                 config.executionProvider,
                 config.useNpuFp16,
-                config.useContextCache
+                config.useContextCache,
+                config.htpPerformanceMode
             )
         }
 
