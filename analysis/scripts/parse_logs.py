@@ -43,9 +43,14 @@ class KpiMetrics:
     fps: float  # Inferences per second
 
     # Thermal drift metrics (for sustained performance analysis)
-    first_30s_p50: float  # Latency p50 in first 30 seconds
-    last_30s_p50: float   # Latency p50 in last 30 seconds
+    first_30s_p50: float  # E2E Latency p50 in first 30 seconds
+    last_30s_p50: float   # E2E Latency p50 in last 30 seconds
     drift_percent: float  # (last - first) / first * 100
+
+    # Inference-only drift (session.run sustained behavior)
+    infer_first_30s_p50: float  # Inference-only P50 in first 30 seconds
+    infer_last_30s_p50: float   # Inference-only P50 in last 30 seconds
+    infer_drift_percent: float  # (last - first) / first * 100
 
     # Thermal metrics
     thermal_start: float
@@ -286,6 +291,18 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
     first_30s_p50 = first_30s_latencies.quantile(0.50) if len(first_30s_latencies) > 0 else 0
     last_30s_p50 = last_30s_latencies.quantile(0.50) if len(last_30s_latencies) > 0 else 0
 
+    # Inference-only drift (session.run sustained behavior)
+    infer_first_30s_p50 = 0.0
+    infer_last_30s_p50 = 0.0
+    infer_drift_percent = 0.0
+    if 'inference_ms' in inference_df.columns:
+        first_30s_infer = inference_df[inference_df['elapsed_seconds'] <= 30]['inference_ms'].dropna()
+        last_30s_infer = inference_df[inference_df['elapsed_seconds'] >= duration - 30]['inference_ms'].dropna()
+        infer_first_30s_p50 = first_30s_infer.quantile(0.50) if len(first_30s_infer) > 0 else 0
+        infer_last_30s_p50 = last_30s_infer.quantile(0.50) if len(last_30s_infer) > 0 else 0
+        if infer_first_30s_p50 > 0:
+            infer_drift_percent = (infer_last_30s_p50 - infer_first_30s_p50) / infer_first_30s_p50 * 100
+
     # Thermal metrics
     thermals = system_df['thermal_c'].dropna()
     thermal_times = system_df.loc[thermals.index, 'elapsed_seconds']
@@ -416,10 +433,15 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         # Throughput
         fps=fps,
 
-        # Thermal drift
+        # Thermal drift (E2E)
         first_30s_p50=first_30s_p50,
         last_30s_p50=last_30s_p50,
         drift_percent=drift_percent,
+
+        # Inference-only drift
+        infer_first_30s_p50=infer_first_30s_p50,
+        infer_last_30s_p50=infer_last_30s_p50,
+        infer_drift_percent=infer_drift_percent,
 
         # Thermal
         thermal_start=thermals.iloc[0] if len(thermals) > 0 else 0,
@@ -573,7 +595,7 @@ def generate_single_report(file_path: str) -> Tuple[str, dict, KpiMetrics]:
             lines.append(f"  Fallback ops: {fallback_ops.replace(';', ', ')}")
 
     lines.append("\n=== Sustained Performance ===")
-    lines.append(f"\nLatency:")
+    lines.append(f"\nE2E Latency:")
     lines.append(f"  P50: {metrics.latency_p50:.2f} ms")
     lines.append(f"  P95: {metrics.latency_p95:.2f} ms")
     lines.append(f"  Mean: {metrics.latency_mean:.2f} ms (±{metrics.latency_std:.2f})")
@@ -610,10 +632,16 @@ def generate_single_report(file_path: str) -> Tuple[str, dict, KpiMetrics]:
     lines.append(f"\nThroughput:")
     lines.append(f"  FPS: {metrics.fps:.2f} inf/s")
 
-    lines.append(f"\nThermal Drift:")
+    lines.append(f"\nE2E Thermal Drift:")
     lines.append(f"  First 30s P50: {metrics.first_30s_p50:.2f} ms")
     lines.append(f"  Last 30s P50: {metrics.last_30s_p50:.2f} ms")
     lines.append(f"  Drift: {metrics.drift_percent:+.1f}%")
+
+    if metrics.infer_first_30s_p50 > 0:
+        lines.append(f"\nInference-Only Drift:")
+        lines.append(f"  First 30s P50: {metrics.infer_first_30s_p50:.2f} ms")
+        lines.append(f"  Last 30s P50: {metrics.infer_last_30s_p50:.2f} ms")
+        lines.append(f"  Drift: {metrics.infer_drift_percent:+.1f}%")
 
     lines.append(f"\nThermal:")
     lines.append(f"  Start: {metrics.thermal_start:.1f} °C")
@@ -717,19 +745,19 @@ def generate_comparison_table(file_paths: list) -> str:
     lines.append("    EP: Execution Provider (QNN_NPU=Hexagon HTP, QNN_GPU=Adreno GPU, CPU=ARM CPU)")
     lines.append("    Precision: FP32/FP16=부동소수점, INT8=양자화 (QDQ=Static, Dynamic)")
 
-    # Section 2: Latency Performance
-    lines.append(f"\n\n[2] Latency Performance")
+    # Section 2: E2E Latency Performance
+    lines.append(f"\n\n[2] E2E Latency Performance")
     lines.append("-" * 120)
-    lines.append(f"{'#':<4} {'Label':<40} {'P50(ms)':<10} {'P95(ms)':<10} {'Mean(ms)':<10} {'MaxFPS':<10}")
+    lines.append(f"{'#':<4} {'Label':<40} {'E2E P50(ms)':<13} {'E2E P95(ms)':<13} {'E2E Mean(ms)':<14} {'MaxFPS':<10}")
     lines.append("-" * 110)
     for i, exp in enumerate(experiments, 1):
         m = exp['metrics']
         max_fps = 1000.0 / m.latency_p50 if m.latency_p50 > 0 else 0
-        lines.append(f"{i:<4} {exp['label']:<40} {m.latency_p50:<10.2f} {m.latency_p95:<10.2f} "
-                     f"{m.latency_mean:<10.2f} {max_fps:<10.1f}")
+        lines.append(f"{i:<4} {exp['label']:<40} {m.latency_p50:<13.2f} {m.latency_p95:<13.2f} "
+                     f"{m.latency_mean:<14.2f} {max_fps:<10.1f}")
     lines.append("")
-    lines.append("    P50/P95: 50th/95th percentile latency (lower=better)")
-    lines.append("    MaxFPS: Theoretical max throughput = 1000/P50 (higher=better)")
+    lines.append("    E2E P50/P95: 전체 파이프라인(pre+infer+post) 50th/95th percentile latency (lower=better)")
+    lines.append("    MaxFPS: Theoretical max throughput = 1000/E2E P50 (higher=better)")
 
     # Section 2b: E2E Breakdown
     has_breakdown_data = any(exp['metrics'].inference_only_p50 > 0 for exp in experiments)
@@ -807,7 +835,7 @@ def generate_comparison_table(file_paths: list) -> str:
     lines.append("    1stInf: 첫 번째 추론 지연시간")
 
     # Section 4: Thermal Drift Analysis
-    lines.append(f"\n\n[4] Thermal Drift Analysis (Latency P50 변화)")
+    lines.append(f"\n\n[4] Thermal Drift Analysis (E2E Latency P50 변화)")
     lines.append("-" * 120)
     lines.append(f"{'#':<4} {'Label':<40} {'First30s(ms)':<14} {'Last30s(ms)':<14} {'Drift%':<10} {'Verdict':<16}")
     lines.append("-" * 120)
@@ -831,9 +859,38 @@ def generate_comparison_table(file_paths: list) -> str:
 
         lines.append(f"{i:<4} {exp['label']:<40} {first_30s:<14.2f} {last_30s:<14.2f} {drift_pct:<+10.1f} {verdict:<16}")
     lines.append("")
-    lines.append("    First30s/Last30s: 벤치마크 처음/마지막 30초 동안의 Latency P50")
+    lines.append("    First30s/Last30s: 벤치마크 처음/마지막 30초 동안의 E2E Latency P50")
     lines.append("    Drift%: (Last30s - First30s) / First30s × 100")
     lines.append("    Verdict: Stable(<±3%), Slight throttle(3~10%), Throttling(>10%), Warmup effect(<-3%)")
+
+    # Section 4b: Inference-Only Drift Analysis
+    has_infer_drift = any(exp['metrics'].infer_first_30s_p50 > 0 for exp in experiments)
+    if has_infer_drift:
+        lines.append(f"\n\n[4b] Inference-Only Drift Analysis (session.run P50 변화)")
+        lines.append("-" * 140)
+        lines.append(f"{'#':<4} {'Label':<40} {'First30s(ms)':<14} {'Last30s(ms)':<14} {'Drift%':<10} {'Verdict':<16}")
+        lines.append("-" * 140)
+        for i, exp in enumerate(experiments, 1):
+            m = exp['metrics']
+            first_30s = m.infer_first_30s_p50
+            last_30s = m.infer_last_30s_p50
+            drift_pct = m.infer_drift_percent
+
+            if abs(drift_pct) < 3:
+                verdict = "Stable"
+            elif drift_pct > 10:
+                verdict = "Throttling"
+            elif drift_pct > 3:
+                verdict = "Slight throttle"
+            elif drift_pct < -3:
+                verdict = "Warmup effect"
+            else:
+                verdict = "Normal"
+
+            lines.append(f"{i:<4} {exp['label']:<40} {first_30s:<14.2f} {last_30s:<14.2f} {drift_pct:<+10.1f} {verdict:<16}")
+        lines.append("")
+        lines.append("    First30s/Last30s: 벤치마크 처음/마지막 30초 동안의 Inference-only (session.run) P50")
+        lines.append("    E2E Drift와 비교하여 inference 자체의 sustained 성능 변화를 분리 관찰")
 
     # Section 5: System Resources
     lines.append(f"\n\n[5] System Resources")
