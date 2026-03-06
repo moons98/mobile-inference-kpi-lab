@@ -1153,6 +1153,26 @@ enum class OnnxModelType(
         precision = "INT8_QDQ"
     ),
 
+    // YOLOv8m models (640x640, object detection - medium variant)
+    YOLOV8M(
+        displayName = "YOLOv8m",
+        filename = "yolov8m.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = false,
+        precision = "FP32"
+    ),
+    YOLOV8M_INT8_QDQ(
+        displayName = "YOLOv8m INT8 (QDQ)",
+        filename = "yolov8m_int8_qdq.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QDQ"
+    ),
+
     // E2E models: pre/post processing baked into ONNX graph
     YOLOV8N_PRE(
         displayName = "YOLOv8n +Pre",

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Export YOLOv8n models from ultralytics to ONNX format.
+Export YOLOv8 models from ultralytics to ONNX format.
 
 Supported models:
-- YOLOv8n (ultralytics) - Object detection
+- YOLOv8n (ultralytics) - Object detection (nano)
+- YOLOv8m (ultralytics) - Object detection (medium)
 
 Quantization methods:
 - dynamic: Fast, no calibration data needed, but NOT supported by QNN EP (CPU fallback)
@@ -12,8 +13,9 @@ Quantization methods:
 
 Usage:
     python export_to_onnx.py --export-yolov8n
-    python export_to_onnx.py --export-yolov8n-quantized                  # exports both dynamic & static
+    python export_to_onnx.py --export-yolov8m
     python export_to_onnx.py --export-yolov8n-quantized --quant-method static
+    python export_to_onnx.py --export-yolov8m-quantized --quant-method static
     python export_to_onnx.py --export-all                                # all models, both quant methods
     python export_to_onnx.py --list
     python export_to_onnx.py --status
@@ -31,6 +33,7 @@ CALIBRATION_SAMPLES = 100
 MODELS = {
     "yolov8n": {
         "source": "ultralytics",
+        "variant": "n",
         "filename": "yolov8n.onnx",
         "description": "YOLOv8n (FP32) - ultralytics export",
         "input_shape": [1, 3, 640, 640],
@@ -39,9 +42,30 @@ MODELS = {
     },
     "yolov8n-quantized": {
         "source": "ultralytics",
+        "variant": "n",
         "filename_dynamic": "yolov8n_int8_dynamic.onnx",  # CPU fallback
         "filename_static": "yolov8n_int8_qdq.onnx",       # NPU supported
         "description": "YOLOv8n (INT8) - ultralytics + onnxruntime quantization",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+    },
+    "yolov8m": {
+        "source": "ultralytics",
+        "variant": "m",
+        "filename": "yolov8m.onnx",
+        "description": "YOLOv8m (FP32) - ultralytics export",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "FP32",
+    },
+    "yolov8m-quantized": {
+        "source": "ultralytics",
+        "variant": "m",
+        "filename_dynamic": "yolov8m_int8_dynamic.onnx",  # CPU fallback
+        "filename_static": "yolov8m_int8_qdq.onnx",       # NPU supported
+        "description": "YOLOv8m (INT8) - ultralytics + onnxruntime quantization",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
         "dtype": "INT8",
@@ -52,8 +76,14 @@ MODELS = {
 ASSETS_DIR = Path(__file__).parent.parent / "android" / "app" / "src" / "main" / "assets"
 
 
-def export_yolov8n(output_path: Path, quantize: bool = False) -> bool:
-    """Export YOLOv8n from ultralytics to ONNX."""
+def export_yolov8(variant: str, output_path: Path, quantize: bool = False) -> bool:
+    """Export YOLOv8 variant from ultralytics to ONNX.
+
+    Args:
+        variant: Model variant letter (e.g., "n", "m", "l", "x")
+        output_path: Destination path for the ONNX model
+        quantize: Whether to quantize to INT8
+    """
     try:
         from ultralytics import YOLO
     except ImportError:
@@ -61,9 +91,12 @@ def export_yolov8n(output_path: Path, quantize: bool = False) -> bool:
         print("Install with: pip install ultralytics")
         return False
 
+    model_name = f"yolov8{variant}"
+    pt_file = f"{model_name}.pt"
+
     try:
-        print("Loading YOLOv8n from ultralytics...")
-        model = YOLO("yolov8n.pt")
+        print(f"Loading {model_name} from ultralytics...")
+        model = YOLO(pt_file)
 
         # Export to ONNX
         fp32_path = output_path if not quantize else output_path.with_suffix(".fp32.onnx")
@@ -77,15 +110,15 @@ def export_yolov8n(output_path: Path, quantize: bool = False) -> bool:
             dynamic=False,  # Fixed shape for NPU compatibility
         )
 
-        # ultralytics saves to yolov8n.onnx in current directory
-        exported_file = Path("yolov8n.onnx")
+        # ultralytics saves to <model_name>.onnx in current directory
+        exported_file = Path(f"{model_name}.onnx")
         if exported_file.exists():
             output_path.parent.mkdir(parents=True, exist_ok=True)
             exported_file.rename(fp32_path)
             print(f"Exported: {fp32_path.name} ({fp32_path.stat().st_size / 1024 / 1024:.2f} MB)")
 
             # Cleanup
-            for cleanup_path in [Path("yolov8n.pt")]:
+            for cleanup_path in [Path(pt_file)]:
                 if cleanup_path.exists():
                     cleanup_path.unlink()
 
@@ -102,6 +135,11 @@ def export_yolov8n(output_path: Path, quantize: bool = False) -> bool:
         import traceback
         traceback.print_exc()
         return False
+
+
+def export_yolov8n(output_path: Path, quantize: bool = False) -> bool:
+    """Export YOLOv8n (backward compatibility wrapper)."""
+    return export_yolov8("n", output_path, quantize)
 
 
 class RandomCalibrationDataReader:
@@ -431,7 +469,8 @@ def export_model(model_key: str, output_dir: Path) -> list:
 
         success = False
         if model["source"] == "ultralytics":
-            success = export_yolov8n(dest, quantize=quantize)
+            variant = model.get("variant", "n")
+            success = export_yolov8(variant, dest, quantize=quantize)
         else:
             print(f"Unknown source: {model['source']}")
 
@@ -521,6 +560,16 @@ def main():
         help="Export YOLOv8n INT8 quantized"
     )
     parser.add_argument(
+        "--export-yolov8m",
+        action="store_true",
+        help="Export YOLOv8m FP32 from ultralytics"
+    )
+    parser.add_argument(
+        "--export-yolov8m-quantized",
+        action="store_true",
+        help="Export YOLOv8m INT8 quantized"
+    )
+    parser.add_argument(
         "--export-all",
         action="store_true",
         help="Export all available models"
@@ -584,13 +633,18 @@ def main():
             exports.append("yolov8n")
         if args.export_yolov8n_quantized:
             exports.append("yolov8n-quantized")
+        if args.export_yolov8m:
+            exports.append("yolov8m")
+        if args.export_yolov8m_quantized:
+            exports.append("yolov8m-quantized")
 
     if not exports:
         parser.print_help()
         print("\nExamples:")
         print("  python export_to_onnx.py --export-yolov8n")
-        print("  python export_to_onnx.py --export-yolov8n-quantized                        # both dynamic & static")
+        print("  python export_to_onnx.py --export-yolov8m")
         print("  python export_to_onnx.py --export-yolov8n-quantized --quant-method static")
+        print("  python export_to_onnx.py --export-yolov8m-quantized --quant-method static")
         print("  python export_to_onnx.py --export-all                                      # all models, both quant methods")
         print("  python export_to_onnx.py --list")
         print("  python export_to_onnx.py --status")
