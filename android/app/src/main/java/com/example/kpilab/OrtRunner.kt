@@ -60,6 +60,8 @@ class OrtRunner(private val context: Context) {
     private var originalImageHeight: Int = 0
 
     // Benchmark config info for CSV export
+    private var benchmarkPhase: String = "BURST"
+    private var benchmarkInputMode: String = "STATIC_IMAGE"
     private var benchmarkFrequencyHz: Int = 5
     private var warmupIterations: Int = 0
 
@@ -117,17 +119,20 @@ class OrtRunner(private val context: Context) {
     data class KpiRecord(
         val timestamp: Long,
         val eventType: EventType,
-        val latencyMs: Float,         // Total E2E = preprocess + inference + postprocess
+        val latencyMs: Float,         // Total E2E = acquire + preprocess + inference + postprocess
+        val acquireMs: Float,         // Camera frame acquisition time (YUV→Bitmap)
         val preprocessMs: Float,      // Image preprocessing time
         val inferenceMs: Float,       // Model inference time only (session.run)
         val inputCreateMs: Float,     // Input tensor creation (JNI boundary)
         val outputCopyMs: Float,      // Output tensor copy (native → JVM)
         val postprocessMs: Float,     // NMS + coordinate transform time
+        val overlayMs: Float = 0f,    // Overlay rendering time (previous frame's draw)
         val detectionCount: Int,      // Number of detections after NMS
         val thermalC: Float,
         val powerMw: Float,
         val memoryMb: Int,
-        val isForeground: Boolean
+        val isForeground: Boolean,
+        val frameDropped: Boolean = false  // Phase 2: E2E exceeded target interval
     )
 
     // Last initialization error detail (surfaced to UI via BenchmarkRunner)
@@ -199,9 +204,6 @@ class OrtRunner(private val context: Context) {
 
             // Get input/output info
             extractIOInfo()
-
-            // Load source image into memory (preprocessing runs per-iteration)
-            loadSourceImage()
 
             // Log session info
             logSessionInfo()
@@ -358,13 +360,29 @@ class OrtRunner(private val context: Context) {
      * Load source image from assets into memory.
      * The bitmap is kept alive for per-iteration preprocessing.
      */
-    private fun loadSourceImage() {
+    /**
+     * Load static sample image from assets (for STATIC_IMAGE mode).
+     */
+    fun loadSourceImage() {
         sourceBitmap = context.assets.open("sample_image.jpg").use { inputStream ->
             BitmapFactory.decodeStream(inputStream)
         }
         originalImageWidth = sourceBitmap!!.width
         originalImageHeight = sourceBitmap!!.height
         Log.i(TAG, "Source image loaded: ${originalImageWidth}x${originalImageHeight}")
+    }
+
+    /**
+     * Set source bitmap from external source (camera frame).
+     * Used by CameraManager to provide live/single frames.
+     */
+    fun setSourceBitmap(bitmap: Bitmap) {
+        // Copy so OrtRunner owns its own bitmap and release() can safely recycle
+        // without invalidating CameraManager's cached frame
+        sourceBitmap?.recycle()
+        sourceBitmap = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
+        originalImageWidth = bitmap.width
+        originalImageHeight = bitmap.height
     }
 
     /**
@@ -599,10 +617,21 @@ class OrtRunner(private val context: Context) {
     /**
      * Run a single E2E inference: preprocess + inference + postprocess.
      * Preprocessing runs every iteration to measure true per-frame E2E cost.
-     * Returns total E2E latency in ms.
+     *
+     * @param acquireMs Camera frame acquisition time (0 for static/cached frames)
+     * @param targetIntervalMs Target interval for frame drop detection (0 = no tracking)
+     * @return InferenceOutcome with latency and detections, or null on failure
      */
-    fun runInference(): Float {
-        currentModel ?: return -1f
+    data class InferenceOutcome(
+        val totalMs: Float,
+        val detections: List<Detection>,
+        val frameDropped: Boolean,
+        val sourceWidth: Int,
+        val sourceHeight: Int
+    )
+
+    fun runInference(acquireMs: Float = 0f, targetIntervalMs: Long = 0, overlayMs: Float = 0f): InferenceOutcome? {
+        currentModel ?: return null
 
         // Preprocess (every iteration)
         val preStart = System.nanoTime()
@@ -611,7 +640,7 @@ class OrtRunner(private val context: Context) {
         val preprocessMs = ((preEnd - preStart) / 1_000_000.0).toFloat()
 
         // Inference
-        val inferenceResult = runInferenceInternal(inputData) ?: return -1f
+        val inferenceResult = runInferenceInternal(inputData) ?: return null
 
         // Postprocess
         val postStart = System.nanoTime()
@@ -619,13 +648,15 @@ class OrtRunner(private val context: Context) {
         val postEnd = System.nanoTime()
         val postprocessMs = ((postEnd - postStart) / 1_000_000.0).toFloat()
 
-        val totalMs = preprocessMs + inferenceResult.inputCreateMs +
+        val totalMs = acquireMs + preprocessMs + inferenceResult.inputCreateMs +
                 inferenceResult.inferenceMs + inferenceResult.outputCopyMs + postprocessMs
+
+        val frameDropped = targetIntervalMs > 0 && totalMs > targetIntervalMs
 
         // Capture first inference time (after any warmup)
         if (firstInferenceMs < 0) {
             firstInferenceMs = totalMs
-            Log.i(TAG, "First E2E: total=${totalMs}ms (pre=${preprocessMs}ms, " +
+            Log.i(TAG, "First E2E: total=${totalMs}ms (acq=${acquireMs}ms, pre=${preprocessMs}ms, " +
                     "inputCreate=${inferenceResult.inputCreateMs}ms, " +
                     "inf=${inferenceResult.inferenceMs}ms, " +
                     "outputCopy=${inferenceResult.outputCopyMs}ms, " +
@@ -643,20 +674,23 @@ class OrtRunner(private val context: Context) {
                 timestamp = System.currentTimeMillis(),
                 eventType = EventType.INFERENCE,
                 latencyMs = totalMs,
+                acquireMs = acquireMs,
                 preprocessMs = preprocessMs,
                 inferenceMs = inferenceResult.inferenceMs,
                 inputCreateMs = inferenceResult.inputCreateMs,
                 outputCopyMs = inferenceResult.outputCopyMs,
                 postprocessMs = postprocessMs,
+                overlayMs = overlayMs,
                 detectionCount = detections.size,
                 thermalC = 0f,
                 powerMw = 0f,
                 memoryMb = 0,
-                isForeground = isForeground
+                isForeground = isForeground,
+                frameDropped = frameDropped
             )
         )
 
-        return totalMs
+        return InferenceOutcome(totalMs, detections, frameDropped, originalImageWidth, originalImageHeight)
     }
 
     /**
@@ -835,6 +869,7 @@ class OrtRunner(private val context: Context) {
                 timestamp = System.currentTimeMillis(),
                 eventType = EventType.SYSTEM,
                 latencyMs = 0f,
+                acquireMs = 0f,
                 preprocessMs = 0f,
                 inferenceMs = 0f,
                 inputCreateMs = 0f,
@@ -859,9 +894,13 @@ class OrtRunner(private val context: Context) {
     /**
      * Set benchmark configuration for CSV export metadata
      */
-    fun setBenchmarkConfig(frequencyHz: Int, warmupIters: Int) {
+    fun setBenchmarkConfig(frequencyHz: Int, warmupIters: Int,
+                           phase: BenchmarkPhase = BenchmarkPhase.BURST,
+                           inputMode: InputMode = InputMode.STATIC_IMAGE) {
         this.benchmarkFrequencyHz = frequencyHz
         this.warmupIterations = warmupIters
+        this.benchmarkPhase = phase.name
+        this.benchmarkInputMode = inputMode.name
     }
 
     /**
@@ -1059,6 +1098,8 @@ class OrtRunner(private val context: Context) {
         sb.appendLine("# qnn_options,$qnnOptionsStr")
 
         // Benchmark config
+        sb.appendLine("# benchmark_phase,$benchmarkPhase")
+        sb.appendLine("# input_mode,$benchmarkInputMode")
         sb.appendLine("# frequency_hz,$benchmarkFrequencyHz")
         sb.appendLine("# warmup_iters,$warmupIterations")
 
@@ -1107,23 +1148,26 @@ class OrtRunner(private val context: Context) {
         sb.appendLine("# session_id,$sessionId")
 
         // CSV header
-        sb.appendLine("timestamp,event_type,latency_ms,preprocess_ms,inference_ms,input_create_ms,output_copy_ms,postprocess_ms,detection_count,thermal_c,power_mw,memory_mb,is_foreground")
+        sb.appendLine("timestamp,event_type,latency_ms,acquire_ms,preprocess_ms,inference_ms,input_create_ms,output_copy_ms,postprocess_ms,overlay_ms,detection_count,thermal_c,power_mw,memory_mb,is_foreground,frame_dropped")
 
         for (record in kpiRecords) {
             val isInference = record.eventType == EventType.INFERENCE
             val isSystem = record.eventType == EventType.SYSTEM
             val latency = if (isInference) "%.2f".format(record.latencyMs) else ""
+            val acquire = if (isInference) "%.2f".format(record.acquireMs) else ""
             val preprocess = if (isInference) "%.2f".format(record.preprocessMs) else ""
             val inference = if (isInference) "%.2f".format(record.inferenceMs) else ""
             val inputCreate = if (isInference) "%.2f".format(record.inputCreateMs) else ""
             val outputCopy = if (isInference) "%.2f".format(record.outputCopyMs) else ""
             val postprocess = if (isInference) "%.2f".format(record.postprocessMs) else ""
+            val overlay = if (isInference) "%.2f".format(record.overlayMs) else ""
             val detCount = if (isInference) record.detectionCount.toString() else ""
             val thermal = if (isSystem) "%.1f".format(record.thermalC) else ""
             val power = if (isSystem) "%.1f".format(record.powerMw) else ""
             val memory = if (isSystem && record.memoryMb >= 0) record.memoryMb.toString() else ""
+            val dropped = if (isInference) record.frameDropped.toString() else ""
 
-            sb.appendLine("${record.timestamp},${record.eventType.name},$latency,$preprocess,$inference,$inputCreate,$outputCopy,$postprocess,$detCount,$thermal,$power,$memory,${record.isForeground}")
+            sb.appendLine("${record.timestamp},${record.eventType.name},$latency,$acquire,$preprocess,$inference,$inputCreate,$outputCopy,$postprocess,$overlay,$detCount,$thermal,$power,$memory,${record.isForeground},$dropped")
         }
 
         return sb.toString()

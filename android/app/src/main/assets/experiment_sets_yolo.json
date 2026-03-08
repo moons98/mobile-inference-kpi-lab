@@ -1,25 +1,29 @@
 {
-  "version": 1,
+  "version": 2,
   "defaults": {
-    "frequencyHz": 5,
+    "frequencyHz": 2,
     "durationMinutes": 5,
+    "iterations": 100,
+    "phase": "BURST",
+    "inputMode": "CAMERA_SINGLE",
     "useNpuFp16": true,
     "useContextCache": false
   },
   "experimentSets": [
     {
-      "id": "exec_path_precision",
-      "name": "[실험1] Execution Path & Precision",
+      "id": "phase1_backend_precision_n",
+      "name": "[Phase1] Backend × Precision (YOLOv8n)",
       "experiments": [
         { "model": "YOLOV8N", "executionProvider": "CPU", "useNpuFp16": false },
         { "model": "YOLOV8N", "executionProvider": "QNN_GPU", "useNpuFp16": false },
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
+        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
       ]
     },
     {
-      "id": "exec_path_precision_s",
-      "name": "[실험1s] Execution Path & Precision (YOLOv8s)",
+      "id": "phase1_backend_precision_s",
+      "name": "[Phase1] Backend × Precision (YOLOv8s)",
       "experiments": [
         { "model": "YOLOV8S", "executionProvider": "CPU", "useNpuFp16": false },
         { "model": "YOLOV8S", "executionProvider": "QNN_GPU", "useNpuFp16": false },
@@ -29,8 +33,8 @@
       ]
     },
     {
-      "id": "exec_path_precision_m",
-      "name": "[실험1m] Execution Path & Precision (YOLOv8m)",
+      "id": "phase1_backend_precision_m",
+      "name": "[Phase1] Backend × Precision (YOLOv8m)",
       "experiments": [
         { "model": "YOLOV8M", "executionProvider": "CPU", "useNpuFp16": false },
         { "model": "YOLOV8M", "executionProvider": "QNN_GPU", "useNpuFp16": false },
@@ -40,41 +44,34 @@
       ]
     },
     {
-      "id": "int8_quantize_io",
-      "name": "[실험5] QuantizeIO: INT8 I/O vs QDQ FP32 I/O",
+      "id": "phase1_model_scale",
+      "name": "[Phase1] Model Scale (n/s/m, INT8 QDQ)",
       "experiments": [
         { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
-      ]
-    },
-    {
-      "id": "model_scale_int8",
-      "name": "[실험3] Model Scale: INT8 QDQ 효과 (n vs s vs m)",
-      "experiments": [
-        { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8S", "executionProvider": "QNN_NPU", "useNpuFp16": true },
         { "model": "YOLOV8S_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8M", "executionProvider": "QNN_NPU", "useNpuFp16": true },
         { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false }
       ]
     },
     {
-      "id": "int8_perf_mode",
-      "name": "[실험4] INT8 Performance Mode: burst vs sustained_high",
+      "id": "phase2_sustained",
+      "name": "[Phase2] Sustained Throughput (30Hz, 5min)",
       "experiments": [
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false, "htpPerformanceMode": "burst" },
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false, "htpPerformanceMode": "sustained_high" }
+        { "model": "YOLOV8N", "executionProvider": "QNN_GPU", "useNpuFp16": false,
+          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30 },
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true,
+          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30 },
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false,
+          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30 },
+        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false,
+          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30 }
       ]
     },
     {
-      "id": "e2e_prepost_offload",
-      "name": "[실험2] Pre/Post/NMS Offload",
+      "id": "phase1_quantize_io",
+      "name": "[Phase1] QuantizeIO: INT8 QDQ vs QIO",
       "experiments": [
-        { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_PRE", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_E2E", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_E2E_NMS", "executionProvider": "QNN_NPU", "useNpuFp16": true }
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
+        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
       ]
     }
   ]

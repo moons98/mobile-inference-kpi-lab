@@ -1,6 +1,7 @@
 package com.example.kpilab
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.Environment
 import android.util.Log
 import com.example.kpilab.batch.BatchProgress
@@ -36,6 +37,7 @@ data class BenchmarkProgress(
     val elapsedMs: Long = 0,
     val totalMs: Long = 0,
     val inferenceCount: Int = 0,
+    val frameDropCount: Int = 0,
     val lastLatencyMs: Float = -1f,
     val lastThermalC: Float = -1f,
     val lastPowerMw: Float = -1f,
@@ -48,6 +50,10 @@ data class BenchmarkProgress(
     /** Throughput in inferences per second */
     val throughput: Float
         get() = if (elapsedMs > 0) (inferenceCount * 1000f) / elapsedMs else 0f
+
+    /** Frame drop rate as percentage */
+    val frameDropRate: Float
+        get() = if (inferenceCount > 0) (frameDropCount * 100f) / inferenceCount else 0f
 
     fun formatElapsed(): String {
         val seconds = (elapsedMs / 1000) % 60
@@ -67,7 +73,9 @@ data class BenchmarkProgress(
 }
 
 /**
- * Runs benchmark with ONNX Runtime
+ * Runs benchmark with ONNX Runtime.
+ * Supports Phase 1 (Burst Latency) and Phase 2 (Sustained Throughput) modes
+ * with camera pipeline integration.
  */
 class BenchmarkRunner(
     private val context: Context,
@@ -88,12 +96,27 @@ class BenchmarkRunner(
     private val _batchProgress = MutableStateFlow(BatchProgress())
     val batchProgress: StateFlow<BatchProgress> = _batchProgress.asStateFlow()
 
+    // Latest detections for demo overlay (with source image dimensions for correct scaling)
+    data class DetectionResult(
+        val detections: List<Detection> = emptyList(),
+        val sourceWidth: Int = 640,
+        val sourceHeight: Int = 640
+    )
+    private val _lastDetections = MutableStateFlow(DetectionResult())
+    val lastDetections: StateFlow<DetectionResult> = _lastDetections.asStateFlow()
+
     private var ortRunner: OrtRunner? = null
     private var benchmarkJob: Job? = null
     private var systemMetricsJob: Job? = null
     private var batchJob: Job? = null
     private var startTimeMs: Long = 0
     private var config: BenchmarkConfig? = null
+
+    // Camera manager (set externally by MainActivity)
+    var cameraManager: CameraManager? = null
+
+    // Overlay view for measuring render time (set externally by MainActivity)
+    var overlayView: OverlayView? = null
 
     // Logcat capture for ORT verbose logs
     private val logcatCapture = LogcatCapture()
@@ -202,9 +225,7 @@ class BenchmarkRunner(
         if (!initialized) {
             val detail = runner.lastError ?: "Unknown error"
             Log.e(TAG, "Failed to initialize runner: $detail")
-            // Release partially-initialized runner to avoid resource leaks
             runner.release()
-            // Stop logcat capture even on failure - it may contain useful error info
             logcatCapture.stopCapture()
             lastOrtLogInfo = logcatCapture.parseOrtInfo()
             _progress.value = BenchmarkProgress(
@@ -216,10 +237,37 @@ class BenchmarkRunner(
 
         ortRunner = runner
 
+        // Load source image for static mode or as fallback for warmup/profiling
+        when (config.inputMode) {
+            InputMode.STATIC_IMAGE -> {
+                runner.loadSourceImage()
+            }
+            InputMode.CAMERA_SINGLE -> {
+                // Wait for first camera frame, use as source for entire benchmark
+                val frame = acquireCameraFrame(InputMode.CAMERA_SINGLE)
+                if (frame != null) {
+                    runner.setSourceBitmap(frame.first)
+                } else {
+                    Log.w(TAG, "Camera frame unavailable, falling back to static image")
+                    runner.loadSourceImage()
+                }
+            }
+            InputMode.CAMERA_LIVE -> {
+                // For warmup/profiling, use a single camera frame or static fallback
+                val frame = acquireCameraFrame(InputMode.CAMERA_SINGLE)
+                if (frame != null) {
+                    runner.setSourceBitmap(frame.first)
+                } else {
+                    Log.w(TAG, "Camera frame unavailable, falling back to static image")
+                    runner.loadSourceImage()
+                }
+            }
+        }
+
         // Start session
         val sessionId = config.generateSessionId()
         runner.startSession(sessionId)
-        runner.setBenchmarkConfig(config.frequencyHz, WARMUP_ITERATIONS)
+        runner.setBenchmarkConfig(config.frequencyHz, WARMUP_ITERATIONS, config.phase, config.inputMode)
         Log.i(TAG, "Session started: $sessionId")
 
         // Always run warm-up to reach steady-state performance
@@ -228,9 +276,7 @@ class BenchmarkRunner(
             runner.runWarmUp(WARMUP_ITERATIONS)
         }
 
-        // Dedicated profiling phase: run 50 iterations with ORT profiling, then
-        // endProfiling and parse the trace file (~8 MB). This keeps the profiling
-        // file small and removes profiling overhead from the main benchmark loop.
+        // Dedicated profiling phase
         withContext(Dispatchers.IO) {
             runner.runProfilingPhase(PROFILING_ITERATIONS)
         }
@@ -244,44 +290,13 @@ class BenchmarkRunner(
             collectSystemMetrics(config.durationMs, runner)
         }
 
-        // Main inference loop
-        var inferenceCount = 0
-        val intervalMs = config.intervalMs
-
-        while (currentCoroutineContext().isActive) {
-            val elapsed = System.currentTimeMillis() - startTimeMs
-            if (elapsed >= config.durationMs) {
-                break
-            }
-
-            val loopStart = System.currentTimeMillis()
-
-            // Run inference
-            val latencyMs = withContext(Dispatchers.IO) {
-                runner.runInference()
-            }
-
-            if (latencyMs >= 0) {
-                inferenceCount++
-
-                // Update progress
-                val currentElapsed = System.currentTimeMillis() - startTimeMs
-                _progress.value = _progress.value.copy(
-                    elapsedMs = currentElapsed,
-                    inferenceCount = inferenceCount,
-                    lastLatencyMs = latencyMs
-                )
-            }
-
-            // Wait for next interval
-            val loopDuration = System.currentTimeMillis() - loopStart
-            val sleepTime = intervalMs - loopDuration
-            if (sleepTime > 0) {
-                delay(sleepTime)
-            }
+        // Run main loop based on phase
+        when (config.phase) {
+            BenchmarkPhase.BURST -> runBurstLoop(config, runner)
+            BenchmarkPhase.SUSTAINED -> runSustainedLoop(config, runner)
         }
 
-        // Run pipeline benchmark (overlap simulation with static images)
+        // Run pipeline benchmark (overlap simulation)
         _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
         withContext(Dispatchers.IO) {
             runner.runPipelineBenchmark(iterations = 100)
@@ -289,7 +304,7 @@ class BenchmarkRunner(
 
         // End session
         runner.endSession()
-        Log.i(TAG, "Benchmark completed: $inferenceCount inferences")
+        Log.i(TAG, "Benchmark completed")
 
         // Stop logcat capture and parse ORT info
         logcatCapture.stopCapture()
@@ -305,6 +320,143 @@ class BenchmarkRunner(
                 fallbackOps = ortInfo.fallbackOps
             )
         }
+    }
+
+    /**
+     * Phase 1: Burst Latency Test
+     * Fixed iterations with sleep between each inference.
+     * Input: Camera Single (same frame repeated)
+     */
+    private suspend fun runBurstLoop(config: BenchmarkConfig, runner: OrtRunner) {
+        var inferenceCount = 0
+        val intervalMs = config.intervalMs
+        val totalIterations = config.iterations
+        var prevOverlayMs = 0f
+
+        Log.i(TAG, "=== Phase 1: Burst Latency ($totalIterations iterations, ${config.frequencyHz} Hz) ===")
+
+        for (i in 0 until totalIterations) {
+            if (!currentCoroutineContext().isActive) break
+
+            val loopStart = System.currentTimeMillis()
+
+            // Acquire frame (Camera Single returns cached frame after first)
+            var acquireMs = 0f
+            if (config.inputMode == InputMode.CAMERA_SINGLE || config.inputMode == InputMode.CAMERA_LIVE) {
+                val acquireStart = System.nanoTime()
+                val frame = acquireCameraFrame(config.inputMode)
+                acquireMs = ((System.nanoTime() - acquireStart) / 1_000_000.0).toFloat()
+                if (frame != null) {
+                    runner.setSourceBitmap(frame.first)
+                }
+            }
+
+            // Read previous frame's overlay draw time
+            val overlayMs = prevOverlayMs
+
+            // Run inference (passes previous frame's overlay time for recording)
+            val outcome = withContext(Dispatchers.IO) {
+                runner.runInference(acquireMs = acquireMs, overlayMs = overlayMs)
+            }
+
+            if (outcome != null) {
+                inferenceCount++
+                _lastDetections.value = DetectionResult(outcome.detections, outcome.sourceWidth, outcome.sourceHeight)
+                // Next iteration will read the overlay time from this frame's draw
+                prevOverlayMs = overlayView?.lastDrawMs ?: 0f
+
+                val currentElapsed = System.currentTimeMillis() - startTimeMs
+                _progress.value = _progress.value.copy(
+                    elapsedMs = currentElapsed,
+                    totalMs = config.durationMs,
+                    inferenceCount = inferenceCount,
+                    lastLatencyMs = outcome.totalMs
+                )
+            }
+
+            // Wait for next interval
+            val loopDuration = System.currentTimeMillis() - loopStart
+            val sleepTime = intervalMs - loopDuration
+            if (sleepTime > 0) {
+                delay(sleepTime)
+            }
+        }
+
+        Log.i(TAG, "Burst completed: $inferenceCount inferences")
+    }
+
+    /**
+     * Phase 2: Sustained Throughput Test
+     * Target FPS for fixed duration with frame drop tracking.
+     * Input: Camera Live (new frame each iteration)
+     */
+    private suspend fun runSustainedLoop(config: BenchmarkConfig, runner: OrtRunner) {
+        var inferenceCount = 0
+        var frameDropCount = 0
+        val intervalMs = config.intervalMs
+        val targetIntervalMs = intervalMs
+        var prevOverlayMs = 0f
+
+        Log.i(TAG, "=== Phase 2: Sustained Throughput (${config.durationMinutes} min, ${config.frequencyHz} Hz target) ===")
+
+        while (currentCoroutineContext().isActive) {
+            val elapsed = System.currentTimeMillis() - startTimeMs
+            if (elapsed >= config.durationMs) break
+
+            val loopStart = System.currentTimeMillis()
+
+            // Acquire live camera frame
+            var acquireMs = 0f
+            if (config.inputMode != InputMode.STATIC_IMAGE) {
+                val acquireStart = System.nanoTime()
+                val frame = acquireCameraFrame(config.inputMode)
+                acquireMs = ((System.nanoTime() - acquireStart) / 1_000_000.0).toFloat()
+                if (frame != null) {
+                    runner.setSourceBitmap(frame.first)
+                }
+            }
+
+            val overlayMs = prevOverlayMs
+
+            // Run inference with frame drop detection
+            val outcome = withContext(Dispatchers.IO) {
+                runner.runInference(acquireMs = acquireMs, targetIntervalMs = targetIntervalMs, overlayMs = overlayMs)
+            }
+
+            if (outcome != null) {
+                inferenceCount++
+                if (outcome.frameDropped) frameDropCount++
+                _lastDetections.value = DetectionResult(outcome.detections, outcome.sourceWidth, outcome.sourceHeight)
+                prevOverlayMs = overlayView?.lastDrawMs ?: 0f
+
+                val currentElapsed = System.currentTimeMillis() - startTimeMs
+                _progress.value = _progress.value.copy(
+                    elapsedMs = currentElapsed,
+                    inferenceCount = inferenceCount,
+                    frameDropCount = frameDropCount,
+                    lastLatencyMs = outcome.totalMs
+                )
+            }
+
+            // Wait for next interval (skip if already over budget)
+            val loopDuration = System.currentTimeMillis() - loopStart
+            val sleepTime = intervalMs - loopDuration
+            if (sleepTime > 0) {
+                delay(sleepTime)
+            }
+        }
+
+        Log.i(TAG, "Sustained completed: $inferenceCount inferences, $frameDropCount frame drops " +
+                "(${if (inferenceCount > 0) "%.1f".format(frameDropCount * 100f / inferenceCount) else "0"}%)")
+    }
+
+    /**
+     * Acquire a camera frame via CameraManager.
+     * Returns Pair(bitmap, acquireMs) or null if unavailable.
+     */
+    private fun acquireCameraFrame(mode: InputMode): Pair<Bitmap, Float>? {
+        val cam = cameraManager ?: return null
+        return cam.acquireFrameBlocking(mode, timeoutMs = 3000)
     }
 
     private suspend fun collectSystemMetrics(durationMs: Long, runner: OrtRunner) {
@@ -520,7 +672,8 @@ class BenchmarkRunner(
             val ep = getActiveExecutionProvider()
                 .replace("_", "")
                 .uppercase()
-            val baseFilename = "kpi_${baseName}_${precision}_${ep}_${timestamp}"
+            val phaseTag = config?.phase?.name?.lowercase() ?: "burst"
+            val baseFilename = "kpi_${baseName}_${precision}_${ep}_${phaseTag}_${timestamp}"
 
             val exportDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
             if (exportDir != null) {

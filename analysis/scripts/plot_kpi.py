@@ -250,13 +250,38 @@ def plot_kpi_dashboard(
 
     # Add E2E breakdown annotation if available
     if 'inference_ms' in inference_df.columns:
-        pre_p50 = inference_df['preprocess_ms'].quantile(0.50)
-        inf_p50 = inference_df['inference_ms'].quantile(0.50)
-        post_p50 = inference_df['postprocess_ms'].quantile(0.50)
+        breakdown_lines = ['E2E P50 Breakdown:']
+
+        def _q50(col):
+            if col in inference_df.columns:
+                s = inference_df[col].dropna()
+                return float(s.quantile(0.50)) if len(s) > 0 else 0.0
+            return 0.0
+
+        acq = _q50('acquire_ms')
+        pre = _q50('preprocess_ms')
+        incr = _q50('input_create_ms')
+        inf = _q50('inference_ms')
+        outc = _q50('output_copy_ms')
+        post = _q50('postprocess_ms')
+        ovlay = _q50('overlay_ms')
         det_mean = inference_df['detection_count'].mean() if 'detection_count' in inference_df.columns else 0
-        ax.text(0.02, 0.98,
-                f'E2E P50 Breakdown:\n  Pre: {pre_p50:.1f}ms\n  Inf: {inf_p50:.1f}ms\n  Post: {post_p50:.1f}ms\n  Dets: {det_mean:.1f}',
-                transform=ax.transAxes, fontsize=8, verticalalignment='top',
+
+        if acq > 0:
+            breakdown_lines.append(f'  Acq: {acq:.1f}ms')
+        breakdown_lines.append(f'  Pre: {pre:.1f}ms')
+        if incr > 0:
+            breakdown_lines.append(f'  InCr: {incr:.1f}ms')
+        breakdown_lines.append(f'  Inf: {inf:.1f}ms')
+        if outc > 0:
+            breakdown_lines.append(f'  OutCp: {outc:.1f}ms')
+        breakdown_lines.append(f'  Post: {post:.1f}ms')
+        if ovlay > 0:
+            breakdown_lines.append(f'  Ovlay: {ovlay:.1f}ms')
+        breakdown_lines.append(f'  Dets: {det_mean:.1f}')
+
+        ax.text(0.02, 0.98, '\n'.join(breakdown_lines),
+                transform=ax.transAxes, fontsize=7, verticalalignment='top',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
     # 3. Thermal (bottom-left)
@@ -383,11 +408,56 @@ def compare_experiments(
     # Create numbered labels: "1: Label", "2: Label", ...
     numbered_labels = [f"{i+1}: {label}" for i, label in enumerate(labels)]
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('Experiment Comparison (Overlaid)', fontsize=14, fontweight='bold')
+    fig, axes = plt.subplots(3, 2, figsize=(16, 14))
+    fig.suptitle('Experiment Comparison', fontsize=14, fontweight='bold')
 
-    # 1. Latency Over Time (top-left) - overlaid with moving average
+    # 1. E2E Breakdown Stacked Bar (top-left) — most important view
     ax = axes[0, 0]
+    has_breakdown = any(m.inference_only_p50 > 0 for m in metrics_list)
+    if has_breakdown:
+        bar_labels = [f"{i+1}" for i in range(len(metrics_list))]
+        x = np.arange(len(bar_labels))
+        bar_width = 0.6
+
+        # Stack order: acquire → pre → inCreate → infer → outCopy → post → overlay
+        stage_data = {
+            'Acquire': [m.acquire_p50 for m in metrics_list],
+            'Preprocess': [m.preprocess_p50 for m in metrics_list],
+            'InputCreate': [m.input_create_p50 for m in metrics_list],
+            'Inference': [m.inference_only_p50 for m in metrics_list],
+            'OutputCopy': [m.output_copy_p50 for m in metrics_list],
+            'Postprocess': [m.postprocess_p50 for m in metrics_list],
+            'Overlay': [m.overlay_p50 for m in metrics_list],
+        }
+        # Remove stages that are all zero
+        stage_data = {k: v for k, v in stage_data.items() if any(val > 0 for val in v)}
+
+        stage_colors = {
+            'Acquire': '#b0bec5', 'Preprocess': '#42a5f5', 'InputCreate': '#78909c',
+            'Inference': '#ef5350', 'OutputCopy': '#9e9e9e', 'Postprocess': '#66bb6a',
+            'Overlay': '#ffa726',
+        }
+        bottom = np.zeros(len(metrics_list))
+        for stage_name, values in stage_data.items():
+            ax.bar(x, values, bar_width, bottom=bottom, label=stage_name,
+                   color=stage_colors.get(stage_name, '#999999'))
+            bottom += np.array(values)
+
+        # Add E2E total on top of each bar
+        for i, m in enumerate(metrics_list):
+            ax.text(i, bottom[i] + 0.5, f'{m.latency_p50:.1f}', ha='center', va='bottom', fontsize=7)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(bar_labels)
+        ax.set_ylabel('Latency (ms)')
+        ax.set_title('E2E Breakdown (P50, Stacked)')
+        ax.legend(loc='upper right', fontsize=6, ncol=2)
+    else:
+        ax.text(0.5, 0.5, 'No breakdown data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('E2E Breakdown (P50)')
+
+    # 2. Latency Over Time (top-right) - overlaid with moving average
+    ax = axes[0, 1]
     for i, (data, label, color, style) in enumerate(zip(data_list, numbered_labels, colors, styles)):
         inference_df = data['inference_df']
         times = inference_df['elapsed_seconds'] / 60
@@ -406,8 +476,8 @@ def compare_experiments(
     ax.set_title('Latency Over Time (Moving Avg)')
     ax.legend(loc='best', fontsize=7)
 
-    # 2. Thermal Over Time (top-right) - overlaid
-    ax = axes[0, 1]
+    # 3. Thermal Over Time (mid-left) - overlaid
+    ax = axes[1, 0]
     for i, (data, label, color, style) in enumerate(zip(data_list, numbered_labels, colors, styles)):
         system_df = data['system_df']
         thermal_data = system_df[system_df['thermal_c'] > 0]
@@ -421,8 +491,8 @@ def compare_experiments(
     ax.set_title('Thermal Over Time')
     ax.legend(loc='best', fontsize=7)
 
-    # 3. Power Over Time (bottom-left) - overlaid with moving average
-    ax = axes[1, 0]
+    # 4. Power Over Time (mid-right) - overlaid with moving average
+    ax = axes[1, 1]
     for i, (data, label, color, style) in enumerate(zip(data_list, numbered_labels, colors, styles)):
         system_df = data['system_df']
         power_data = system_df[system_df['power_mw'] > 0]
@@ -443,8 +513,8 @@ def compare_experiments(
     ax.set_title('Power Consumption (Moving Avg)')
     ax.legend(loc='best', fontsize=7)
 
-    # 4. Memory Over Time (bottom-right)
-    ax = axes[1, 1]
+    # 5. Memory Over Time (bottom-left)
+    ax = axes[2, 0]
     for i, (data, label, color, style) in enumerate(zip(data_list, numbered_labels, colors, styles)):
         system_df = data['system_df']
         mem_data = system_df[system_df['memory_mb'] > 0]
@@ -457,6 +527,14 @@ def compare_experiments(
     ax.set_ylabel('Memory (MB)')
     ax.set_title('Memory (VmRSS)')
     ax.legend(loc='best', fontsize=7)
+
+    # 6. Legend / Experiment Key (bottom-right)
+    ax = axes[2, 1]
+    ax.axis('off')
+    legend_text = '\n'.join(numbered_labels)
+    ax.text(0.05, 0.95, legend_text, transform=ax.transAxes,
+            fontsize=9, verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
 
     plt.tight_layout()
 

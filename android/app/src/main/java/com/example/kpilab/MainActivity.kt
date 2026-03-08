@@ -1,12 +1,16 @@
 package com.example.kpilab
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.kpilab.batch.BatchProgress
 import com.example.kpilab.batch.ExperimentSet
@@ -14,6 +18,7 @@ import com.example.kpilab.batch.ExperimentSetLoader
 import com.example.kpilab.databinding.ActivityMainBinding
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import android.widget.AdapterView
 import java.io.File
 
 class MainActivity : AppCompatActivity() {
@@ -27,12 +32,26 @@ class MainActivity : AppCompatActivity() {
     private lateinit var kpiCollector: KpiCollector
     private lateinit var benchmarkRunner: BenchmarkRunner
     private lateinit var experimentSetLoader: ExperimentSetLoader
+    private var cameraManager: CameraManager? = null
 
     private var isBatchMode = false
     private var experimentSets: List<ExperimentSet> = emptyList()
+    private var cameraPermissionGranted = false
 
     // All available model types for the spinner
     private val modelTypes = OnnxModelType.entries
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        cameraPermissionGranted = granted
+        if (granted) {
+            initializeCamera()
+        } else {
+            Log.w(TAG, "Camera permission denied - camera modes unavailable")
+            Toast.makeText(this, "Camera permission denied. Static image mode only.", Toast.LENGTH_LONG).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,14 +63,38 @@ class MainActivity : AppCompatActivity() {
         setupUI()
         setupModelSpinner()
         setupBatchMode()
+        setupPhaseInputControls()
         setupEpOptionVisibility()
         observeProgress()
         observeBatchProgress()
+        observeDetections()
+        requestCameraPermission()
+    }
+
+    private fun requestCameraPermission() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED) {
+            cameraPermissionGranted = true
+            initializeCamera()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun initializeCamera() {
+        cameraManager = CameraManager(this)
+        benchmarkRunner.cameraManager = cameraManager
+        benchmarkRunner.overlayView = binding.overlayView
+        Log.i(TAG, "CameraManager initialized")
+
+        // Auto-start camera preview if overlay is enabled by default
+        if (binding.checkDemoMode.isChecked) {
+            updateCameraPreview(true)
+        }
     }
 
     private fun initializeComponents() {
         // Initialize QNN libraries from assets
-        // This extracts QNN .so files and sets up ADSP_LIBRARY_PATH for DSP access
         val qnnInitialized = OrtRunner.initializeQnnLibraries(this)
         if (qnnInitialized) {
             Log.i(TAG, "QNN libraries initialized successfully")
@@ -92,8 +135,37 @@ class MainActivity : AppCompatActivity() {
         binding.btnExport.isEnabled = false
     }
 
+    private fun setupPhaseInputControls() {
+        // Phase selection auto-sets input mode defaults
+        binding.radioGroupPhase.setOnCheckedChangeListener { _, checkedId ->
+            when (checkedId) {
+                R.id.radioPhaseBurst -> {
+                    binding.radioInputCameraSingle.isChecked = true
+                }
+                R.id.radioPhaseSustained -> {
+                    binding.radioInputCameraLive.isChecked = true
+                }
+            }
+        }
+
+        // Demo mode checkbox controls camera preview visibility
+        binding.checkDemoMode.setOnCheckedChangeListener { _, isChecked ->
+            updateCameraPreview(isChecked)
+        }
+    }
+
+    private fun updateCameraPreview(demoMode: Boolean) {
+        if (demoMode && cameraPermissionGranted) {
+            binding.cardCameraPreview.visibility = View.VISIBLE
+            // Start camera preview
+            cameraManager?.start(this, binding.previewView)
+        } else {
+            binding.cardCameraPreview.visibility = View.GONE
+            cameraManager?.stop()
+        }
+    }
+
     private fun setupBatchMode() {
-        // Setup experiment set spinner
         val adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_item,
@@ -102,59 +174,95 @@ class MainActivity : AppCompatActivity() {
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.spinnerExperimentSet.adapter = adapter
 
-        // Batch mode checkbox listener
         binding.checkBatchMode.setOnCheckedChangeListener { _, isChecked ->
             isBatchMode = isChecked
             updateBatchModeUI()
         }
 
-        // Initial state
+        // Show experiment detail when set is selected
+        binding.spinnerExperimentSet.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                updateExperimentDetail(position)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                binding.layoutExperimentDetail.visibility = View.GONE
+            }
+        }
+
         updateBatchModeUI()
     }
 
-    /**
-     * Show/hide QNN-specific options (FP16, context cache) based on selected EP.
-     * These options are only relevant for NPU; hidden for CPU, visible but FP16 disabled for GPU.
-     */
     private fun setupEpOptionVisibility() {
         binding.radioGroupPath.setOnCheckedChangeListener { _, checkedId ->
             updateQnnOptionsVisibility(checkedId)
         }
-        // Apply initial state
         updateQnnOptionsVisibility(binding.radioGroupPath.checkedRadioButtonId)
     }
 
     private fun updateQnnOptionsVisibility(checkedId: Int) {
         when (checkedId) {
             R.id.radioNpuGpuCpu -> {
-                // NPU: show all QNN options
                 binding.layoutQnnOptions.visibility = View.VISIBLE
                 binding.checkFp16.isEnabled = true
                 binding.checkCache.isEnabled = true
             }
             R.id.radioGpuCpu -> {
-                // GPU: show cache option but FP16 is NPU-only
                 binding.layoutQnnOptions.visibility = View.VISIBLE
                 binding.checkFp16.isEnabled = false
                 binding.checkFp16.isChecked = false
                 binding.checkCache.isEnabled = true
             }
             R.id.radioCpuOnly -> {
-                // CPU: hide all QNN options
                 binding.layoutQnnOptions.visibility = View.GONE
             }
         }
     }
 
+    private fun updateExperimentDetail(position: Int) {
+        if (position < 0 || position >= experimentSets.size) {
+            binding.layoutExperimentDetail.visibility = View.GONE
+            return
+        }
+
+        val set = experimentSets[position]
+        val defaults = experimentSetLoader.getDefaults()
+
+        // Defaults summary
+        val phase = defaults.phase.replace("_", " ")
+        val input = defaults.inputMode.replace("_", " ")
+        val defaultsText = buildString {
+            append("Defaults: $phase | $input")
+            if (defaults.phase == "BURST") {
+                append(" | ${defaults.iterations}iter @ ${defaults.frequencyHz}Hz")
+            } else {
+                append(" | ${defaults.durationMinutes}min @ ${defaults.frequencyHz}Hz")
+            }
+        }
+        binding.tvExperimentDefaults.text = defaultsText
+
+        // Experiment list with index and overrides
+        val listText = set.experiments.mapIndexed { i, exp ->
+            "${i + 1}. ${exp.getDetailLine(defaults)}"
+        }.joinToString("\n")
+        binding.tvExperimentList.text = listText
+
+        binding.layoutExperimentDetail.visibility = View.VISIBLE
+    }
+
     private fun updateBatchModeUI() {
-        // Show/hide batch options
         binding.layoutBatchOptions.visibility = if (isBatchMode) View.VISIBLE else View.GONE
 
-        // Show/hide single mode cards
+        if (isBatchMode) {
+            // Show detail for current selection
+            updateExperimentDetail(binding.spinnerExperimentSet.selectedItemPosition)
+        } else {
+            binding.layoutExperimentDetail.visibility = View.GONE
+        }
+
         val singleModeVisibility = if (isBatchMode) View.GONE else View.VISIBLE
+        binding.cardPhaseInput.visibility = singleModeVisibility
         binding.cardSingleMode.visibility = singleModeVisibility
         binding.cardExecutionPath.visibility = singleModeVisibility
-        binding.cardFrequency.visibility = singleModeVisibility
         binding.cardOptions.visibility = singleModeVisibility
     }
 
@@ -184,19 +292,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun observeDetections() {
+        lifecycleScope.launch {
+            benchmarkRunner.lastDetections.collectLatest { result ->
+                if (binding.checkDemoMode.isChecked && result.detections.isNotEmpty()) {
+                    binding.overlayView.setDetections(result.detections, result.sourceWidth, result.sourceHeight)
+                }
+            }
+        }
+    }
+
     private fun updateBatchUI(progress: BatchProgress) {
-        // Show/hide batch progress card
         binding.cardBatchProgress.visibility = if (progress.isRunning || progress.completedExperiments.isNotEmpty()) {
             View.VISIBLE
         } else {
             View.GONE
         }
 
-        // Update experiment progress
         binding.tvBatchExperiment.text = progress.formatProgress()
         binding.tvCurrentExperiment.text = progress.currentExperimentName.ifEmpty { "--" }
 
-        // Update cooldown status
         if (progress.isCoolingDown) {
             binding.layoutCooldown.visibility = View.VISIBLE
             binding.tvCooldown.text = "${progress.cooldownRemainingSeconds} sec"
@@ -204,7 +319,6 @@ class MainActivity : AppCompatActivity() {
             binding.layoutCooldown.visibility = View.GONE
         }
 
-        // Update completed experiments list
         if (progress.completedExperiments.isNotEmpty()) {
             val completedText = progress.completedExperiments.mapIndexed { index, path ->
                 val filename = File(path).name
@@ -215,7 +329,6 @@ class MainActivity : AppCompatActivity() {
             binding.tvCompletedExperiments.text = ""
         }
 
-        // Update button state for batch mode
         if (progress.isRunning) {
             binding.btnStartStop.text = getString(R.string.stop_benchmark)
             setControlsEnabled(false)
@@ -228,12 +341,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUI(progress: BenchmarkProgress) {
-        // Show error dialog on initialization failure
         if (progress.state == BenchmarkState.ERROR && progress.errorMessage != null) {
             Toast.makeText(this, progress.errorMessage, Toast.LENGTH_LONG).show()
         }
 
-        // Update status text
         binding.tvStatus.text = when (progress.state) {
             BenchmarkState.IDLE -> "Idle"
             BenchmarkState.INITIALIZING -> "Initializing..."
@@ -247,17 +358,11 @@ class MainActivity : AppCompatActivity() {
                         progress.state == BenchmarkState.WARMING_UP ||
                         progress.state == BenchmarkState.INITIALIZING
 
-        // Update progress bar
         binding.progressBar.visibility = if (isRunning) View.VISIBLE else View.GONE
         binding.progressBar.progress = progress.progressPercent
-
-        // Update progress text
         binding.tvProgress.text = "${progress.formatElapsed()} / ${progress.formatTotal()}"
-
-        // Update metrics
         binding.tvInferences.text = progress.inferenceCount.toString()
 
-        // Throughput
         binding.tvThroughput.text = if (progress.throughput > 0) {
             progress.formatThroughput()
         } else {
@@ -268,6 +373,12 @@ class MainActivity : AppCompatActivity() {
             String.format("%.1f ms", progress.lastLatencyMs)
         } else {
             "-- ms"
+        }
+
+        // Frame drop (show for sustained phase)
+        if (progress.frameDropCount > 0 || progress.inferenceCount > 100) {
+            binding.layoutFrameDrop.visibility = View.VISIBLE
+            binding.tvFrameDrop.text = "${progress.frameDropCount} (${String.format("%.1f", progress.frameDropRate)}%)"
         }
 
         binding.tvThermal.text = if (progress.lastThermalC >= 0) {
@@ -288,49 +399,41 @@ class MainActivity : AppCompatActivity() {
             "-- MB"
         }
 
-        // Update button state
         binding.btnStartStop.text = if (isRunning) {
             getString(R.string.stop_benchmark)
         } else {
             getString(R.string.start_benchmark)
         }
 
-        // Enable/disable controls
         setControlsEnabled(!isRunning)
-
-        // Enable export if we have data
         binding.btnExport.isEnabled = !isRunning && benchmarkRunner.getRecordCount() > 0
     }
 
     private fun setControlsEnabled(enabled: Boolean) {
-        // Batch mode toggle
         binding.checkBatchMode.isEnabled = enabled
         binding.spinnerExperimentSet.isEnabled = enabled
-
-        // Model selection (single mode only)
         binding.spinnerModel.isEnabled = enabled
 
-        // Execution provider selection
-        binding.radioGroupPath.isEnabled = enabled
+        // Phase & Input controls
+        binding.radioPhaseBurst.isEnabled = enabled
+        binding.radioPhaseSustained.isEnabled = enabled
+        binding.radioInputCameraSingle.isEnabled = enabled
+        binding.radioInputCameraLive.isEnabled = enabled
+        binding.radioInputStatic.isEnabled = enabled
+        binding.checkDemoMode.isEnabled = enabled
+
+        // Execution provider
         binding.radioNpuGpuCpu.isEnabled = enabled
         binding.radioGpuCpu.isEnabled = enabled
         binding.radioCpuOnly.isEnabled = enabled
 
-        // Frequency
-        binding.radioGroupFrequency.isEnabled = enabled
-        binding.radioFreq1.isEnabled = enabled
-        binding.radioFreq5.isEnabled = enabled
-        binding.radioFreq10.isEnabled = enabled
-
         // Options
         if (enabled) {
-            // Restore QNN options visibility based on selected EP
             updateQnnOptionsVisibility(binding.radioGroupPath.checkedRadioButtonId)
         } else {
             binding.checkFp16.isEnabled = false
             binding.checkCache.isEnabled = false
         }
-        binding.radioGroupDuration.isEnabled = enabled
         binding.radioDuration1.isEnabled = enabled
         binding.radioDuration2.isEnabled = enabled
         binding.radioDuration5.isEnabled = enabled
@@ -338,10 +441,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildConfig(): BenchmarkConfig {
-        // Model type from spinner selection
         val modelType = modelTypes[binding.spinnerModel.selectedItemPosition]
 
-        // Execution provider
         val executionProvider = when (binding.radioGroupPath.checkedRadioButtonId) {
             R.id.radioNpuGpuCpu -> ExecutionProvider.QNN_NPU
             R.id.radioGpuCpu -> ExecutionProvider.QNN_GPU
@@ -349,11 +450,17 @@ class MainActivity : AppCompatActivity() {
             else -> ExecutionProvider.QNN_NPU
         }
 
-        val frequencyHz = when (binding.radioGroupFrequency.checkedRadioButtonId) {
-            R.id.radioFreq1 -> 1
-            R.id.radioFreq5 -> 5
-            R.id.radioFreq10 -> 10
-            else -> 5
+        val phase = when (binding.radioGroupPhase.checkedRadioButtonId) {
+            R.id.radioPhaseBurst -> BenchmarkPhase.BURST
+            R.id.radioPhaseSustained -> BenchmarkPhase.SUSTAINED
+            else -> BenchmarkPhase.BURST
+        }
+
+        val inputMode = when (binding.radioGroupInput.checkedRadioButtonId) {
+            R.id.radioInputCameraSingle -> InputMode.CAMERA_SINGLE
+            R.id.radioInputCameraLive -> InputMode.CAMERA_LIVE
+            R.id.radioInputStatic -> InputMode.STATIC_IMAGE
+            else -> InputMode.CAMERA_SINGLE
         }
 
         val durationMinutes = when (binding.radioGroupDuration.checkedRadioButtonId) {
@@ -367,8 +474,12 @@ class MainActivity : AppCompatActivity() {
         return BenchmarkConfig(
             modelType = modelType,
             executionProvider = executionProvider,
-            frequencyHz = frequencyHz,
+            phase = phase,
+            inputMode = inputMode,
+            demoMode = binding.checkDemoMode.isChecked,
+            frequencyHz = if (phase == BenchmarkPhase.BURST) 2 else 30,
             durationMinutes = durationMinutes,
+            iterations = 100,
             useNpuFp16 = binding.checkFp16.isChecked,
             useContextCache = binding.checkCache.isChecked
         )
@@ -384,10 +495,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun startSingleBenchmark() {
         val config = buildConfig()
+
+        // Ensure camera is running for camera modes
+        if (config.usesCamera && cameraPermissionGranted && cameraManager?.isRunning != true) {
+            cameraManager?.start(this, if (config.demoMode) binding.previewView else null)
+        }
+
         Log.i(TAG, "Starting benchmark with config: $config")
-
         benchmarkRunner.start(config, lifecycleScope)
-
         Toast.makeText(this, "Benchmark started", Toast.LENGTH_SHORT).show()
     }
 
@@ -406,6 +521,11 @@ class MainActivity : AppCompatActivity() {
         val selectedSet = experimentSets[selectedIndex]
         val defaults = experimentSetLoader.getDefaults()
 
+        // Start camera for batch (needed for camera input modes)
+        if (cameraPermissionGranted && cameraManager?.isRunning != true) {
+            cameraManager?.start(this)
+        }
+
         Log.i(TAG, "Starting batch: ${selectedSet.name} with ${selectedSet.experiments.size} experiments")
 
         benchmarkRunner.startBatch(
@@ -423,9 +543,6 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Batch started: ${selectedSet.name}", Toast.LENGTH_SHORT).show()
     }
 
-    /**
-     * Show confirmation dialog before stopping a running benchmark.
-     */
     private fun confirmStop() {
         val message = if (benchmarkRunner.isBatchRunning) {
             "Stop the batch experiment? Current experiment data will be lost."
@@ -486,6 +603,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        cameraManager?.release()
         benchmarkRunner.release()
     }
 }

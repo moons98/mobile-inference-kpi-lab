@@ -21,6 +21,34 @@
             android:textColor="@color/text_primary"
             android:layout_marginBottom="16dp" />
 
+        <!-- Camera Preview Card (demo mode) -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardCameraPreview"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:visibility="gone"
+            app:cardElevation="2dp"
+            app:cardCornerRadius="8dp">
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="240dp">
+
+                <androidx.camera.view.PreviewView
+                    android:id="@+id/previewView"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
+
+                <com.example.kpilab.OverlayView
+                    android:id="@+id/overlayView"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
+
+            </FrameLayout>
+
+        </com.google.android.material.card.MaterialCardView>
+
         <!-- Batch Mode Card -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
@@ -65,7 +93,134 @@
                         android:background="@android:drawable/btn_dropdown"
                         android:spinnerMode="dropdown" />
 
+                    <!-- Experiment set detail: defaults + experiment list -->
+                    <LinearLayout
+                        android:id="@+id/layoutExperimentDetail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:layout_marginTop="12dp"
+                        android:padding="12dp"
+                        android:background="#F5F5F5">
+
+                        <TextView
+                            android:id="@+id/tvExperimentDefaults"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textSize="12sp"
+                            android:textColor="@color/text_secondary"
+                            android:fontFamily="monospace"
+                            android:layout_marginBottom="8dp" />
+
+                        <TextView
+                            android:id="@+id/tvExperimentList"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textSize="12sp"
+                            android:textColor="@color/text_primary"
+                            android:fontFamily="monospace"
+                            android:lineSpacingExtra="4dp" />
+
+                    </LinearLayout>
+
                 </LinearLayout>
+
+            </LinearLayout>
+
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Phase & Input Mode Card (Single Mode) -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardPhaseInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            app:cardElevation="2dp"
+            app:cardCornerRadius="8dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Benchmark Phase"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/radioGroupPhase"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="12dp">
+
+                    <RadioButton
+                        android:id="@+id/radioPhaseBurst"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Phase1: Burst"
+                        android:checked="true" />
+
+                    <RadioButton
+                        android:id="@+id/radioPhaseSustained"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Phase2: Sustained" />
+
+                </RadioGroup>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Input Mode"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/radioGroupInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="8dp">
+
+                    <RadioButton
+                        android:id="@+id/radioInputCameraSingle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Cam Single"
+                        android:checked="true" />
+
+                    <RadioButton
+                        android:id="@+id/radioInputCameraLive"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Cam Live" />
+
+                    <RadioButton
+                        android:id="@+id/radioInputStatic"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Static" />
+
+                </RadioGroup>
+
+                <CheckBox
+                    android:id="@+id/checkDemoMode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Overlay (camera preview + bbox render)"
+                    android:checked="true" />
 
             </LinearLayout>
 
@@ -163,63 +318,6 @@
 
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Frequency Card -->
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/cardFrequency"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            app:cardElevation="2dp"
-            app:cardCornerRadius="8dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Frequency"
-                    android:textSize="14sp"
-                    android:textColor="@color/text_secondary"
-                    android:layout_marginBottom="8dp" />
-
-                <RadioGroup
-                    android:id="@+id/radioGroupFrequency"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-
-                    <RadioButton
-                        android:id="@+id/radioFreq1"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="1 Hz" />
-
-                    <RadioButton
-                        android:id="@+id/radioFreq5"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="5 Hz"
-                        android:checked="true" />
-
-                    <RadioButton
-                        android:id="@+id/radioFreq10"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="10 Hz" />
-
-                </RadioGroup>
-
-            </LinearLayout>
-
-        </com.google.android.material.card.MaterialCardView>
-
         <!-- Options Card -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/cardOptions"
@@ -235,7 +333,7 @@
                 android:orientation="vertical"
                 android:padding="16dp">
 
-                <!-- QNN-specific options (hidden when CPU selected) -->
+                <!-- QNN-specific options -->
                 <LinearLayout
                     android:id="@+id/layoutQnnOptions"
                     android:layout_width="match_parent"
@@ -263,7 +361,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Duration"
+                    android:text="Duration (Phase 2)"
                     android:textSize="14sp"
                     android:textColor="@color/text_secondary"
                     android:layout_marginTop="8dp"
@@ -320,7 +418,7 @@
             android:layout_marginBottom="16dp"
             app:cornerRadius="8dp" />
 
-        <!-- Batch Progress Card (visible in batch mode) -->
+        <!-- Batch Progress Card -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/cardBatchProgress"
             android:layout_width="match_parent"
@@ -346,7 +444,6 @@
                     android:textColor="@color/text_primary"
                     android:layout_marginBottom="8dp" />
 
-                <!-- Batch Experiment Progress -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -371,7 +468,6 @@
 
                 </LinearLayout>
 
-                <!-- Current Experiment Name -->
                 <TextView
                     android:id="@+id/tvCurrentExperiment"
                     android:layout_width="match_parent"
@@ -381,7 +477,6 @@
                     android:textSize="12sp"
                     android:layout_marginBottom="8dp" />
 
-                <!-- Cooldown Status -->
                 <LinearLayout
                     android:id="@+id/layoutCooldown"
                     android:layout_width="match_parent"
@@ -407,7 +502,6 @@
 
                 </LinearLayout>
 
-                <!-- Completed List -->
                 <TextView
                     android:id="@+id/tvCompletedExperiments"
                     android:layout_width="match_parent"
@@ -435,214 +529,92 @@
                 android:orientation="vertical"
                 android:padding="16dp">
 
-                <!-- Status Row -->
+                <!-- Status -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
                     android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Status"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvStatus"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Idle"
-                        android:textColor="@color/text_primary"
-                        android:textAlignment="textEnd" />
-
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Status" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvStatus" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Idle" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Progress Bar -->
-                <ProgressBar
-                    android:id="@+id/progressBar"
-                    style="@android:style/Widget.ProgressBar.Horizontal"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:max="100"
-                    android:progress="0"
-                    android:layout_marginBottom="8dp"
-                    android:visibility="gone" />
+                <ProgressBar android:id="@+id/progressBar" style="@android:style/Widget.ProgressBar.Horizontal"
+                    android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:max="100" android:progress="0" android:layout_marginBottom="8dp" android:visibility="gone" />
 
-                <!-- Progress Row -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Progress"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvProgress"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="--:-- / --:--"
-                        android:textColor="@color/text_primary"
-                        android:textAlignment="textEnd" />
-
+                <!-- Progress -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:layout_marginBottom="8dp">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Progress" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvProgress" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="--:-- / --:--" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Inferences Row -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Inferences"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvInferences"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="0"
-                        android:textColor="@color/text_primary"
-                        android:textAlignment="textEnd" />
-
+                <!-- Inferences -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:layout_marginBottom="8dp">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Inferences" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvInferences" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="0" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Throughput Row -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Throughput"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvThroughput"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="-- inf/s"
-                        android:textColor="@color/text_primary"
-                        android:textAlignment="textEnd" />
-
+                <!-- Throughput -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:layout_marginBottom="8dp">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Throughput" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvThroughput" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="-- inf/s" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Latency Row -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Latency"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvLatency"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="-- ms"
-                        android:textColor="@color/text_primary"
-                        android:textAlignment="textEnd" />
-
+                <!-- Latency -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:layout_marginBottom="8dp">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Latency" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvLatency" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="-- ms" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Thermal Row -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Thermal"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvThermal"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="-- °C"
-                        android:textColor="@color/text_primary"
-                        android:textAlignment="textEnd" />
-
+                <!-- Frame Drop (Phase 2) -->
+                <LinearLayout android:id="@+id/layoutFrameDrop" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:layout_marginBottom="8dp" android:visibility="gone">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Frame Drop" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvFrameDrop" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="0 (0.0%)" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Power Row -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Power"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvPower"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="-- mW"
-                        android:textColor="@color/text_primary"
-                        android:textAlignment="textEnd" />
-
+                <!-- Thermal -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:layout_marginBottom="8dp">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Thermal" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvThermal" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="-- °C" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Memory Row -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                <!-- Power -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:layout_marginBottom="8dp">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Power" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvPower" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="-- mW" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
+                </LinearLayout>
+
+                <!-- Memory -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Memory"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvMemory"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="-- MB"
-                        android:textColor="@color/text_primary"
-                        android:textAlignment="textEnd" />
-
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Memory" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvMemory" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="-- MB" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
             </LinearLayout>

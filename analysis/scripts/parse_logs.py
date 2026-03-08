@@ -31,14 +31,20 @@ class KpiMetrics:
     latency_max: float
     inference_count: int
 
-    # E2E breakdown (P50)
+    # E2E breakdown (P50) — full pipeline: acquire → pre → inCreate → infer → outCopy → post → overlay
+    acquire_p50: float          # Camera frame acquisition (YUV→Bitmap) P50
     preprocess_p50: float       # Image preprocessing P50
+    input_create_p50: float     # Input tensor creation (JNI boundary)
     inference_only_p50: float   # Model inference only P50
     inference_only_min: float   # Model inference only Min (best case, for QAI Hub comparison)
-    input_create_p50: float     # Input tensor creation (JNI boundary)
     output_copy_p50: float      # Output tensor copy (native → JVM)
     postprocess_p50: float      # NMS + coordinate transform P50
+    overlay_p50: float          # Overlay rendering (bbox draw) P50
     detection_count_mean: float # Average detection count per frame
+
+    # Frame drop (Phase 2 sustained)
+    frame_drop_count: int       # Number of frames exceeding target interval
+    frame_drop_rate: float      # frame_drop_count / inference_count * 100
 
     # Throughput
     fps: float  # Inferences per second
@@ -343,36 +349,44 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         except (ValueError, TypeError):
             pass
 
-    # E2E breakdown metrics (handle old CSV format without these columns)
-    has_breakdown = 'inference_ms' in inference_df.columns
-    if has_breakdown:
-        preprocess_times = inference_df['preprocess_ms'].dropna()
-        inference_only_times = inference_df['inference_ms'].dropna()
-        postprocess_times = inference_df['postprocess_ms'].dropna()
-        detection_counts = inference_df['detection_count'].dropna()
+    # Helper to safely compute P50 from a column
+    def _col_p50(col_name: str) -> float:
+        if col_name not in inference_df.columns:
+            return 0.0
+        s = inference_df[col_name].dropna()
+        return float(s.quantile(0.50)) if len(s) > 0 else 0.0
 
-        preprocess_p50 = preprocess_times.quantile(0.50) if len(preprocess_times) > 0 else 0
-        inference_only_p50 = inference_only_times.quantile(0.50) if len(inference_only_times) > 0 else 0
-        inference_only_min = inference_only_times.min() if len(inference_only_times) > 0 else 0
-        postprocess_p50 = postprocess_times.quantile(0.50) if len(postprocess_times) > 0 else 0
-        detection_count_mean = detection_counts.mean() if len(detection_counts) > 0 else 0
-    else:
-        preprocess_p50 = 0
-        inference_only_p50 = latencies.quantile(0.50) if len(latencies) > 0 else 0
-        inference_only_min = latencies.min() if len(latencies) > 0 else 0
-        postprocess_p50 = 0
-        detection_count_mean = 0
+    def _col_min(col_name: str) -> float:
+        if col_name not in inference_df.columns:
+            return 0.0
+        s = inference_df[col_name].dropna()
+        return float(s.min()) if len(s) > 0 else 0.0
 
-    # Boundary timing (new columns, may not exist in old CSVs)
-    has_boundary = 'input_create_ms' in inference_df.columns
-    if has_boundary:
-        input_create_times = inference_df['input_create_ms'].dropna()
-        output_copy_times = inference_df['output_copy_ms'].dropna()
-        input_create_p50 = input_create_times.quantile(0.50) if len(input_create_times) > 0 else 0
-        output_copy_p50 = output_copy_times.quantile(0.50) if len(output_copy_times) > 0 else 0
-    else:
-        input_create_p50 = 0
-        output_copy_p50 = 0
+    # E2E breakdown (all columns are optional for backward compat with old CSVs)
+    acquire_p50 = _col_p50('acquire_ms')
+    preprocess_p50 = _col_p50('preprocess_ms')
+    input_create_p50 = _col_p50('input_create_ms')
+    inference_only_p50 = _col_p50('inference_ms')
+    inference_only_min = _col_min('inference_ms')
+    output_copy_p50 = _col_p50('output_copy_ms')
+    postprocess_p50 = _col_p50('postprocess_ms')
+    overlay_p50 = _col_p50('overlay_ms')
+
+    detection_counts = inference_df['detection_count'].dropna() if 'detection_count' in inference_df.columns else pd.Series(dtype=float)
+    detection_count_mean = float(detection_counts.mean()) if len(detection_counts) > 0 else 0.0
+
+    # Fallback: if no inference_ms column, use latency_ms as inference time
+    if inference_only_p50 == 0 and len(latencies) > 0:
+        inference_only_p50 = float(latencies.quantile(0.50))
+        inference_only_min = float(latencies.min())
+
+    # Frame drop metrics (Phase 2)
+    frame_drop_count = 0
+    frame_drop_rate = 0.0
+    if 'frame_dropped' in inference_df.columns:
+        dropped = inference_df['frame_dropped'].dropna()
+        frame_drop_count = int(dropped.sum()) if len(dropped) > 0 else 0
+        frame_drop_rate = frame_drop_count / len(latencies) * 100 if len(latencies) > 0 else 0.0
 
     # Drift percent
     drift_percent = 0.0
@@ -430,13 +444,19 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         inference_count=len(latencies),
 
         # E2E breakdown (P50)
+        acquire_p50=acquire_p50,
         preprocess_p50=preprocess_p50,
+        input_create_p50=input_create_p50,
         inference_only_p50=inference_only_p50,
         inference_only_min=inference_only_min,
-        input_create_p50=input_create_p50,
         output_copy_p50=output_copy_p50,
         postprocess_p50=postprocess_p50,
+        overlay_p50=overlay_p50,
         detection_count_mean=detection_count_mean,
+
+        # Frame drop
+        frame_drop_count=frame_drop_count,
+        frame_drop_rate=frame_drop_rate,
 
         # Throughput
         fps=fps,
@@ -614,12 +634,21 @@ def generate_single_report(file_path: str) -> Tuple[str, dict, KpiMetrics]:
 
     if metrics.inference_only_p50 > 0:
         lines.append(f"\nE2E Breakdown (P50):")
+        if metrics.acquire_p50 > 0:
+            lines.append(f"  Acquire (cam):  {metrics.acquire_p50:.2f} ms")
         lines.append(f"  Preprocess:     {metrics.preprocess_p50:.2f} ms")
         lines.append(f"  Input create:   {metrics.input_create_p50:.2f} ms")
         lines.append(f"  Inference:      {metrics.inference_only_p50:.2f} ms")
         lines.append(f"  Output copy:    {metrics.output_copy_p50:.2f} ms")
         lines.append(f"  Postprocess:    {metrics.postprocess_p50:.2f} ms")
+        if metrics.overlay_p50 > 0:
+            lines.append(f"  Overlay:        {metrics.overlay_p50:.2f} ms")
         lines.append(f"  Avg Detections: {metrics.detection_count_mean:.1f}")
+
+    if metrics.frame_drop_count > 0:
+        lines.append(f"\nFrame Drop:")
+        lines.append(f"  Count: {metrics.frame_drop_count}")
+        lines.append(f"  Rate:  {metrics.frame_drop_rate:.1f}%")
 
     if metrics.profiling_iterations > 0:
         lines.append(f"\nORT Profiling ({metrics.profiling_iterations} iterations):")
@@ -775,34 +804,50 @@ def generate_comparison_table(file_paths: list) -> str:
 
     # Section 2b: E2E Breakdown
     has_breakdown_data = any(exp['metrics'].inference_only_p50 > 0 for exp in experiments)
-    has_boundary_data = any(exp['metrics'].input_create_p50 > 0 for exp in experiments)
+    has_acquire_data = any(exp['metrics'].acquire_p50 > 0 for exp in experiments)
+    has_overlay_data = any(exp['metrics'].overlay_p50 > 0 for exp in experiments)
+    has_framedrop_data = any(exp['metrics'].frame_drop_count > 0 for exp in experiments)
     if has_breakdown_data:
         lines.append(f"\n\n[2b] E2E Breakdown (P50)")
-        lines.append("-" * 140)
-        if has_boundary_data:
-            lines.append(f"{'#':<4} {'Label':<35} {'PreProc':<9} {'InCreate':<9} {'Infer':<9} {'InfMin':<9} {'OutCopy':<9} {'PostProc':<9} {'Dets':<6} {'Total':<9}")
-        else:
-            lines.append(f"{'#':<4} {'Label':<35} {'PreProc':<9} {'Infer':<9} {'InfMin':<9} {'PostProc':<9} {'Dets':<6} {'Total':<9}")
-        lines.append("-" * 140)
+        lines.append("-" * 160)
+        header = f"{'#':<4} {'Label':<35} "
+        if has_acquire_data:
+            header += f"{'Acq':<8} "
+        header += f"{'Pre':<8} {'InCr':<8} {'Infer':<8} {'InfMin':<8} {'OutCp':<8} {'Post':<8} "
+        if has_overlay_data:
+            header += f"{'Ovlay':<8} "
+        header += f"{'Dets':<6} {'E2E':<8}"
+        if has_framedrop_data:
+            header += f" {'Drop%':<7}"
+        lines.append(header)
+        lines.append("-" * 160)
         for i, exp in enumerate(experiments, 1):
             m = exp['metrics']
-            if has_boundary_data:
-                lines.append(f"{i:<4} {exp['label']:<35} {m.preprocess_p50:<9.2f} {m.input_create_p50:<9.2f} "
-                             f"{m.inference_only_p50:<9.2f} {m.inference_only_min:<9.2f} {m.output_copy_p50:<9.2f} "
-                             f"{m.postprocess_p50:<9.2f} {m.detection_count_mean:<6.1f} {m.latency_p50:<9.2f}")
-            else:
-                lines.append(f"{i:<4} {exp['label']:<35} {m.preprocess_p50:<9.2f} "
-                             f"{m.inference_only_p50:<9.2f} {m.inference_only_min:<9.2f} "
-                             f"{m.postprocess_p50:<9.2f} {m.detection_count_mean:<6.1f} {m.latency_p50:<9.2f}")
+            row = f"{i:<4} {exp['label']:<35} "
+            if has_acquire_data:
+                row += f"{m.acquire_p50:<8.2f} "
+            row += f"{m.preprocess_p50:<8.2f} {m.input_create_p50:<8.2f} "
+            row += f"{m.inference_only_p50:<8.2f} {m.inference_only_min:<8.2f} {m.output_copy_p50:<8.2f} "
+            row += f"{m.postprocess_p50:<8.2f} "
+            if has_overlay_data:
+                row += f"{m.overlay_p50:<8.2f} "
+            row += f"{m.detection_count_mean:<6.1f} {m.latency_p50:<8.2f}"
+            if has_framedrop_data:
+                row += f" {m.frame_drop_rate:<7.1f}"
+            lines.append(row)
         lines.append("")
-        lines.append("    PreProc:  Image preprocessing (letterbox + normalize + CHW)")
-        if has_boundary_data:
-            lines.append("    InCreate: Input tensor creation (Java→Native JNI boundary)")
-        lines.append("    Infer:    Model inference only (session.run) P50")
-        lines.append("    InfMin:   Model inference minimum (best case, comparable to QAI Hub)")
-        if has_boundary_data:
-            lines.append("    OutCopy:  Output tensor copy (Native→Java buffer copy)")
-        lines.append("    PostProc: Confidence filter + NMS + coordinate transform")
+        if has_acquire_data:
+            lines.append("    Acq:    Camera frame acquisition (YUV→Bitmap)")
+        lines.append("    Pre:    Image preprocessing (letterbox + normalize + CHW)")
+        lines.append("    InCr:   Input tensor creation (Java→Native JNI boundary)")
+        lines.append("    Infer:  Model inference only (session.run) P50")
+        lines.append("    InfMin: Model inference minimum (best case, comparable to QAI Hub)")
+        lines.append("    OutCp:  Output tensor copy (Native→Java buffer copy)")
+        lines.append("    Post:   Confidence filter + NMS + coordinate transform")
+        if has_overlay_data:
+            lines.append("    Ovlay:  Overlay bbox rendering (prev frame's onDraw)")
+        if has_framedrop_data:
+            lines.append("    Drop%:  Frame drop rate (E2E > target interval)")
 
     # Section 2c: ORT Profiling (NPU compute vs framework overhead)
     has_profiling_data = any(exp['metrics'].profiling_iterations > 0 for exp in experiments)
@@ -1017,7 +1062,7 @@ def generate_comparison_table(file_paths: list) -> str:
     if len(exps_with_coverage) >= 2:
         lines.append(f"\n\n[8] Coverage vs E2E Analysis")
         lines.append("-" * 120)
-        lines.append(f"{'#':<4} {'Label':<40} {'Coverage%':<12} {'E2E P50':<10} {'Infer P50':<10} {'Pre+Post':<10} {'Drift%':<10}")
+        lines.append(f"{'#':<4} {'Label':<40} {'Coverage%':<12} {'E2E P50':<10} {'Infer P50':<10} {'CPUWork':<10} {'Drift%':<10}")
         lines.append("-" * 120)
 
         # Find CPU baseline for comparison
@@ -1029,15 +1074,15 @@ def generate_comparison_table(file_paths: list) -> str:
 
         for i, (exp, cov) in enumerate(exps_with_coverage, 1):
             m = exp['metrics']
-            pre_post = m.preprocess_p50 + m.postprocess_p50
+            cpu_overhead = m.acquire_p50 + m.preprocess_p50 + m.input_create_p50 + m.output_copy_p50 + m.postprocess_p50 + m.overlay_p50
             lines.append(f"{i:<4} {exp['label']:<40} {cov:<12.1f} {m.latency_p50:<10.2f} "
-                         f"{m.inference_only_p50:<10.2f} {pre_post:<10.2f} {m.drift_percent:<+10.1f}")
+                         f"{m.inference_only_p50:<10.2f} {cpu_overhead:<10.2f} {m.drift_percent:<+10.1f}")
 
         lines.append("")
         lines.append("    Coverage%: QNN offload 비율")
         lines.append("    E2E P50: 전체 파이프라인 P50 latency (ms)")
         lines.append("    Infer P50: 순수 추론 P50 (EP에 의해 가속)")
-        lines.append("    Pre+Post: 전후처리 합계 P50 (항상 CPU)")
+        lines.append("    CPUWork: CPU 오버헤드 합계 P50 (acq+pre+inCr+outCp+post+overlay)")
         lines.append("    Drift%: Sustained 성능 변화율 (first 30s → last 30s)")
 
         if cpu_exp:

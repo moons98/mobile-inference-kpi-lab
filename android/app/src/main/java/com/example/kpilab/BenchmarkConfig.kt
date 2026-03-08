@@ -10,9 +10,19 @@ data class BenchmarkConfig(
     // Execution provider (NPU/GPU/CPU)
     val executionProvider: ExecutionProvider = ExecutionProvider.QNN_NPU,
 
-    // Benchmark settings
-    val frequencyHz: Int = 5,
+    // Benchmark phase (determines execution strategy)
+    val phase: BenchmarkPhase = BenchmarkPhase.BURST,
+
+    // Input source mode
+    val inputMode: InputMode = InputMode.CAMERA_SINGLE,
+
+    // Demo mode: show camera preview + detection overlay
+    val demoMode: Boolean = false,
+
+    // Benchmark settings (overridden by phase defaults when null)
+    val frequencyHz: Int = 2,
     val durationMinutes: Int = 5,
+    val iterations: Int = 100,
 
     // NPU precision: true = FP16, false = FP32 (only affects FP32 models on NPU)
     val useNpuFp16: Boolean = true,
@@ -30,10 +40,21 @@ data class BenchmarkConfig(
         get() = (1000.0 / frequencyHz).toLong()
 
     /**
-     * Total duration in milliseconds
+     * Total duration in milliseconds.
+     * For BURST phase, derived from iterations × interval.
+     * For SUSTAINED phase, uses durationMinutes.
      */
     val durationMs: Long
-        get() = durationMinutes * 60 * 1000L
+        get() = when (phase) {
+            BenchmarkPhase.BURST -> iterations * intervalMs
+            BenchmarkPhase.SUSTAINED -> durationMinutes * 60 * 1000L
+        }
+
+    /**
+     * Whether this config uses camera input
+     */
+    val usesCamera: Boolean
+        get() = inputMode != InputMode.STATIC_IMAGE
 
     /**
      * Generate session ID based on config
@@ -49,14 +70,60 @@ data class BenchmarkConfig(
             ExecutionProvider.CPU -> "cpu"
         }
 
+        val phaseStr = when (phase) {
+            BenchmarkPhase.BURST -> "burst"
+            BenchmarkPhase.SUSTAINED -> "sustained"
+        }
+
         val precStr = if (useNpuFp16) "fp16" else "fp32"
-        return "ort_${modelStr}_${epStr}_${precStr}_${frequencyHz}hz_${timestamp}"
+        return "ort_${modelStr}_${epStr}_${precStr}_${phaseStr}_${timestamp}"
     }
 
     override fun toString(): String {
         val precStr = if (useNpuFp16) "FP16" else "FP32"
         val cacheStr = if (useContextCache) "cached" else "no-cache"
         return "BenchmarkConfig(model=${modelType.displayName}, ep=${executionProvider.displayName}, " +
-                "prec=$precStr, cache=$cacheStr, freq=${frequencyHz}Hz, duration=${durationMinutes}min)"
+                "phase=${phase.displayName}, input=${inputMode.displayName}, " +
+                "prec=$precStr, cache=$cacheStr, freq=${frequencyHz}Hz)"
+    }
+
+    companion object {
+        /** Create Phase 1 (Burst Latency) config */
+        fun burst(
+            modelType: OnnxModelType,
+            executionProvider: ExecutionProvider,
+            useNpuFp16: Boolean = true,
+            useContextCache: Boolean = false,
+            htpPerformanceMode: String = "burst"
+        ) = BenchmarkConfig(
+            modelType = modelType,
+            executionProvider = executionProvider,
+            phase = BenchmarkPhase.BURST,
+            inputMode = InputMode.CAMERA_SINGLE,
+            frequencyHz = 2,        // 500ms sleep
+            iterations = 100,
+            useNpuFp16 = useNpuFp16,
+            useContextCache = useContextCache,
+            htpPerformanceMode = htpPerformanceMode
+        )
+
+        /** Create Phase 2 (Sustained Throughput) config */
+        fun sustained(
+            modelType: OnnxModelType,
+            executionProvider: ExecutionProvider,
+            useNpuFp16: Boolean = true,
+            useContextCache: Boolean = false,
+            htpPerformanceMode: String = "burst"
+        ) = BenchmarkConfig(
+            modelType = modelType,
+            executionProvider = executionProvider,
+            phase = BenchmarkPhase.SUSTAINED,
+            inputMode = InputMode.CAMERA_LIVE,
+            frequencyHz = 30,       // 33ms target
+            durationMinutes = 5,
+            useNpuFp16 = useNpuFp16,
+            useContextCache = useContextCache,
+            htpPerformanceMode = htpPerformanceMode
+        )
     }
 }

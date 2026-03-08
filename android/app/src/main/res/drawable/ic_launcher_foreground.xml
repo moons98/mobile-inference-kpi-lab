@@ -4,12 +4,74 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Background circle -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,54m-26,0a26,26 0,1 1,52 0a26,26 0,1 1,-52 0"/>
-    <!-- K letter for KPI -->
-    <path
-        android:fillColor="#1565C0"
-        android:pathData="M44,40L44,68L48,68L48,56L56,68L62,68L52,54L61,40L55,40L48,52L48,40Z"/>
+
+    <!-- Neural network: 3 input nodes → 4 hidden nodes → 2 output nodes -->
+    <!-- Connections: input to hidden (light lines) -->
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M32,38 L48,35" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M32,38 L48,47" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M32,54 L48,35" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M32,54 L48,47" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M32,54 L48,59" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M32,70 L48,59" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M32,70 L48,71" android:fillColor="#00000000"/>
+
+    <!-- Connections: hidden to output (light lines) -->
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M48,35 L64,46" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M48,47 L64,46" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M48,47 L64,62" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M48,59 L64,46" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M48,59 L64,62" android:fillColor="#00000000"/>
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M48,71 L64,62" android:fillColor="#00000000"/>
+
+    <!-- Input nodes (white) -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M32,38m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0"/>
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M32,54m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0"/>
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M32,70m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0"/>
+
+    <!-- Hidden nodes (bright cyan — active inference) -->
+    <path android:fillColor="#00E5FF"
+        android:pathData="M48,35m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0"/>
+    <path android:fillColor="#00E5FF"
+        android:pathData="M48,47m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0"/>
+    <path android:fillColor="#00E5FF"
+        android:pathData="M48,59m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0"/>
+    <path android:fillColor="#00E5FF"
+        android:pathData="M48,71m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0"/>
+
+    <!-- Output nodes (green — result) -->
+    <path android:fillColor="#76FF03"
+        android:pathData="M64,46m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0"/>
+    <path android:fillColor="#76FF03"
+        android:pathData="M64,62m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0"/>
+
+    <!-- Speed gauge arc (bottom right) — performance measurement -->
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="2.5"
+        android:pathData="M62,78 A10,10 0 0 1 82,78"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round"/>
+    <!-- Gauge needle (pointing fast/right) -->
+    <path android:strokeColor="#FF6D00" android:strokeWidth="2.5"
+        android:pathData="M72,78 L79,72"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round"/>
+    <!-- Gauge center dot -->
+    <path android:fillColor="#FF6D00"
+        android:pathData="M72,78m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0"/>
+
 </vector>
