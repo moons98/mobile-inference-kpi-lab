@@ -118,10 +118,10 @@ def export_yolov8(variant: str, output_path: Path, quantize: bool = False) -> bo
             shutil.move(str(exported_file), str(fp32_path))
             print(f"Exported: {fp32_path.name} ({fp32_path.stat().st_size / 1024 / 1024:.2f} MB)")
 
-            # Cleanup
-            for cleanup_path in [Path(pt_file)]:
-                if cleanup_path.exists():
-                    cleanup_path.unlink()
+            # Cleanup downloaded .pt file
+            pt_path = Path(pt_file)
+            if pt_path.exists():
+                pt_path.unlink()
 
             if quantize:
                 return quantize_onnx_model(fp32_path, output_path, input_shape=[1, 3, 640, 640])
@@ -177,7 +177,7 @@ class ImageCalibrationDataReader:
         self.current = 0
 
         # Get image size from input shape (NCHW format)
-        _, channels, height, width = input_shape
+        _, _, height, width = input_shape
 
         # Find image files
         calibration_path = Path(calibration_dir)
@@ -552,7 +552,7 @@ def check_assets():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export models from torchvision/ultralytics to ONNX for mobile inference"
+        description="Export models from ultralytics to ONNX for mobile inference"
     )
     parser.add_argument(
         "--export-yolov8n",
