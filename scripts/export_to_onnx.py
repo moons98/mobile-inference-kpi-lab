@@ -22,11 +22,12 @@ Usage:
 """
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
 # Global settings (will be overridden by CLI args)
-QUANT_METHOD = "dynamic"
+QUANT_METHOD = "both"
 CALIBRATION_DATA_PATH = None
 CALIBRATION_SAMPLES = 100
 
@@ -114,7 +115,7 @@ def export_yolov8(variant: str, output_path: Path, quantize: bool = False) -> bo
         exported_file = Path(f"{model_name}.onnx")
         if exported_file.exists():
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            exported_file.rename(fp32_path)
+            shutil.move(str(exported_file), str(fp32_path))
             print(f"Exported: {fp32_path.name} ({fp32_path.stat().st_size / 1024 / 1024:.2f} MB)")
 
             # Cleanup
@@ -137,11 +138,6 @@ def export_yolov8(variant: str, output_path: Path, quantize: bool = False) -> bo
         return False
 
 
-def export_yolov8n(output_path: Path, quantize: bool = False) -> bool:
-    """Export YOLOv8n (backward compatibility wrapper)."""
-    return export_yolov8("n", output_path, quantize)
-
-
 class RandomCalibrationDataReader:
     """Calibration data reader using random/synthetic data."""
 
@@ -152,9 +148,9 @@ class RandomCalibrationDataReader:
         self.num_samples = num_samples
         self.current = 0
         # Pre-generate random data (normalized to [0, 1] range typical for images)
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         self.data = [
-            np.random.rand(*input_shape).astype(np.float32)
+            rng.random(input_shape, dtype=np.float32)
             for _ in range(num_samples)
         ]
 
@@ -196,15 +192,25 @@ class ImageCalibrationDataReader:
         for img_path in image_files:
             try:
                 img = Image.open(img_path).convert("RGB")
-                img = img.resize((width, height))
-                img_array = np.array(img).astype(np.float32) / 255.0
+
+                # Letterbox resize (preserve aspect ratio + gray padding)
+                # to match YOLOv8 inference preprocessing
+                scale = min(width / img.width, height / img.height)
+                new_w, new_h = int(img.width * scale), int(img.height * scale)
+                img_resized = img.resize((new_w, new_h))
+                canvas = Image.new("RGB", (width, height), (114, 114, 114))
+                paste_x = (width - new_w) // 2
+                paste_y = (height - new_h) // 2
+                canvas.paste(img_resized, (paste_x, paste_y))
+
+                img_array = np.array(canvas).astype(np.float32) / 255.0
 
                 # NHWC to NCHW
                 img_array = np.transpose(img_array, (2, 0, 1))
                 img_array = np.expand_dims(img_array, axis=0)
 
                 # YOLOv8 uses [0,1] range only (no ImageNet mean/std normalization)
-                self.data.append(img_array.astype(np.float32))
+                self.data.append(img_array)
             except Exception as e:
                 print(f"  Warning: Failed to load {img_path.name}: {e}")
 
@@ -271,17 +277,17 @@ def quantize_dynamic_onnx(input_path: Path, output_path: Path) -> bool:
         weight_type=QuantType.QUInt8,
     )
 
-    # Remove intermediate preprocessed file
-    if preprocessed_path != input_path and preprocessed_path.exists():
-        preprocessed_path.unlink()
-        print(f"Removed intermediate file: {preprocessed_path.name}")
+    if not output_path.exists():
+        print("Error: Quantization produced no output")
+        return False
 
     print(f"Quantized: {output_path.name} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
 
-    # Remove intermediate FP32 file
+    # Remove intermediate files only after successful quantization
+    if preprocessed_path != input_path and preprocessed_path.exists():
+        preprocessed_path.unlink()
     if input_path != output_path and input_path.exists():
         input_path.unlink()
-        print(f"Removed intermediate file: {input_path.name}")
 
     return True
 
@@ -400,16 +406,17 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
         calibrate_method=CalibrationMethod.MinMax,
     )
 
+    if not output_path.exists():
+        print("Error: Quantization produced no output")
+        return False
+
     print(f"Quantized: {output_path.name} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
 
-    # Remove intermediate files
-    if input_path != output_path and input_path.exists():
-        input_path.unlink()
-        print(f"Removed intermediate file: {input_path.name}")
-
+    # Remove intermediate files only after successful quantization
     if preprocessed_path != input_path and preprocessed_path.exists():
         preprocessed_path.unlink()
-        print(f"Removed intermediate file: {preprocessed_path.name}")
+    if input_path != output_path and input_path.exists():
+        input_path.unlink()
 
     return True
 
@@ -690,7 +697,6 @@ def main():
         print()
         print("Next steps:")
         print("  - Use analyze_ops.py to check NPU compatibility")
-        print("  - Use graph_transform.py to optimize if needed")
         print("  - Copy models to android/app/src/main/assets/")
 
 
