@@ -92,7 +92,7 @@ def download_imagenet_samples() -> bool:
     print(f"Downloading {dataset['description']}")
     print("=" * 60)
 
-    if output_dir.exists() and any(output_dir.glob("*.JPEG")) or any(output_dir.glob("*.jpg")):
+    if output_dir.exists() and (any(output_dir.glob("*.JPEG")) or any(output_dir.glob("*.jpg"))):
         print(f"  [OK] Already exists: {output_dir}")
         return True
 

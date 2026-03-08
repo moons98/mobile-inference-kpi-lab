@@ -276,7 +276,8 @@ def main():
             fp32_model = ASSETS_DIR / "yolov8n.onnx"
         if fp32_model.exists():
             job = profile_model(fp32_model, device_name, "qnn_context_binary", quantize_on_hub=True)
-            jobs.append(job)
+            if job:
+                jobs.append(job)
         else:
             print(f"Model not found: {fp32_model}")
 
