@@ -1158,15 +1158,6 @@ enum class OnnxModelType(
         isQuantized = false,
         precision = "FP32"
     ),
-    YOLOV8N_FP16(
-        displayName = "YOLOv8n FP16",
-        filename = "yolov8n_fp16.onnx",
-        inputWidth = 640,
-        inputHeight = 640,
-        inputChannels = 3,
-        isQuantized = false,
-        precision = "FP16"
-    ),
     YOLOV8N_INT8_DYNAMIC(
         displayName = "YOLOv8n INT8 (Dynamic)",
         filename = "yolov8n_int8_dynamic.onnx",

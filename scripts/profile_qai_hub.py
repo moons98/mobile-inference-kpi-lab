@@ -21,6 +21,7 @@ from pathlib import Path
 try:
     import qai_hub as hub
     import numpy as np
+    from PIL import Image
 except ImportError:
     print("Error: qai-hub not installed")
     print("Install with: pip install qai-hub")
@@ -28,6 +29,7 @@ except ImportError:
     sys.exit(1)
 
 ASSETS_DIR = Path(__file__).parent.parent / "android" / "app" / "src" / "main" / "assets"
+CALIBRATION_DIR = Path(__file__).parent / "calibration_data" / "coco"
 RESULTS_FILE = Path(__file__).parent.parent / "outputs" / "qai_hub_jobs.json"
 
 # Target device: Snapdragon 8 Gen 2 (SM8550) - same as Galaxy S23 Ultra
@@ -36,6 +38,42 @@ TARGET_DEVICE_KEYWORDS = ["8 Gen 2", "SM8550", "S23"]
 
 INPUT_SHAPE = (1, 3, 640, 640)
 INPUT_SPEC = dict(images=INPUT_SHAPE)
+
+
+def load_calibration_images(num_samples=10):
+    """Load COCO calibration images with YOLOv8 letterbox preprocessing."""
+    _, _, height, width = INPUT_SHAPE
+
+    image_files = list(CALIBRATION_DIR.glob("*.JPEG")) + \
+                  list(CALIBRATION_DIR.glob("*.jpg")) + \
+                  list(CALIBRATION_DIR.glob("*.png"))
+    image_files = image_files[:num_samples]
+
+    if not image_files:
+        print(f"WARNING: No calibration images in {CALIBRATION_DIR}, falling back to random data")
+        return [np.random.randn(*INPUT_SHAPE).astype(np.float32) for _ in range(num_samples)]
+
+    images = []
+    for img_path in image_files:
+        img = Image.open(img_path).convert("RGB")
+
+        # Letterbox resize (preserve aspect ratio + gray padding)
+        scale = min(width / img.width, height / img.height)
+        new_w, new_h = int(img.width * scale), int(img.height * scale)
+        img_resized = img.resize((new_w, new_h))
+        canvas = Image.new("RGB", (width, height), (114, 114, 114))
+        paste_x = (width - new_w) // 2
+        paste_y = (height - new_h) // 2
+        canvas.paste(img_resized, (paste_x, paste_y))
+
+        # HWC → NCHW, [0,1] range
+        img_array = np.array(canvas).astype(np.float32) / 255.0
+        img_array = np.transpose(img_array, (2, 0, 1))
+        img_array = np.expand_dims(img_array, axis=0)
+        images.append(img_array)
+
+    print(f"Loaded {len(images)} calibration images from {CALIBRATION_DIR}")
+    return images
 
 
 def find_device(keyword=None):
@@ -104,7 +142,7 @@ def profile_model(model_path: Path, device_name: str, target_runtime: str = "qnn
 
         print("Step 2: Quantize W8A8 on AI Hub...")
         calibration_data = dict(
-            images=[np.random.randn(*INPUT_SHAPE).astype(np.float32) for _ in range(10)]
+            images=load_calibration_images(num_samples=10)
         )
         quantize_job = hub.submit_quantize_job(
             model=onnx_model,
@@ -113,7 +151,6 @@ def profile_model(model_path: Path, device_name: str, target_runtime: str = "qnn
             activations_dtype=hub.QuantizeDtype.INT8,
         )
         source_model = quantize_job.get_target_model()
-        compile_options = "--quantize_io " + compile_options
     else:
         source_model = str(model_path)
 
@@ -204,6 +241,8 @@ def main():
     parser.add_argument("--profile-int8", action="store_true", help="Profile INT8 QDQ model")
     parser.add_argument("--profile-int8-hub", action="store_true", help="Profile with AI Hub quantization (W8A8)")
     parser.add_argument("--profile-all", action="store_true", help="Profile all variants")
+    parser.add_argument("--no-quantize-io", action="store_true",
+                        help="Disable --quantize_io for INT8 compile (FP32 I/O, matches ORT QDQ behavior)")
     parser.add_argument("--check-jobs", action="store_true", help="Check status & results of saved jobs")
     parser.add_argument("--result", type=str, help="Print results for a specific job ID")
 
@@ -264,7 +303,8 @@ def main():
         if not int8_model.exists():
             int8_model = ASSETS_DIR / "yolov8n_int8_qdq.onnx"
         if int8_model.exists():
-            job = profile_model(int8_model, device_name, "qnn_context_binary", compile_options="--quantize_io")
+            int8_compile_opts = "" if args.no_quantize_io else "--quantize_io"
+            job = profile_model(int8_model, device_name, "qnn_context_binary", compile_options=int8_compile_opts)
             if job:
                 jobs.append(job)
         else:
@@ -275,7 +315,9 @@ def main():
         if not fp32_model.exists():
             fp32_model = ASSETS_DIR / "yolov8n.onnx"
         if fp32_model.exists():
-            job = profile_model(fp32_model, device_name, "qnn_context_binary", quantize_on_hub=True)
+            hub_compile_opts = "" if args.no_quantize_io else "--quantize_io"
+            job = profile_model(fp32_model, device_name, "qnn_context_binary",
+                                quantize_on_hub=True, compile_options=hub_compile_opts)
             if job:
                 jobs.append(job)
         else:
