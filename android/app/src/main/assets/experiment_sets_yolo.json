@@ -37,6 +37,16 @@
       ]
     },
     {
+      "id": "native_fp16",
+      "name": "[실험5] Native FP16 Model: GPU vs NPU (runtime 변환 vs 순수 FP16)",
+      "experiments": [
+        { "model": "YOLOV8N", "executionProvider": "QNN_GPU", "useNpuFp16": false },
+        { "model": "YOLOV8N_FP16", "executionProvider": "QNN_GPU", "useNpuFp16": false },
+        { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8N_FP16", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+      ]
+    },
+    {
       "id": "model_scale_int8",
       "name": "[실험3] Model Scale: INT8 QDQ 효과 (n vs m)",
       "experiments": [

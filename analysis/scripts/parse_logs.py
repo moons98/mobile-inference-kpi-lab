@@ -82,6 +82,7 @@ class KpiMetrics:
     profiling_avg_cpu_ms: float = 0.0
     profiling_avg_fence_ms: float = 0.0
     profiling_avg_overhead_ms: float = 0.0
+    profiling_cpu_ops: str = ""  # e.g. "Reshape(5);Gather(3);Shape(2)"
 
     # Pipeline benchmark (optional, from metadata)
     pipeline_sequential_fps: float = 0.0
@@ -393,6 +394,9 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
                 profiling_avg_overhead_ms = float(metadata.get('profiling_avg_overhead_ms', 0))
         except (ValueError, TypeError):
             pass
+    profiling_cpu_ops = ""
+    if metadata:
+        profiling_cpu_ops = metadata.get('profiling_cpu_ops', '')
 
     # Pipeline benchmark results (from metadata)
     pipeline_sequential_fps = 0.0
@@ -473,6 +477,7 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         profiling_avg_cpu_ms=profiling_avg_cpu_ms,
         profiling_avg_fence_ms=profiling_avg_fence_ms,
         profiling_avg_overhead_ms=profiling_avg_overhead_ms,
+        profiling_cpu_ops=profiling_cpu_ops,
 
         # Pipeline benchmark
         pipeline_sequential_fps=pipeline_sequential_fps,
@@ -702,7 +707,12 @@ def generate_comparison_table(file_paths: list) -> str:
             precision = 'FP16'
         # Compact precision: INT8_DYNAMIC -> INT8Dyn, INT8_QDQ -> INT8QDQ
         prec_short = precision.replace('_DYNAMIC', 'Dyn').replace('_', '')
-        label = f"{base_model}_{prec_short}_{ep_short}"
+        # Append HTP perf mode if not default burst
+        perf_suffix = ''
+        perf_match = re.search(r'perf=(\w+)', qnn_opts)
+        if perf_match and perf_match.group(1) != 'burst':
+            perf_suffix = f"_{perf_match.group(1)}"
+        label = f"{base_model}_{prec_short}_{ep_short}{perf_suffix}"
 
         experiments.append({
             'label': label,
@@ -794,17 +804,18 @@ def generate_comparison_table(file_paths: list) -> str:
     if has_profiling_data:
         lines.append(f"\n\n[2c] ORT Profiling (session.run Breakdown)")
         lines.append("-" * 140)
-        lines.append(f"{'#':<4} {'Label':<35} {'session.run':<12} {'NPU(ms)':<10} {'CPU(ms)':<10} {'Fence(ms)':<10} {'ORT(ms)':<10} {'NPU%':<8}")
+        lines.append(f"{'#':<4} {'Label':<35} {'session.run':<12} {'NPU(ms)':<10} {'CPU(ms)':<10} {'Fence(ms)':<10} {'ORT(ms)':<10} {'NPU%':<8} {'CPU Ops'}")
         lines.append("-" * 140)
         for i, exp in enumerate(experiments, 1):
             m = exp['metrics']
             if m.profiling_iterations > 0:
                 npu_pct = m.profiling_avg_npu_ms / m.profiling_avg_total_ms * 100 if m.profiling_avg_total_ms > 0 else 0
+                cpu_ops_str = m.profiling_cpu_ops.replace(';', ', ') if m.profiling_cpu_ops else "-"
                 lines.append(f"{i:<4} {exp['label']:<35} {m.profiling_avg_total_ms:<12.2f} {m.profiling_avg_npu_ms:<10.2f} "
                              f"{m.profiling_avg_cpu_ms:<10.2f} {m.profiling_avg_fence_ms:<10.2f} "
-                             f"{m.profiling_avg_overhead_ms:<10.2f} {npu_pct:<8.1f}")
+                             f"{m.profiling_avg_overhead_ms:<10.2f} {npu_pct:<8.1f} {cpu_ops_str}")
             else:
-                lines.append(f"{i:<4} {exp['label']:<35} {'N/A':<12} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<8}")
+                lines.append(f"{i:<4} {exp['label']:<35} {'N/A':<12} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<8} {'N/A'}")
         lines.append("")
         lines.append("    session.run = NPU + CPU + Fence + ORT overhead")
         lines.append("    NPU:   QNN EP 실제 연산 시간 (HTP 커널 실행)")
@@ -812,6 +823,7 @@ def generate_comparison_table(file_paths: list) -> str:
         lines.append("    Fence: EP 동기화 배리어 (HTP dispatch + completion wait)")
         lines.append("    ORT:   프레임워크 오버헤드 (그래프 스케줄링, 텐서 관리, JNI)")
         lines.append("    NPU%:  session.run() 중 실제 NPU 연산 비율")
+        lines.append("    CPU Ops: CPU에서 실행된 연산 목록 (op_name(count per iteration))")
 
     # Section 3: Cold Start Breakdown
     lines.append(f"\n\n[3] Cold Start Breakdown")

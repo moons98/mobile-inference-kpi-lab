@@ -40,6 +40,16 @@ MODELS = {
         "output": "Object detection boxes",
         "dtype": "FP32",
     },
+    "yolov8n-fp16": {
+        "source": "ultralytics",
+        "variant": "n",
+        "filename": "yolov8n_fp16.onnx",
+        "description": "YOLOv8n (FP16) - FP32 export + float16 conversion",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "FP16",
+        "convert_fp16": True,
+    },
     "yolov8n-quantized": {
         "source": "ultralytics",
         "variant": "n",
@@ -418,6 +428,51 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
     return True
 
 
+def convert_to_fp16(input_path: Path, output_path: Path) -> bool:
+    """Convert FP32 ONNX model to FP16 using onnxconverter-common.
+
+    This creates a native FP16 model where weights and activations are stored
+    as float16, avoiding runtime FP32→FP16 conversion overhead on HTP/GPU.
+    """
+    try:
+        import onnx
+        from onnxconverter_common import float16
+    except ImportError:
+        print("Error: onnxconverter-common package not installed")
+        print("Install with: pip install onnxconverter-common")
+        return False
+
+    try:
+        print(f"Converting to FP16: {output_path}")
+        model = onnx.load(str(input_path))
+        model_fp16 = float16.convert_float_to_float16(
+            model,
+            keep_io_types=True,  # Keep I/O as FP32 for OrtRunner compatibility
+        )
+        # Workaround: onnxconverter-common creates duplicate value_info entries
+        # for ops it internally keeps in FP32 (e.g. Resize), causing ORT type errors.
+        seen = {}
+        to_remove = []
+        for i, vi in enumerate(model_fp16.graph.value_info):
+            if vi.name in seen:
+                to_remove.append(i)
+            else:
+                seen[vi.name] = i
+        for i in sorted(to_remove, reverse=True):
+            del model_fp16.graph.value_info[i]
+        if to_remove:
+            print(f"  Fixed {len(to_remove)} duplicate value_info entries")
+        onnx.save(model_fp16, str(output_path))
+        size_mb = output_path.stat().st_size / 1024 / 1024
+        print(f"Converted: {output_path.name} ({size_mb:.2f} MB)")
+        return True
+    except Exception as e:
+        print(f"FP16 conversion failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def export_model(model_key: str, output_dir: Path) -> list:
     """Export a model by key.
 
@@ -470,7 +525,16 @@ def export_model(model_key: str, output_dir: Path) -> list:
         success = False
         if model["source"] == "ultralytics":
             variant = model.get("variant", "n")
-            success = export_yolov8(variant, dest, quantize=quantize)
+            if model.get("convert_fp16"):
+                # Export FP32 first, then convert to FP16
+                fp32_path = dest.with_suffix(".fp32_tmp.onnx")
+                success = export_yolov8(variant, fp32_path, quantize=False)
+                if success:
+                    success = convert_to_fp16(fp32_path, dest)
+                    if fp32_path.exists():
+                        fp32_path.unlink()
+            else:
+                success = export_yolov8(variant, dest, quantize=quantize)
         else:
             print(f"Unknown source: {model['source']}")
 
@@ -512,15 +576,16 @@ def check_assets():
     print("=" * 60)
     print()
 
-    print("FP32 models:")
+    print("FP32/FP16 models:")
     for model in MODELS.values():
         if not model.get("quantize"):
             path = ASSETS_DIR / model["filename"]
+            dtype_tag = f"[{model['dtype']}]"
             if path.exists():
                 size = path.stat().st_size / 1024 / 1024
-                print(f"  [OK] {model['filename']} ({size:.2f} MB)")
+                print(f"  [OK] {model['filename']} ({size:.2f} MB) {dtype_tag}")
             else:
-                print(f"  [--] {model['filename']} (not found)")
+                print(f"  [--] {model['filename']} (not found) {dtype_tag}")
 
     print()
     print("INT8 quantized models:")
@@ -553,6 +618,11 @@ def main():
         "--export-yolov8n",
         action="store_true",
         help="Export YOLOv8n FP32 from ultralytics"
+    )
+    parser.add_argument(
+        "--export-yolov8n-fp16",
+        action="store_true",
+        help="Export YOLOv8n FP16 (native float16 model)"
     )
     parser.add_argument(
         "--export-yolov8n-quantized",
@@ -631,6 +701,8 @@ def main():
     else:
         if args.export_yolov8n:
             exports.append("yolov8n")
+        if args.export_yolov8n_fp16:
+            exports.append("yolov8n-fp16")
         if args.export_yolov8n_quantized:
             exports.append("yolov8n-quantized")
         if args.export_yolov8m:

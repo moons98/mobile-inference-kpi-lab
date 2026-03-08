@@ -90,7 +90,8 @@ class OrtRunner(private val context: Context) {
         val cpuComputeUs: Long,     // CPU EP node execution time (µs)
         val frameworkUs: Long,      // ORT overhead = total - npu - cpu (µs)
         val fenceUs: Long,          // fence_before + fence_after synchronization (µs)
-        val iterationCount: Int     // Number of inference iterations profiled
+        val iterationCount: Int,    // Number of inference iterations profiled
+        val cpuOpCounts: Map<String, Int> = emptyMap()  // CPU op name -> count per iteration
     )
 
     // Logging (thread-safe: accessed from inference loop + system metrics coroutine)
@@ -848,6 +849,7 @@ class OrtRunner(private val context: Context) {
             var cpuComputeUs = 0L
             var fenceUs = 0L
             var iterationCount = 0
+            val cpuOpCounts = mutableMapOf<String, Int>()
 
             JsonReader(FileReader(file)).use { reader ->
                 reader.beginArray()
@@ -857,6 +859,7 @@ class OrtRunner(private val context: Context) {
                     var dur = 0L
                     var provider = ""
 
+                    var opName = ""
                     reader.beginObject()
                     while (reader.hasNext()) {
                         when (reader.nextName()) {
@@ -866,10 +869,10 @@ class OrtRunner(private val context: Context) {
                             "args" -> {
                                 reader.beginObject()
                                 while (reader.hasNext()) {
-                                    if (reader.nextName() == "provider") {
-                                        provider = reader.nextString()
-                                    } else {
-                                        reader.skipValue()
+                                    when (reader.nextName()) {
+                                        "provider" -> provider = reader.nextString()
+                                        "op_name" -> opName = reader.nextString()
+                                        else -> reader.skipValue()
                                     }
                                 }
                                 reader.endObject()
@@ -889,7 +892,12 @@ class OrtRunner(private val context: Context) {
                         "Node" -> {
                             when {
                                 provider.contains("QNN") -> npuComputeUs += dur
-                                provider.contains("CPU") -> cpuComputeUs += dur
+                                provider.contains("CPU") -> {
+                                    cpuComputeUs += dur
+                                    if (opName.isNotEmpty()) {
+                                        cpuOpCounts[opName] = (cpuOpCounts[opName] ?: 0) + 1
+                                    }
+                                }
                             }
                         }
                         "fence_before", "fence_after" -> {
@@ -910,13 +918,15 @@ class OrtRunner(private val context: Context) {
                 return null
             }
 
+            val perIterCpuOps = cpuOpCounts.mapValues { it.value / iterationCount }
             val summary = ProfilingSummary(
                 totalRunUs = totalRunUs,
                 npuComputeUs = npuComputeUs,
                 cpuComputeUs = cpuComputeUs,
                 frameworkUs = frameworkUs,
                 fenceUs = fenceUs,
-                iterationCount = iterationCount
+                iterationCount = iterationCount,
+                cpuOpCounts = perIterCpuOps
             )
 
             val avgTotalMs = totalRunUs / 1000.0 / iterationCount
@@ -932,6 +942,12 @@ class OrtRunner(private val context: Context) {
             Log.i(TAG, "  Avg fence (sync):     %.2f ms".format(avgFenceMs))
             Log.i(TAG, "  Avg ORT overhead:     %.2f ms".format(avgFrameworkMs))
             Log.i(TAG, "  NPU ratio:            %.1f%%".format(avgNpuMs / avgTotalMs * 100))
+            if (cpuOpCounts.isNotEmpty()) {
+                // Divide by iterationCount to get unique ops per iteration
+                val uniqueOps = cpuOpCounts.mapValues { it.value / iterationCount }
+                    .entries.sortedByDescending { it.value }
+                Log.i(TAG, "  CPU ops (per iter):   ${uniqueOps.joinToString { "${it.key}(${it.value})" }}")
+            }
 
             summary
         } catch (e: Throwable) {
@@ -1015,6 +1031,11 @@ class OrtRunner(private val context: Context) {
             sb.appendLine("# profiling_avg_cpu_ms,${"%.2f".format(prof.cpuComputeUs / 1000.0 / prof.iterationCount)}")
             sb.appendLine("# profiling_avg_fence_ms,${"%.2f".format(prof.fenceUs / 1000.0 / prof.iterationCount)}")
             sb.appendLine("# profiling_avg_overhead_ms,${"%.2f".format(prof.frameworkUs / 1000.0 / prof.iterationCount)}")
+            if (prof.cpuOpCounts.isNotEmpty()) {
+                val opsStr = prof.cpuOpCounts.entries.sortedByDescending { it.value }
+                    .joinToString(";") { "${it.key}(${it.value})" }
+                sb.appendLine("# profiling_cpu_ops,$opsStr")
+            }
         }
 
         // Pipeline benchmark results
@@ -1136,6 +1157,15 @@ enum class OnnxModelType(
         inputChannels = 3,
         isQuantized = false,
         precision = "FP32"
+    ),
+    YOLOV8N_FP16(
+        displayName = "YOLOv8n FP16",
+        filename = "yolov8n_fp16.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = false,
+        precision = "FP16"
     ),
     YOLOV8N_INT8_DYNAMIC(
         displayName = "YOLOv8n INT8 (Dynamic)",
