@@ -34,6 +34,7 @@ class KpiMetrics:
     # E2E breakdown (P50)
     preprocess_p50: float       # Image preprocessing P50
     inference_only_p50: float   # Model inference only P50
+    inference_only_min: float   # Model inference only Min (best case, for QAI Hub comparison)
     input_create_p50: float     # Input tensor creation (JNI boundary)
     output_copy_p50: float      # Output tensor copy (native → JVM)
     postprocess_p50: float      # NMS + coordinate transform P50
@@ -352,11 +353,13 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
 
         preprocess_p50 = preprocess_times.quantile(0.50) if len(preprocess_times) > 0 else 0
         inference_only_p50 = inference_only_times.quantile(0.50) if len(inference_only_times) > 0 else 0
+        inference_only_min = inference_only_times.min() if len(inference_only_times) > 0 else 0
         postprocess_p50 = postprocess_times.quantile(0.50) if len(postprocess_times) > 0 else 0
         detection_count_mean = detection_counts.mean() if len(detection_counts) > 0 else 0
     else:
         preprocess_p50 = 0
         inference_only_p50 = latencies.quantile(0.50) if len(latencies) > 0 else 0
+        inference_only_min = latencies.min() if len(latencies) > 0 else 0
         postprocess_p50 = 0
         detection_count_mean = 0
 
@@ -429,6 +432,7 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         # E2E breakdown (P50)
         preprocess_p50=preprocess_p50,
         inference_only_p50=inference_only_p50,
+        inference_only_min=inference_only_min,
         input_create_p50=input_create_p50,
         output_copy_p50=output_copy_p50,
         postprocess_p50=postprocess_p50,
@@ -776,25 +780,26 @@ def generate_comparison_table(file_paths: list) -> str:
         lines.append(f"\n\n[2b] E2E Breakdown (P50)")
         lines.append("-" * 140)
         if has_boundary_data:
-            lines.append(f"{'#':<4} {'Label':<35} {'PreProc':<9} {'InCreate':<9} {'Infer':<9} {'OutCopy':<9} {'PostProc':<9} {'Dets':<6} {'Total':<9}")
+            lines.append(f"{'#':<4} {'Label':<35} {'PreProc':<9} {'InCreate':<9} {'Infer':<9} {'InfMin':<9} {'OutCopy':<9} {'PostProc':<9} {'Dets':<6} {'Total':<9}")
         else:
-            lines.append(f"{'#':<4} {'Label':<35} {'PreProc':<9} {'Infer':<9} {'PostProc':<9} {'Dets':<6} {'Total':<9}")
+            lines.append(f"{'#':<4} {'Label':<35} {'PreProc':<9} {'Infer':<9} {'InfMin':<9} {'PostProc':<9} {'Dets':<6} {'Total':<9}")
         lines.append("-" * 140)
         for i, exp in enumerate(experiments, 1):
             m = exp['metrics']
             if has_boundary_data:
                 lines.append(f"{i:<4} {exp['label']:<35} {m.preprocess_p50:<9.2f} {m.input_create_p50:<9.2f} "
-                             f"{m.inference_only_p50:<9.2f} {m.output_copy_p50:<9.2f} "
+                             f"{m.inference_only_p50:<9.2f} {m.inference_only_min:<9.2f} {m.output_copy_p50:<9.2f} "
                              f"{m.postprocess_p50:<9.2f} {m.detection_count_mean:<6.1f} {m.latency_p50:<9.2f}")
             else:
                 lines.append(f"{i:<4} {exp['label']:<35} {m.preprocess_p50:<9.2f} "
-                             f"{m.inference_only_p50:<9.2f} "
+                             f"{m.inference_only_p50:<9.2f} {m.inference_only_min:<9.2f} "
                              f"{m.postprocess_p50:<9.2f} {m.detection_count_mean:<6.1f} {m.latency_p50:<9.2f}")
         lines.append("")
         lines.append("    PreProc:  Image preprocessing (letterbox + normalize + CHW)")
         if has_boundary_data:
             lines.append("    InCreate: Input tensor creation (Java→Native JNI boundary)")
-        lines.append("    Infer:    Model inference only (session.run)")
+        lines.append("    Infer:    Model inference only (session.run) P50")
+        lines.append("    InfMin:   Model inference minimum (best case, comparable to QAI Hub)")
         if has_boundary_data:
             lines.append("    OutCopy:  Output tensor copy (Native→Java buffer copy)")
         lines.append("    PostProc: Confidence filter + NMS + coordinate transform")

@@ -46,6 +46,9 @@ class OrtRunner(private val context: Context) {
     private var inputShape: LongArray = longArrayOf()
     private var outputName: String = ""
 
+    // Effective input format (may differ from model's declared format if EP overrides I/O types)
+    private var effectiveInputFormat: InputFormat = InputFormat.FLOAT_NCHW
+
     // Source image bitmap (kept alive for per-iteration preprocessing)
     private var sourceBitmap: Bitmap? = null
 
@@ -759,17 +762,23 @@ class OrtRunner(private val context: Context) {
             val result = when (model.outputFormat) {
                 OutputFormat.RAW_84x8400 -> {
                     val tensor = results.get(0) as OnnxTensor
+                    val tensorInfo = tensor.info as TensorInfo
+                    if (firstInferenceMs < 0) {
+                        Log.i(TAG, "Output tensor type: ${tensorInfo.type}, shape: ${tensorInfo.shape.contentToString()}")
+                    }
                     val arr: FloatArray
-                    if (model.inputFormat == InputFormat.INT8_NCHW) {
+                    if (model.inputFormat == InputFormat.INT8_NCHW &&
+                        tensorInfo.type == OnnxJavaType.UINT8) {
                         // QuantizeIO: output is UINT8, dequantize to FP32
-                        val byteBuf = tensor.byteBuffer
+                        val rawBuf = tensor.byteBuffer
                         val scale = model.quantIOOutputScale
                         val zp = model.quantIOOutputZeroPoint
-                        arr = FloatArray(byteBuf.remaining())
+                        arr = FloatArray(rawBuf.remaining())
                         for (i in arr.indices) {
-                            arr[i] = ((byteBuf.get().toInt() and 0xFF) - zp) * scale
+                            arr[i] = ((rawBuf.get().toInt() and 0xFF) - zp) * scale
                         }
                     } else {
+                        // FP32 output (normal path, also QIO via QNN EP which may auto-dequantize)
                         val buf = tensor.floatBuffer
                         arr = FloatArray(buf.remaining())
                         buf.get(arr)
@@ -937,7 +946,10 @@ class OrtRunner(private val context: Context) {
                             }
                         }
                         "Node" -> {
-                            when {
+                            if (name.endsWith("_fence_before") || name.endsWith("_fence_after")) {
+                                // Fence events: cat="Node", name="<op>_fence_before/after"
+                                fenceUs += dur
+                            } else when {
                                 provider.contains("QNN") -> npuComputeUs += dur
                                 provider.contains("CPU") -> {
                                     cpuComputeUs += dur
@@ -946,9 +958,6 @@ class OrtRunner(private val context: Context) {
                                     }
                                 }
                             }
-                        }
-                        "fence_before", "fence_after" -> {
-                            fenceUs += dur
                         }
                     }
                 }
@@ -1244,6 +1253,40 @@ enum class OnnxModelType(
         quantIOOutputZeroPoint = 0.0f
     ),
 
+    // YOLOv8s models (640x640, object detection - small variant)
+    YOLOV8S(
+        displayName = "YOLOv8s",
+        filename = "yolov8s.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = false,
+        precision = "FP32"
+    ),
+    YOLOV8S_INT8_QDQ(
+        displayName = "YOLOv8s INT8 (QDQ)",
+        filename = "yolov8s_int8_qdq.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QDQ"
+    ),
+    YOLOV8S_INT8_QIO(
+        displayName = "YOLOv8s INT8 (QIO)",
+        filename = "yolov8s_int8_qio.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QIO",
+        inputFormat = InputFormat.INT8_NCHW,
+        quantIOScale = 0.003922f,
+        quantIOZeroPoint = 0.0f,
+        quantIOOutputScale = 2.675958f,
+        quantIOOutputZeroPoint = 10.0f
+    ),
+
     // YOLOv8m models (640x640, object detection - medium variant)
     YOLOV8M(
         displayName = "YOLOv8m",
@@ -1262,6 +1305,20 @@ enum class OnnxModelType(
         inputChannels = 3,
         isQuantized = true,
         precision = "INT8_QDQ"
+    ),
+    YOLOV8M_INT8_QIO(
+        displayName = "YOLOv8m INT8 (QIO)",
+        filename = "yolov8m_int8_qio.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QIO",
+        inputFormat = InputFormat.INT8_NCHW,
+        quantIOScale = 0.003922f,
+        quantIOZeroPoint = 0.0f,
+        quantIOOutputScale = 2.660602f,
+        quantIOOutputZeroPoint = 9.0f
     ),
 
     // E2E models: pre/post processing baked into ONNX graph

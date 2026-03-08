@@ -4,6 +4,7 @@ Export YOLOv8 models from ultralytics to ONNX format.
 
 Supported models:
 - YOLOv8n (ultralytics) - Object detection (nano)
+- YOLOv8s (ultralytics) - Object detection (small)
 - YOLOv8m (ultralytics) - Object detection (medium)
 
 Quantization methods:
@@ -13,8 +14,10 @@ Quantization methods:
 
 Usage:
     python export_to_onnx.py --export-yolov8n
+    python export_to_onnx.py --export-yolov8s
     python export_to_onnx.py --export-yolov8m
     python export_to_onnx.py --export-yolov8n-quantized --quant-method static
+    python export_to_onnx.py --export-yolov8s-quantized --quant-method static
     python export_to_onnx.py --export-yolov8m-quantized --quant-method static
     python export_to_onnx.py --export-all                                # all models, both quant methods
     python export_to_onnx.py --list
@@ -30,7 +33,6 @@ from pathlib import Path
 QUANT_METHOD = "both"
 CALIBRATION_DATA_PATH = None
 CALIBRATION_SAMPLES = 100
-QUANTIZE_IO = False
 
 MODELS = {
     "yolov8n": {
@@ -53,16 +55,25 @@ MODELS = {
         "dtype": "INT8",
         "quantize": True,
     },
-    "yolov8n-quantized-qio": {
+    "yolov8s": {
         "source": "ultralytics",
-        "variant": "n",
-        "filename_static": "yolov8n_int8_qio.onnx",
-        "description": "YOLOv8n (INT8 QuantizeIO) - INT8 I/O, no boundary Q/DQ",
+        "variant": "s",
+        "filename": "yolov8s.onnx",
+        "description": "YOLOv8s (FP32) - ultralytics export",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
-        "dtype": "INT8_QIO",
+        "dtype": "FP32",
+    },
+    "yolov8s-quantized": {
+        "source": "ultralytics",
+        "variant": "s",
+        "filename_dynamic": "yolov8s_int8_dynamic.onnx",  # CPU fallback
+        "filename_static": "yolov8s_int8_qdq.onnx",       # NPU supported
+        "description": "YOLOv8s (INT8) - ultralytics + onnxruntime quantization",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
         "quantize": True,
-        "quantize_io": True,
     },
     "yolov8m": {
         "source": "ultralytics",
@@ -408,11 +419,6 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
             )
 
     # Quantize with static method
-    extra_options = {}
-    if QUANTIZE_IO:
-        extra_options["QuantizeIO"] = True
-        print("  [OK] QuantizeIO enabled: model I/O will be INT8")
-
     quantize_static(
         model_input=str(preprocessed_path),
         model_output=str(output_path),
@@ -421,7 +427,6 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
         activation_type=QuantType.QUInt8,
         weight_type=QuantType.QInt8,
         calibrate_method=CalibrationMethod.MinMax,
-        extra_options=extra_options if extra_options else None,
     )
 
     if not output_path.exists():
@@ -429,10 +434,6 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
         return False
 
     print(f"Quantized: {output_path.name} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
-
-    # Extract I/O quantization parameters if QuantizeIO was used
-    if QUANTIZE_IO:
-        extract_io_quant_params(output_path)
 
     # Remove intermediate files only after successful quantization
     if preprocessed_path != input_path and preprocessed_path.exists():
@@ -443,78 +444,13 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
     return True
 
 
-def extract_io_quant_params(model_path: Path):
-    """Extract input/output quantization scale and zero_point from QuantizeIO model.
-
-    Saves a JSON sidecar file alongside the model for the Android app to load.
-    """
-    import onnx
-    import json as json_mod
-
-    model = onnx.load(str(model_path))
-    initializers = {init.name: init for init in model.graph.initializer}
-
-    params = {"inputs": [], "outputs": []}
-
-    from onnx import numpy_helper
-
-    def get_scale(tensor):
-        if tensor is None:
-            return 1.0
-        arr = numpy_helper.to_array(tensor)
-        return float(arr.flat[0])
-
-    def get_zero_point(tensor):
-        if tensor is None:
-            return 0
-        arr = numpy_helper.to_array(tensor)
-        return int(arr.flat[0])
-
-    # Input: look for QuantizeLinear nodes consuming graph inputs
-    graph_input_names = {inp.name for inp in model.graph.input}
-    for node in model.graph.node:
-        if node.op_type == "QuantizeLinear" and node.input[0] in graph_input_names:
-            scale_tensor = initializers.get(node.input[1])
-            zp_tensor = initializers.get(node.input[2]) if len(node.input) > 2 else None
-
-            params["inputs"].append({
-                "name": node.input[0],
-                "scale": get_scale(scale_tensor),
-                "zero_point": get_zero_point(zp_tensor),
-            })
-
-    # Output: look for DequantizeLinear nodes producing graph outputs
-    graph_output_names = {out.name for out in model.graph.output}
-    for node in model.graph.node:
-        if node.op_type == "DequantizeLinear" and node.output[0] in graph_output_names:
-            scale_tensor = initializers.get(node.input[1])
-            zp_tensor = initializers.get(node.input[2]) if len(node.input) > 2 else None
-
-            params["outputs"].append({
-                "name": node.output[0],
-                "scale": get_scale(scale_tensor),
-                "zero_point": get_zero_point(zp_tensor),
-            })
-
-    # Save sidecar JSON
-    json_path = model_path.with_suffix(".quant_params.json")
-    with open(json_path, "w") as f:
-        json_mod.dump(params, f, indent=2)
-
-    print(f"  [OK] I/O quant params saved: {json_path.name}")
-    for inp in params["inputs"]:
-        print(f"       Input '{inp['name']}': scale={inp['scale']:.6f}, zp={inp['zero_point']}")
-    for out in params["outputs"]:
-        print(f"       Output '{out['name']}': scale={out['scale']:.6f}, zp={out['zero_point']}")
-
-
 def export_model(model_key: str, output_dir: Path) -> list:
     """Export a model by key.
 
     Returns:
         List of (model_key, quant_method) tuples that were successfully exported.
     """
-    global QUANT_METHOD, QUANTIZE_IO
+    global QUANT_METHOD
 
     if model_key not in MODELS:
         print(f"Unknown model: {model_key}")
@@ -527,10 +463,7 @@ def export_model(model_key: str, output_dir: Path) -> list:
     exported = []
 
     # Handle "both" option for quantized models
-    # QuantizeIO models only support static quantization
-    if model.get("quantize_io"):
-        quant_methods = ["static"]
-    elif quantize and QUANT_METHOD == "both":
+    if quantize and QUANT_METHOD == "both":
         quant_methods = ["dynamic", "static"]
     elif quantize:
         quant_methods = [QUANT_METHOD]
@@ -555,13 +488,10 @@ def export_model(model_key: str, output_dir: Path) -> list:
             print(f"Quantization: {method} → {filename}")
         print("=" * 60)
 
-        # Temporarily set global QUANT_METHOD and QUANTIZE_IO for quantization functions
+        # Temporarily set global QUANT_METHOD for quantization functions
         old_method = QUANT_METHOD
-        old_qio = QUANTIZE_IO
         if method:
             QUANT_METHOD = method
-        if model.get("quantize_io"):
-            QUANTIZE_IO = True
 
         success = False
         try:
@@ -572,7 +502,6 @@ def export_model(model_key: str, output_dir: Path) -> list:
                 print(f"Unknown source: {model['source']}")
         finally:
             QUANT_METHOD = old_method
-            QUANTIZE_IO = old_qio
 
         if success:
             exported.append((model_key, method))
@@ -659,6 +588,16 @@ def main():
         help="Export YOLOv8n INT8 quantized"
     )
     parser.add_argument(
+        "--export-yolov8s",
+        action="store_true",
+        help="Export YOLOv8s FP32 from ultralytics"
+    )
+    parser.add_argument(
+        "--export-yolov8s-quantized",
+        action="store_true",
+        help="Export YOLOv8s INT8 quantized"
+    )
+    parser.add_argument(
         "--export-yolov8m",
         action="store_true",
         help="Export YOLOv8m FP32 from ultralytics"
@@ -667,11 +606,6 @@ def main():
         "--export-yolov8m-quantized",
         action="store_true",
         help="Export YOLOv8m INT8 quantized"
-    )
-    parser.add_argument(
-        "--export-yolov8n-qio",
-        action="store_true",
-        help="Export YOLOv8n INT8 with QuantizeIO (INT8 I/O)"
     )
     parser.add_argument(
         "--export-all",
@@ -712,20 +646,13 @@ def main():
         default=None,
         help="Path to calibration data directory (images for static quantization)"
     )
-    parser.add_argument(
-        "--quantize-io",
-        action="store_true",
-        help="Enable QuantizeIO: make model I/O INT8 (removes boundary Q/DQ nodes)"
-    )
-
     args = parser.parse_args()
 
     # Set global settings
-    global QUANT_METHOD, CALIBRATION_DATA_PATH, CALIBRATION_SAMPLES, QUANTIZE_IO
+    global QUANT_METHOD, CALIBRATION_DATA_PATH, CALIBRATION_SAMPLES
     QUANT_METHOD = args.quant_method
     CALIBRATION_DATA_PATH = args.calibration_data
     CALIBRATION_SAMPLES = args.calibration_samples
-    QUANTIZE_IO = args.quantize_io
 
     if args.list:
         list_models()
@@ -743,19 +670,23 @@ def main():
             exports.append("yolov8n")
         if args.export_yolov8n_quantized:
             exports.append("yolov8n-quantized")
+        if args.export_yolov8s:
+            exports.append("yolov8s")
+        if args.export_yolov8s_quantized:
+            exports.append("yolov8s-quantized")
         if args.export_yolov8m:
             exports.append("yolov8m")
         if args.export_yolov8m_quantized:
             exports.append("yolov8m-quantized")
-        if args.export_yolov8n_qio:
-            exports.append("yolov8n-quantized-qio")
 
     if not exports:
         parser.print_help()
         print("\nExamples:")
         print("  python export_to_onnx.py --export-yolov8n")
+        print("  python export_to_onnx.py --export-yolov8s")
         print("  python export_to_onnx.py --export-yolov8m")
         print("  python export_to_onnx.py --export-yolov8n-quantized --quant-method static")
+        print("  python export_to_onnx.py --export-yolov8s-quantized --quant-method static")
         print("  python export_to_onnx.py --export-yolov8m-quantized --quant-method static")
         print("  python export_to_onnx.py --export-all                                      # all models, both quant methods")
         print("  python export_to_onnx.py --list")

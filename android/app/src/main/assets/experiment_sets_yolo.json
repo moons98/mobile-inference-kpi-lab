@@ -18,6 +18,28 @@
       ]
     },
     {
+      "id": "exec_path_precision_s",
+      "name": "[실험1s] Execution Path & Precision (YOLOv8s)",
+      "experiments": [
+        { "model": "YOLOV8S", "executionProvider": "CPU", "useNpuFp16": false },
+        { "model": "YOLOV8S", "executionProvider": "QNN_GPU", "useNpuFp16": false },
+        { "model": "YOLOV8S", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8S_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
+        { "model": "YOLOV8S_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+      ]
+    },
+    {
+      "id": "exec_path_precision_m",
+      "name": "[실험1m] Execution Path & Precision (YOLOv8m)",
+      "experiments": [
+        { "model": "YOLOV8M", "executionProvider": "CPU", "useNpuFp16": false },
+        { "model": "YOLOV8M", "executionProvider": "QNN_GPU", "useNpuFp16": false },
+        { "model": "YOLOV8M", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
+        { "model": "YOLOV8M_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+      ]
+    },
+    {
       "id": "int8_quantize_io",
       "name": "[실험5] QuantizeIO: INT8 I/O vs QDQ FP32 I/O",
       "experiments": [
@@ -27,10 +49,12 @@
     },
     {
       "id": "model_scale_int8",
-      "name": "[실험3] Model Scale: INT8 QDQ 효과 (n vs m)",
+      "name": "[실험3] Model Scale: INT8 QDQ 효과 (n vs s vs m)",
       "experiments": [
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
         { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
+        { "model": "YOLOV8S", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8S_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
         { "model": "YOLOV8M", "executionProvider": "QNN_NPU", "useNpuFp16": true },
         { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false }
       ]

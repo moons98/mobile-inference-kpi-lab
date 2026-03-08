@@ -118,7 +118,7 @@ def list_devices():
                 print(f"  {d.name}")
 
 
-def profile_model(model_path: Path, device_name: str, target_runtime: str = "qnn_context_binary",
+def profile_model(model_path: Path, device_name: str, target_runtime: str = "precompiled_qnn_onnx",
                    quantize_on_hub: bool = False, compile_options: str = ""):
     """Submit compile + profile job to AI Hub."""
     print(f"\n{'='*60}")
@@ -144,21 +144,17 @@ def profile_model(model_path: Path, device_name: str, target_runtime: str = "qnn
         calibration_data = dict(
             images=load_calibration_images(num_samples=10)
         )
-        quantize_extra = {}
-        if "--quantize_io" in compile_options:
-            quantize_extra["QuantizeIO"] = True
         quantize_job = hub.submit_quantize_job(
             model=onnx_model,
             calibration_data=calibration_data,
             weights_dtype=hub.QuantizeDtype.INT8,
             activations_dtype=hub.QuantizeDtype.INT8,
-            extra_options=quantize_extra if quantize_extra else None,
         )
         source_model = quantize_job.get_target_model()
     else:
         source_model = str(model_path)
 
-    # Compile to target runtime
+    # Compile to target runtime (precompiled_qnn_onnx replaces deprecated qnn_context_binary)
     print(f"Compiling to {target_runtime}...")
     options = f"--target_runtime {target_runtime}"
     if compile_options:
@@ -296,7 +292,7 @@ def main():
         if not fp32_model.exists():
             fp32_model = ASSETS_DIR / "yolov8n.onnx"
         if fp32_model.exists():
-            job = profile_model(fp32_model, device_name, "qnn_context_binary")
+            job = profile_model(fp32_model, device_name, "precompiled_qnn_onnx")
             if job:
                 jobs.append(job)
         else:
@@ -308,7 +304,7 @@ def main():
             int8_model = ASSETS_DIR / "yolov8n_int8_qdq.onnx"
         if int8_model.exists():
             int8_compile_opts = "" if args.no_quantize_io else "--quantize_io"
-            job = profile_model(int8_model, device_name, "qnn_context_binary", compile_options=int8_compile_opts)
+            job = profile_model(int8_model, device_name, "precompiled_qnn_onnx", compile_options=int8_compile_opts)
             if job:
                 jobs.append(job)
         else:
@@ -320,7 +316,7 @@ def main():
             fp32_model = ASSETS_DIR / "yolov8n.onnx"
         if fp32_model.exists():
             hub_compile_opts = "" if args.no_quantize_io else "--quantize_io"
-            job = profile_model(fp32_model, device_name, "qnn_context_binary",
+            job = profile_model(fp32_model, device_name, "precompiled_qnn_onnx",
                                 quantize_on_hub=True, compile_options=hub_compile_opts)
             if job:
                 jobs.append(job)
