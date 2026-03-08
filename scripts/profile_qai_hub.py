@@ -144,11 +144,15 @@ def profile_model(model_path: Path, device_name: str, target_runtime: str = "qnn
         calibration_data = dict(
             images=load_calibration_images(num_samples=10)
         )
+        quantize_extra = {}
+        if "--quantize_io" in compile_options:
+            quantize_extra["QuantizeIO"] = True
         quantize_job = hub.submit_quantize_job(
             model=onnx_model,
             calibration_data=calibration_data,
             weights_dtype=hub.QuantizeDtype.INT8,
             activations_dtype=hub.QuantizeDtype.INT8,
+            extra_options=quantize_extra if quantize_extra else None,
         )
         source_model = quantize_job.get_target_model()
     else:

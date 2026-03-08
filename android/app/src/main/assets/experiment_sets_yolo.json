@@ -12,20 +12,27 @@
       "name": "[실험1] Execution Path & Precision",
       "experiments": [
         { "model": "YOLOV8N", "executionProvider": "CPU", "useNpuFp16": false },
-
         { "model": "YOLOV8N", "executionProvider": "QNN_GPU", "useNpuFp16": false },
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
         { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false }
       ]
     },
     {
-      "id": "e2e_prepost_offload",
-      "name": "[실험2] Pre/Post/NMS Offload",
+      "id": "int8_quantize_io",
+      "name": "[실험5] QuantizeIO: INT8 I/O vs QDQ FP32 I/O",
+      "experiments": [
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
+        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+      ]
+    },
+    {
+      "id": "model_scale_int8",
+      "name": "[실험3] Model Scale: INT8 QDQ 효과 (n vs m)",
       "experiments": [
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_PRE", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_E2E", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_E2E_NMS", "executionProvider": "QNN_NPU", "useNpuFp16": true }
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
+        { "model": "YOLOV8M", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false }
       ]
     },
     {
@@ -37,13 +44,13 @@
       ]
     },
     {
-      "id": "model_scale_int8",
-      "name": "[실험3] Model Scale: INT8 QDQ 효과 (n vs m)",
+      "id": "e2e_prepost_offload",
+      "name": "[실험2] Pre/Post/NMS Offload",
       "experiments": [
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8M", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+        { "model": "YOLOV8N_PRE", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8N_E2E", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8N_E2E_NMS", "executionProvider": "QNN_NPU", "useNpuFp16": true }
       ]
     }
   ]
