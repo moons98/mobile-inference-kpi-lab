@@ -87,10 +87,7 @@ class MainActivity : AppCompatActivity() {
         benchmarkRunner.overlayView = binding.overlayView
         Log.i(TAG, "CameraManager initialized")
 
-        // Auto-start camera preview if overlay is enabled by default
-        if (binding.checkDemoMode.isChecked) {
-            updateCameraPreview(true)
-        }
+        // Camera starts on-demand when experiments need it
     }
 
     private fun initializeComponents() {
@@ -148,21 +145,19 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Demo mode checkbox controls camera preview visibility
-        binding.checkDemoMode.setOnCheckedChangeListener { _, isChecked ->
-            updateCameraPreview(isChecked)
+    }
+
+    private fun startCamera() {
+        if (cameraPermissionGranted && cameraManager?.isRunning != true) {
+            cameraManager?.start(this, binding.previewView)
+            binding.cardCameraPreview.visibility = View.VISIBLE
         }
     }
 
-    private fun updateCameraPreview(demoMode: Boolean) {
-        if (demoMode && cameraPermissionGranted) {
-            binding.cardCameraPreview.visibility = View.VISIBLE
-            // Start camera preview
-            cameraManager?.start(this, binding.previewView)
-        } else {
-            binding.cardCameraPreview.visibility = View.GONE
-            cameraManager?.stop()
-        }
+    private fun stopCamera() {
+        cameraManager?.stop()
+        binding.cardCameraPreview.visibility = View.GONE
+        binding.overlayView.clear()
     }
 
     private fun setupBatchMode() {
@@ -295,12 +290,10 @@ class MainActivity : AppCompatActivity() {
     private fun observeDetections() {
         lifecycleScope.launch {
             benchmarkRunner.lastDetections.collectLatest { result ->
-                if (binding.checkDemoMode.isChecked) {
-                    if (result.detections.isNotEmpty()) {
-                        binding.overlayView.setDetections(result.detections, result.sourceWidth, result.sourceHeight)
-                    } else {
-                        binding.overlayView.clear()
-                    }
+                if (result.detections.isNotEmpty()) {
+                    binding.overlayView.setDetections(result.detections, result.sourceWidth, result.sourceHeight)
+                } else {
+                    binding.overlayView.clear()
                 }
             }
         }
@@ -341,6 +334,8 @@ class MainActivity : AppCompatActivity() {
             binding.btnStartStop.text = getString(R.string.start_benchmark)
             setControlsEnabled(true)
             binding.checkBatchMode.isEnabled = true
+            // Stop camera when entire batch finishes to prevent unnecessary heating
+            stopCamera()
         }
     }
 
@@ -409,6 +404,11 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.start_benchmark)
         }
 
+        // Stop camera when single-mode benchmark finishes (not during batch)
+        if (!isRunning && !benchmarkRunner.isBatchRunning && cameraManager?.isRunning == true) {
+            stopCamera()
+        }
+
         setControlsEnabled(!isRunning)
         binding.btnExport.isEnabled = !isRunning && benchmarkRunner.getRecordCount() > 0
     }
@@ -424,7 +424,6 @@ class MainActivity : AppCompatActivity() {
         binding.radioInputCameraSingle.isEnabled = enabled
         binding.radioInputCameraLive.isEnabled = enabled
         binding.radioInputStatic.isEnabled = enabled
-        binding.checkDemoMode.isEnabled = enabled
 
         // Execution provider
         binding.radioNpuGpuCpu.isEnabled = enabled
@@ -480,7 +479,6 @@ class MainActivity : AppCompatActivity() {
             executionProvider = executionProvider,
             phase = phase,
             inputMode = inputMode,
-            demoMode = binding.checkDemoMode.isChecked,
             frequencyHz = if (phase == BenchmarkPhase.BURST) 2 else 30,
             durationMinutes = durationMinutes,
             iterations = 100,
@@ -501,8 +499,8 @@ class MainActivity : AppCompatActivity() {
         val config = buildConfig()
 
         // Ensure camera is running for camera modes
-        if (config.usesCamera && cameraPermissionGranted && cameraManager?.isRunning != true) {
-            cameraManager?.start(this, if (config.demoMode) binding.previewView else null)
+        if (config.usesCamera) {
+            startCamera()
         }
 
         Log.i(TAG, "Starting benchmark with config: $config")
@@ -525,11 +523,6 @@ class MainActivity : AppCompatActivity() {
         val selectedSet = experimentSets[selectedIndex]
         val defaults = experimentSetLoader.getDefaults()
 
-        // Start camera for batch (needed for camera input modes)
-        if (cameraPermissionGranted && cameraManager?.isRunning != true) {
-            cameraManager?.start(this)
-        }
-
         Log.i(TAG, "Starting batch: ${selectedSet.name} with ${selectedSet.experiments.size} experiments")
 
         benchmarkRunner.startBatch(
@@ -541,6 +534,12 @@ class MainActivity : AppCompatActivity() {
                     val filename = File(csvPath).name
                     Toast.makeText(this, "Saved: $filename", Toast.LENGTH_SHORT).show()
                 }
+            },
+            onCameraNeeded = {
+                startCamera()
+            },
+            onCameraRelease = {
+                stopCamera()
             }
         )
 
@@ -571,6 +570,8 @@ class MainActivity : AppCompatActivity() {
             benchmarkRunner.stop()
             Toast.makeText(this, "Benchmark stopped", Toast.LENGTH_SHORT).show()
         }
+        // Stop camera to prevent unnecessary heating
+        stopCamera()
     }
 
     private fun exportData() {

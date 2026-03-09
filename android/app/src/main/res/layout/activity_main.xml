@@ -215,13 +215,6 @@
 
                 </RadioGroup>
 
-                <CheckBox
-                    android:id="@+id/checkDemoMode"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Overlay (camera preview + bbox render)"
-                    android:checked="true" />
-
             </LinearLayout>
 
         </com.google.android.material.card.MaterialCardView>

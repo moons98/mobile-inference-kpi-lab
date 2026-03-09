@@ -556,7 +556,9 @@ class BenchmarkRunner(
         experimentSet: ExperimentSet,
         defaults: ExperimentDefaults,
         scope: CoroutineScope,
-        onExperimentComplete: (csvPath: String) -> Unit = {}
+        onExperimentComplete: (csvPath: String) -> Unit = {},
+        onCameraNeeded: () -> Unit = {},
+        onCameraRelease: () -> Unit = {}
     ) {
         if (isRunning || isBatchRunning) {
             Log.w(TAG, "Benchmark or batch already running")
@@ -595,6 +597,11 @@ class BenchmarkRunner(
                     this@BenchmarkRunner.config = config
                     this@BenchmarkRunner.currentModel = config.modelType
 
+                    // Restart camera if needed (may have been stopped during cooldown)
+                    if (config.usesCamera && cameraManager?.isRunning != true) {
+                        withContext(Dispatchers.Main) { onCameraNeeded() }
+                    }
+
                     // Run single benchmark
                     try {
                         runBenchmark(config)
@@ -620,6 +627,9 @@ class BenchmarkRunner(
 
                     // Cooldown between experiments (skip if experiment failed, skip for last)
                     if (csvPath != null && index < experimentSet.experiments.size - 1 && isActive) {
+                        // Stop camera during cooldown to help temperature drop
+                        withContext(Dispatchers.Main) { onCameraRelease() }
+
                         _batchProgress.value = _batchProgress.value.copy(isCoolingDown = true)
 
                         // Phase 1: mandatory minimum cooldown

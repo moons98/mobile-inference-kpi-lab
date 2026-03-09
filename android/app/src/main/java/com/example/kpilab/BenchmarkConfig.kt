@@ -16,9 +16,6 @@ data class BenchmarkConfig(
     // Input source mode
     val inputMode: InputMode = InputMode.CAMERA_SINGLE,
 
-    // Demo mode: show camera preview + detection overlay
-    val demoMode: Boolean = false,
-
     // Benchmark settings (overridden by phase defaults when null)
     val frequencyHz: Int = 2,
     val durationMinutes: Int = 5,
