@@ -85,8 +85,10 @@ class BenchmarkRunner(
         private const val TAG = "BenchmarkRunner"
         private const val SYSTEM_METRICS_INTERVAL_MS = 1000L  // 1 second
         private const val MEMORY_METRICS_INTERVAL_MS = 5000L  // 5 seconds
-        private const val COOLDOWN_SECONDS = 30  // Cooldown between batch experiments
-        private const val WARMUP_ITERATIONS = 10  // Always run warm-up for steady-state
+        private const val COOLDOWN_MIN_SECONDS = 60   // Minimum cooldown between batch experiments
+        private const val COOLDOWN_MAX_SECONDS = 180  // Maximum cooldown (timeout)
+        private const val COOLDOWN_TARGET_TEMP_C = 35f // Resume when temp drops below this
+        private const val WARMUP_ITERATIONS = 30   // Warm-up for HTP init + cache stabilization
     }
 
     private val _progress = MutableStateFlow(BenchmarkProgress())
@@ -618,16 +620,41 @@ class BenchmarkRunner(
 
                     // Cooldown between experiments (skip if experiment failed, skip for last)
                     if (csvPath != null && index < experimentSet.experiments.size - 1 && isActive) {
-                        Log.i(TAG, "Cooldown for $COOLDOWN_SECONDS seconds...")
                         _batchProgress.value = _batchProgress.value.copy(isCoolingDown = true)
 
-                        for (remaining in COOLDOWN_SECONDS downTo 1) {
+                        // Phase 1: mandatory minimum cooldown
+                        Log.i(TAG, "Cooldown: minimum ${COOLDOWN_MIN_SECONDS}s...")
+                        for (remaining in COOLDOWN_MIN_SECONDS downTo 1) {
                             if (!isActive) break
                             _batchProgress.value = _batchProgress.value.copy(
                                 cooldownRemainingSeconds = remaining
                             )
                             delay(1000)
                         }
+
+                        // Phase 2: wait for temperature to drop below target (up to max)
+                        val currentTemp = kpiCollector.readThermal()
+                        if (currentTemp > COOLDOWN_TARGET_TEMP_C) {
+                            val extraMax = COOLDOWN_MAX_SECONDS - COOLDOWN_MIN_SECONDS
+                            Log.i(TAG, "Cooldown: temp ${currentTemp}°C > ${COOLDOWN_TARGET_TEMP_C}°C, waiting up to ${extraMax}s more...")
+                            for (elapsed in 1..extraMax) {
+                                if (!isActive) break
+                                _batchProgress.value = _batchProgress.value.copy(
+                                    cooldownRemainingSeconds = extraMax - elapsed
+                                )
+                                delay(1000)
+                                val temp = kpiCollector.readThermal()
+                                if (temp <= COOLDOWN_TARGET_TEMP_C) {
+                                    Log.i(TAG, "Cooldown: temp ${temp}°C reached target, resuming")
+                                    break
+                                }
+                                if (elapsed % 10 == 0) {
+                                    Log.i(TAG, "Cooldown: waiting... temp=${temp}°C")
+                                }
+                            }
+                        }
+                        val finalTemp = kpiCollector.readThermal()
+                        Log.i(TAG, "Cooldown complete: temp=${finalTemp}°C")
                     }
                 }
 

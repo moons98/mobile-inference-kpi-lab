@@ -105,6 +105,7 @@ Demo mode (detection overlay on preview)를 UI에서 on/off 할 수 있으나, o
 | 화면 | Always-on, 최소 밝기 | Display 부하 최소화 |
 | 네트워크 | Airplane mode | Background traffic 제거 |
 | 충전 | 벤치마크 중 미충전 | 충전 시 thermal / power 측정 왜곡 방지 |
+| Cooldown | 최소 60초 + 온도 ≤35°C 대기 (최대 180초) | 실험 간 thermal state 정규화 |
 
 ### 2.3 Target Models
 
@@ -139,7 +140,7 @@ Demo mode (detection overlay on preview)를 UI에서 on/off 할 수 있으나, o
 ### 3.2 실행 방식
 
 ```
-Warmup: 10 iterations (연속, 결과 제외)
+Warmup: 30 iterations (연속, 결과 제외)
 Main loop (ORT profiling ON):
   for i in 1..100:
       run full pipeline (acquire + pre + infer + post, 모든 구간 개별 측정)
@@ -151,7 +152,7 @@ Input: Camera Single (1장 캡처 후 반복)
 |---------|-----|------|
 | Iterations | 100 | 통계적 신뢰도 확보 (P50/P95/min/max) |
 | Sleep | 500ms (2 Hz) | Thermal 축적 방지, scheduling interference 최소화 |
-| Warmup | 10 iterations | JIT, cache warming, HTP initialization 안정화 |
+| Warmup | 30 iterations | JIT, cache warming, HTP initialization + context cache 안정화 |
 | Input | Camera Single | 변인 통제 (동일 frame 반복) |
 | ORT Profiling | ON (전체 100회) | NPU/CPU/fence/overhead 분해. 측정 시점 = 기록 시점 |
 
@@ -213,7 +214,7 @@ Input: Camera Single (1장 캡처 후 반복)
 ### 4.2 실행 방식
 
 ```
-Warmup: 10 iterations (연속)
+Warmup: 30 iterations (연속)
 Main loop (5 minutes, ORT profiling OFF):
   target = 30 Hz (33ms interval)
   for each frame:
