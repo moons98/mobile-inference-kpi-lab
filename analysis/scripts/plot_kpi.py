@@ -370,7 +370,7 @@ def compare_experiments(
 
     def is_quantized(label: str) -> bool:
         label_upper = label.upper()
-        return 'INT8' in label_upper or 'QDQ' in label_upper or 'QIO' in label_upper or 'QUANT' in label_upper
+        return 'INT8' in label_upper or 'QDQ' in label_upper or 'QUANT' in label_upper
 
     def get_color_category(label: str) -> str:
         label_upper = label.upper()
@@ -396,9 +396,7 @@ def compare_experiments(
 
     def get_line_style(label: str) -> str:
         label_upper = label.upper()
-        if 'QIO' in label_upper:
-            return ':'   # dotted for QIO (boundary-free quantization)
-        elif 'QDQ' in label_upper or 'INT8' in label_upper or 'QUANT' in label_upper:
+        if 'QDQ' in label_upper or 'INT8' in label_upper or 'QUANT' in label_upper:
             return '-.'  # dash-dot for QDQ quantization
         return '-'  # solid for FP32/FP16
 

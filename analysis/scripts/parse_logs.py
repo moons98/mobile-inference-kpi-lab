@@ -750,7 +750,7 @@ def generate_comparison_table(file_paths: list) -> str:
         })
 
     # Sort: FP32 first, then FP16, then INT8 variants
-    prec_order = {'FP32': 0, 'FP16': 1, 'INT8QDQ': 2, 'INT8QIO': 3, 'INT8': 4}
+    prec_order = {'FP32': 0, 'FP16': 1, 'INT8QDQ': 2, 'INT8': 3}
     experiments.sort(key=lambda e: prec_order.get(e['precision'], 9))
 
     lines = []
@@ -777,7 +777,7 @@ def generate_comparison_table(file_paths: list) -> str:
         lines.append(f"{i:<4} {exp['label']:<40} {exp['ep']:<12} {precision:<12} {exp['model']:<25}")
     lines.append("")
     lines.append("    EP: Execution Provider (QNN_NPU=Hexagon HTP, QNN_GPU=Adreno GPU, CPU=ARM CPU)")
-    lines.append("    Precision: FP32/FP16=부동소수점, INT8=양자화 (QDQ=Static, QIO=QuantizeIO)")
+    lines.append("    Precision: FP32/FP16=부동소수점, INT8=양자화 (QDQ=Static)")
 
     # Section 2: E2E Latency Performance
     lines.append(f"\n\n[2] E2E Latency Performance")

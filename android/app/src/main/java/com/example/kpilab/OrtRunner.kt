@@ -16,7 +16,6 @@ import java.io.FileReader
 import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import java.util.concurrent.CopyOnWriteArrayList
-import kotlin.math.roundToInt
 
 /**
  * ONNX Runtime-based inference runner with QNN Execution Provider support.
@@ -465,36 +464,6 @@ class OrtRunner(private val context: Context) {
         return hwc
     }
 
-    /**
-     * Preprocess source image for QuantizeIO INT8 models (runs every iteration).
-     * Same as preprocessFrame() but additionally quantizes FP32 → INT8 using scale/zero_point.
-     * Formula: int8_value = clamp(round(float_value / scale) + zero_point, 0, 255)
-     * Note: uses uint8 zero_point convention (QUInt8) matching onnxruntime static quantization.
-     */
-    private fun preprocessFrameInt8(): ByteArray {
-        val model = currentModel!!
-        val scale = model.quantIOScale
-        val zeroPoint = model.quantIOZeroPoint
-
-        val pixels = letterboxPixels()
-        val planeSize = pixels.size
-        val int8Data = ByteArray(3 * planeSize)
-
-        for (i in pixels.indices) {
-            val pixel = pixels[i]
-            val r = ((pixel shr 16) and 0xFF) / 255.0f
-            val g = ((pixel shr 8) and 0xFF) / 255.0f
-            val b = (pixel and 0xFF) / 255.0f
-
-            // Quantize: uint8 = clamp(round(value / scale + zero_point), 0, 255)
-            int8Data[i] = ((r / scale + zeroPoint).roundToInt().coerceIn(0, 255)).toByte()
-            int8Data[planeSize + i] = ((g / scale + zeroPoint).roundToInt().coerceIn(0, 255)).toByte()
-            int8Data[2 * planeSize + i] = ((b / scale + zeroPoint).roundToInt().coerceIn(0, 255)).toByte()
-        }
-
-        return int8Data
-    }
-
     private fun logSessionInfo() {
         val session = ortSession ?: return
 
@@ -523,7 +492,6 @@ class OrtRunner(private val context: Context) {
     private fun preprocess(): Any = when (currentModel!!.inputFormat) {
         InputFormat.FLOAT_NCHW -> preprocessFrame()
         InputFormat.UINT8_NHWC -> preprocessFrameUint8()
-        InputFormat.INT8_NCHW -> preprocessFrameInt8()
     }
 
     /**
@@ -689,9 +657,6 @@ class OrtRunner(private val context: Context) {
                 InputFormat.UINT8_NHWC -> OnnxTensor.createTensor(
                     env, ByteBuffer.wrap(data as ByteArray), inputShape, OnnxJavaType.UINT8
                 )
-                InputFormat.INT8_NCHW -> OnnxTensor.createTensor(
-                    env, ByteBuffer.wrap(data as ByteArray), inputShape, OnnxJavaType.UINT8
-                )
             }
             val inputCreateMs = ((System.nanoTime() - inputCreateStart) / 1_000_000.0).toFloat()
 
@@ -711,23 +676,9 @@ class OrtRunner(private val context: Context) {
                     if (firstInferenceMs < 0) {
                         Log.i(TAG, "Output tensor type: ${tensorInfo.type}, shape: ${tensorInfo.shape.contentToString()}")
                     }
-                    val arr: FloatArray
-                    if (model.inputFormat == InputFormat.INT8_NCHW &&
-                        tensorInfo.type == OnnxJavaType.UINT8) {
-                        // QuantizeIO: output is UINT8, dequantize to FP32
-                        val rawBuf = tensor.byteBuffer
-                        val scale = model.quantIOOutputScale
-                        val zp = model.quantIOOutputZeroPoint
-                        arr = FloatArray(rawBuf.remaining())
-                        for (i in arr.indices) {
-                            arr[i] = ((rawBuf.get().toInt() and 0xFF) - zp) * scale
-                        }
-                    } else {
-                        // FP32 output (normal path, also QIO via QNN EP which may auto-dequantize)
-                        val buf = tensor.floatBuffer
-                        arr = FloatArray(buf.remaining())
-                        buf.get(arr)
-                    }
+                    val buf = tensor.floatBuffer
+                    val arr = FloatArray(buf.remaining())
+                    buf.get(arr)
                     InferenceResult(inferenceMs, inputCreateMs, 0f, arr) // outputCopyMs set below
                 }
                 OutputFormat.BOXES_SCORES -> {
@@ -1122,8 +1073,7 @@ class OrtRunner(private val context: Context) {
  */
 enum class InputFormat {
     FLOAT_NCHW,   // Original: float32 [1, 3, 640, 640] - CPU normalize + transpose
-    UINT8_NHWC,   // E2E: uint8 [1, 640, 640, 3] - normalize + transpose baked into graph
-    INT8_NCHW     // QuantizeIO: int8 [1, 3, 640, 640] - CPU normalize + transpose + quantize
+    UINT8_NHWC    // E2E: uint8 [1, 640, 640, 3] - normalize + transpose baked into graph
 }
 
 /**
@@ -1147,11 +1097,7 @@ enum class OnnxModelType(
     val isQuantized: Boolean,
     val precision: String,
     val inputFormat: InputFormat = InputFormat.FLOAT_NCHW,
-    val outputFormat: OutputFormat = OutputFormat.RAW_84x8400,
-    val quantIOScale: Float = 1.0f,
-    val quantIOZeroPoint: Float = 0.0f,
-    val quantIOOutputScale: Float = 1.0f,
-    val quantIOOutputZeroPoint: Float = 0.0f
+    val outputFormat: OutputFormat = OutputFormat.RAW_84x8400
 ) {
     // YOLOv8n models (640x640, object detection)
     YOLOV8N(
@@ -1162,30 +1108,6 @@ enum class OnnxModelType(
         inputChannels = 3,
         isQuantized = false,
         precision = "FP32"
-    ),
-    YOLOV8N_INT8_QDQ(
-        displayName = "YOLOv8n INT8 (QDQ)",
-        filename = "yolov8n_int8_qdq.onnx",
-        inputWidth = 640,
-        inputHeight = 640,
-        inputChannels = 3,
-        isQuantized = true,
-        precision = "INT8_QDQ"
-    ),
-    YOLOV8N_INT8_QIO(
-        displayName = "YOLOv8n INT8 (QIO)",
-        filename = "yolov8n_int8_qio.onnx",
-        inputWidth = 640,
-        inputHeight = 640,
-        inputChannels = 3,
-        isQuantized = true,
-        precision = "INT8_QIO",
-        inputFormat = InputFormat.INT8_NCHW,
-        // From make_quantize_io.py (Percentile calibration)
-        quantIOScale = 0.003920f,
-        quantIOZeroPoint = 0.0f,
-        quantIOOutputScale = 2.493441f,
-        quantIOOutputZeroPoint = 0.0f
     ),
     YOLOV8N_INT8_QDQ_NOH(
         displayName = "YOLOv8n INT8 (QDQ NoHead)",
@@ -1216,29 +1138,6 @@ enum class OnnxModelType(
         isQuantized = false,
         precision = "FP32"
     ),
-    YOLOV8S_INT8_QDQ(
-        displayName = "YOLOv8s INT8 (QDQ)",
-        filename = "yolov8s_int8_qdq.onnx",
-        inputWidth = 640,
-        inputHeight = 640,
-        inputChannels = 3,
-        isQuantized = true,
-        precision = "INT8_QDQ"
-    ),
-    YOLOV8S_INT8_QIO(
-        displayName = "YOLOv8s INT8 (QIO)",
-        filename = "yolov8s_int8_qio.onnx",
-        inputWidth = 640,
-        inputHeight = 640,
-        inputChannels = 3,
-        isQuantized = true,
-        precision = "INT8_QIO",
-        inputFormat = InputFormat.INT8_NCHW,
-        quantIOScale = 0.003920f,
-        quantIOZeroPoint = 0.0f,
-        quantIOOutputScale = 2.582962f,
-        quantIOOutputZeroPoint = 10.0f
-    ),
     YOLOV8S_INT8_QDQ_NOH(
         displayName = "YOLOv8s INT8 (QDQ NoHead)",
         filename = "yolov8s_int8_qdq_noh.onnx",
@@ -1267,29 +1166,6 @@ enum class OnnxModelType(
         inputChannels = 3,
         isQuantized = false,
         precision = "FP32"
-    ),
-    YOLOV8M_INT8_QDQ(
-        displayName = "YOLOv8m INT8 (QDQ)",
-        filename = "yolov8m_int8_qdq.onnx",
-        inputWidth = 640,
-        inputHeight = 640,
-        inputChannels = 3,
-        isQuantized = true,
-        precision = "INT8_QDQ"
-    ),
-    YOLOV8M_INT8_QIO(
-        displayName = "YOLOv8m INT8 (QIO)",
-        filename = "yolov8m_int8_qio.onnx",
-        inputWidth = 640,
-        inputHeight = 640,
-        inputChannels = 3,
-        isQuantized = true,
-        precision = "INT8_QIO",
-        inputFormat = InputFormat.INT8_NCHW,
-        quantIOScale = 0.003920f,
-        quantIOZeroPoint = 0.0f,
-        quantIOOutputScale = 2.571079f,
-        quantIOOutputZeroPoint = 9.0f
     ),
     YOLOV8M_INT8_QDQ_NOH(
         displayName = "YOLOv8m INT8 (QDQ NoHead)",
@@ -1349,7 +1225,6 @@ enum class OnnxModelType(
         get() = when (inputFormat) {
             InputFormat.FLOAT_NCHW -> longArrayOf(1, inputChannels.toLong(), inputHeight.toLong(), inputWidth.toLong())
             InputFormat.UINT8_NHWC -> longArrayOf(1, inputHeight.toLong(), inputWidth.toLong(), inputChannels.toLong())
-            InputFormat.INT8_NCHW -> longArrayOf(1, inputChannels.toLong(), inputHeight.toLong(), inputWidth.toLong())
         }
 }
 
