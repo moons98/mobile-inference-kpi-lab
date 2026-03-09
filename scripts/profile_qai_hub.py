@@ -29,7 +29,7 @@ except ImportError:
     sys.exit(1)
 
 ASSETS_DIR = Path(__file__).parent.parent / "android" / "app" / "src" / "main" / "assets"
-CALIBRATION_DIR = Path(__file__).parent / "calibration_data" / "coco"
+CALIBRATION_DIR = Path(__file__).parent / "coco_val2017" / "val2017"
 RESULTS_FILE = Path(__file__).parent.parent / "outputs" / "qai_hub_jobs.json"
 
 # Target device: Snapdragon 8 Gen 2 (SM8550) - same as Galaxy S23 Ultra

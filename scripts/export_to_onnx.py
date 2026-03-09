@@ -354,11 +354,11 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
             num_samples=CALIBRATION_SAMPLES
         )
     else:
-        # Check default calibration data location
-        default_coco = Path(__file__).parent / "calibration_data" / "coco"
+        # Check default COCO val2017 location (shared with eval_accuracy.py)
+        default_coco = Path(__file__).parent / "coco_val2017" / "val2017"
 
-        if default_coco.exists():
-            print(f"  Using COCO calibration data: {default_coco}")
+        if default_coco.exists() and any(default_coco.glob("*.jpg")):
+            print(f"  Using COCO val2017 calibration data: {default_coco}")
             calibration_reader = ImageCalibrationDataReader(
                 calibration_dir=str(default_coco),
                 input_name=input_name,
@@ -367,7 +367,7 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
             )
         else:
             print(f"  Using synthetic calibration data ({CALIBRATION_SAMPLES} samples)")
-            print("  [!] For better accuracy, run: python setup_calibration_data.py --download-imagenet")
+            print("  [!] For better accuracy, run: python eval_accuracy.py --setup")
             calibration_reader = RandomCalibrationDataReader(
                 input_name=input_name,
                 input_shape=input_shape,
@@ -423,8 +423,6 @@ def export_model(model_key: str, output_dir: Path) -> list:
     Returns:
         List of (model_key, quant_method) tuples that were successfully exported.
     """
-    global QUANT_METHOD
-
     if model_key not in MODELS:
         print(f"Unknown model: {model_key}")
         return []

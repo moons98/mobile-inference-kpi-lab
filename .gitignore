@@ -74,8 +74,9 @@ tmp/
 temp/
 *.tmp
 
-# data
-scripts/calibration_data
+# Dataset (COCO val2017 — shared by calibration and accuracy evaluation)
+scripts/coco_val2017
 
 #
 deprecated/
+runs/
