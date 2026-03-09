@@ -729,8 +729,8 @@ def generate_comparison_table(file_paths: list) -> str:
         qnn_opts = metadata.get('qnn_options', '')
         if 'fp16=1' in qnn_opts and precision == 'FP32':
             precision = 'FP16'
-        # Compact precision: INT8_QDQ -> INT8QDQ
-        prec_short = precision.replace('_', '')
+        # Keep precision as-is for readability: INT8_QDQ_PC_NOH stays readable
+        prec_short = precision
         # Append HTP perf mode if not default burst
         perf_suffix = ''
         perf_match = re.search(r'perf=(\w+)', qnn_opts)
