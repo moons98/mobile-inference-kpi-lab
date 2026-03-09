@@ -382,7 +382,7 @@ class OrtRunner(private val context: Context) {
         // Copy so OrtRunner owns its own bitmap and release() can safely recycle
         // without invalidating CameraManager's cached frame
         sourceBitmap?.recycle()
-        sourceBitmap = bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
+        sourceBitmap = bitmap.copy(bitmap.config, false)
         originalImageWidth = bitmap.width
         originalImageHeight = bitmap.height
     }
@@ -1187,6 +1187,24 @@ enum class OnnxModelType(
         quantIOOutputScale = 2.493441f,
         quantIOOutputZeroPoint = 0.0f
     ),
+    YOLOV8N_INT8_QDQ_NOH(
+        displayName = "YOLOv8n INT8 (QDQ NoHead)",
+        filename = "yolov8n_int8_qdq_noh.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QDQ_NOH"
+    ),
+    YOLOV8N_INT8_QDQ_PC_NOH(
+        displayName = "YOLOv8n INT8 (QDQ PC+NoHead)",
+        filename = "yolov8n_int8_qdq_pc_noh.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QDQ_PC_NOH"
+    ),
 
     // YOLOv8s models (640x640, object detection - small variant)
     YOLOV8S(
@@ -1221,6 +1239,24 @@ enum class OnnxModelType(
         quantIOOutputScale = 2.582962f,
         quantIOOutputZeroPoint = 10.0f
     ),
+    YOLOV8S_INT8_QDQ_NOH(
+        displayName = "YOLOv8s INT8 (QDQ NoHead)",
+        filename = "yolov8s_int8_qdq_noh.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QDQ_NOH"
+    ),
+    YOLOV8S_INT8_QDQ_PC_NOH(
+        displayName = "YOLOv8s INT8 (QDQ PC+NoHead)",
+        filename = "yolov8s_int8_qdq_pc_noh.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QDQ_PC_NOH"
+    ),
 
     // YOLOv8m models (640x640, object detection - medium variant)
     YOLOV8M(
@@ -1254,6 +1290,24 @@ enum class OnnxModelType(
         quantIOZeroPoint = 0.0f,
         quantIOOutputScale = 2.571079f,
         quantIOOutputZeroPoint = 9.0f
+    ),
+    YOLOV8M_INT8_QDQ_NOH(
+        displayName = "YOLOv8m INT8 (QDQ NoHead)",
+        filename = "yolov8m_int8_qdq_noh.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QDQ_NOH"
+    ),
+    YOLOV8M_INT8_QDQ_PC_NOH(
+        displayName = "YOLOv8m INT8 (QDQ PC+NoHead)",
+        filename = "yolov8m_int8_qdq_pc_noh.onnx",
+        inputWidth = 640,
+        inputHeight = 640,
+        inputChannels = 3,
+        isQuantized = true,
+        precision = "INT8_QDQ_PC_NOH"
     ),
 
     // E2E models: pre/post processing baked into ONNX graph

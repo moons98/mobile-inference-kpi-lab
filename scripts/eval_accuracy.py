@@ -36,19 +36,33 @@ MODEL_VARIANTS = {
     "yolov8n": {
         "fp32": "yolov8n.onnx",
         "qdq": "yolov8n_int8_qdq.onnx",
+        "qdq_pc": "yolov8n_int8_qdq_pc.onnx",
+        "qdq_noh": "yolov8n_int8_qdq_noh.onnx",
+        "qdq_pc_noh": "yolov8n_int8_qdq_pc_noh.onnx",
         "qio": "yolov8n_int8_qio.onnx",
     },
     "yolov8s": {
         "fp32": "yolov8s.onnx",
         "qdq": "yolov8s_int8_qdq.onnx",
+        "qdq_pc": "yolov8s_int8_qdq_pc.onnx",
+        "qdq_noh": "yolov8s_int8_qdq_noh.onnx",
+        "qdq_pc_noh": "yolov8s_int8_qdq_pc_noh.onnx",
         "qio": "yolov8s_int8_qio.onnx",
     },
     "yolov8m": {
         "fp32": "yolov8m.onnx",
         "qdq": "yolov8m_int8_qdq.onnx",
+        "qdq_pc": "yolov8m_int8_qdq_pc.onnx",
+        "qdq_noh": "yolov8m_int8_qdq_noh.onnx",
+        "qdq_pc_noh": "yolov8m_int8_qdq_pc_noh.onnx",
         "qio": "yolov8m_int8_qio.onnx",
     },
 }
+
+# Variants that use standard FP32 I/O (evaluable by ultralytics val())
+ULTRALYTICS_VARIANTS = {"fp32", "qdq", "qdq_pc", "qdq_noh", "qdq_pc_noh"}
+# Variants that need ONNX Runtime fallback (UINT8 I/O)
+ORT_FALLBACK_VARIANTS = {"qio"}
 
 # COCO val2017 path (auto-downloaded by ultralytics)
 # Used only for QIO fallback evaluation
@@ -299,6 +313,9 @@ def _extract_output_quant_params(qdq_model_path: Path) -> tuple:
 # Comparison report
 # ============================================================
 
+OUTPUTS_DIR = SCRIPTS_DIR.parent / "outputs"
+
+
 def evaluate_and_report(model_name: str, variants: list):
     """Evaluate model variants and print comparison table."""
     results = {}
@@ -317,30 +334,33 @@ def evaluate_and_report(model_name: str, variants: list):
         print(f"Evaluating: {label} ({filename})")
         print(f"{'=' * 60}")
 
-        if variant == "qio":
+        if variant in ORT_FALLBACK_VARIANTS:
             metrics = eval_qio_model(model_path)
         else:
             metrics = eval_with_ultralytics(model_path)
 
         if metrics:
+            # Add model file size
+            metrics["size_mb"] = model_path.stat().st_size / 1024 / 1024
             results[label] = metrics
 
     _print_comparison(model_name, results)
+    _save_comparison(model_name, results)
     return results
 
 
-def _print_comparison(model_name: str, results: dict):
-    """Print formatted comparison table."""
+def _format_comparison(model_name: str, results: dict) -> str:
+    """Format comparison table as string."""
     if not results:
-        print("\nNo results to compare.")
-        return
+        return ""
 
-    print(f"\n\n{'=' * 90}")
-    print(f"Accuracy Comparison: {model_name}")
-    print(f"{'=' * 90}")
-    print(f"{'Model':<25} {'mAP@.5:.95':>10} {'Delta':>8} {'mAP@.5':>10} {'mAP@.75':>10} "
-          f"{'Small':>8} {'Medium':>8} {'Large':>8}")
-    print("-" * 90)
+    lines = []
+    lines.append(f"{'=' * 100}")
+    lines.append(f"Accuracy Comparison: {model_name}")
+    lines.append(f"{'=' * 100}")
+    lines.append(f"{'Model':<25} {'Size(MB)':>8} {'mAP@.5:.95':>10} {'Delta':>8} "
+                 f"{'mAP@.5':>10} {'mAP@.75':>10} {'Small':>8} {'Medium':>8} {'Large':>8}")
+    lines.append("-" * 100)
 
     fp32_map = None
     for label, m in results.items():
@@ -353,14 +373,48 @@ def _print_comparison(model_name: str, results: dict):
             pct = (diff / fp32_map * 100) if fp32_map > 0 else 0
             delta = f"{pct:+.1f}%"
 
-        print(f"{label:<25} {m.get('mAP50_95', 0):>10.4f} {delta:>8} "
-              f"{m.get('mAP50', 0):>10.4f} {m.get('mAP75', 0):>10.4f} "
-              f"{m.get('mAP_small', 0):>8.4f} {m.get('mAP_medium', 0):>8.4f} "
-              f"{m.get('mAP_large', 0):>8.4f}")
+        lines.append(f"{label:<25} {m.get('size_mb', 0):>8.2f} "
+                     f"{m.get('mAP50_95', 0):>10.4f} {delta:>8} "
+                     f"{m.get('mAP50', 0):>10.4f} {m.get('mAP75', 0):>10.4f} "
+                     f"{m.get('mAP_small', 0):>8.4f} {m.get('mAP_medium', 0):>8.4f} "
+                     f"{m.get('mAP_large', 0):>8.4f}")
 
-    print("-" * 90)
+    lines.append("-" * 100)
     if fp32_map:
-        print(f"  Delta = relative mAP@.5:.95 change from FP32 baseline")
+        lines.append(f"  Delta = relative mAP@.5:.95 change from FP32 baseline")
+    lines.append("")
+    lines.append("Quantization Strategies:")
+    lines.append("  QDQ          = per-tensor, full graph INT8")
+    lines.append("  QDQ_PC       = per-channel Conv weights, full graph INT8")
+    lines.append("  QDQ_NOH      = per-tensor, detection head (model.22) in FP32")
+    lines.append("  QDQ_PC_NOH   = per-channel Conv weights, detection head in FP32")
+    lines.append("  QIO          = QuantizeIO (INT8 I/O, uint8 input/output)")
+    return "\n".join(lines)
+
+
+def _print_comparison(model_name: str, results: dict):
+    """Print formatted comparison table."""
+    text = _format_comparison(model_name, results)
+    if text:
+        print(f"\n\n{text}")
+    else:
+        print("\nNo results to compare.")
+
+
+def _save_comparison(model_name: str, results: dict):
+    """Save comparison table to outputs/ directory."""
+    if not results:
+        return
+
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"accuracy_{model_name}_{timestamp}.txt"
+    filepath = OUTPUTS_DIR / filename
+
+    text = _format_comparison(model_name, results)
+    filepath.write_text(text, encoding="utf-8")
+    print(f"\n  Results saved: {filepath}")
 
 
 def check_status():
@@ -393,10 +447,10 @@ def main():
                         help="Check model status")
     parser.add_argument("--model", type=str, choices=["yolov8n", "yolov8s", "yolov8m"],
                         help="Model to evaluate")
-    parser.add_argument("--variant", type=str, choices=["fp32", "qdq", "qio"],
-                        help="Specific variant (default: fp32)")
+    parser.add_argument("--variant", type=str, nargs="+",
+                        help="Variant(s) to evaluate (fp32, qdq, qdq_pc, qdq_pc_noh, qio)")
     parser.add_argument("--all-variants", action="store_true",
-                        help="Evaluate FP32 + QDQ + QIO")
+                        help="Evaluate all available variants for the model")
     parser.add_argument("--compare-all", action="store_true",
                         help="All models x all variants")
 
@@ -408,34 +462,34 @@ def main():
 
     if args.compare_all:
         all_results = {}
-        for model_name in MODEL_VARIANTS:
-            results = evaluate_and_report(model_name, ["fp32", "qdq", "qio"])
+        for model_name, variants in MODEL_VARIANTS.items():
+            results = evaluate_and_report(model_name, list(variants.keys()))
             if results:
                 all_results.update(results)
 
-        # Print grand summary
         if all_results:
-            print(f"\n\n{'=' * 90}")
-            print("Grand Summary: All Models")
-            print(f"{'=' * 90}")
             _print_comparison("all", all_results)
+            _save_comparison("all", all_results)
         return
 
     if args.model:
+        available = list(MODEL_VARIANTS.get(args.model, {}).keys())
         if args.all_variants:
-            variants = ["fp32", "qdq", "qio"]
+            variants = available
         elif args.variant:
-            variants = [args.variant]
+            variants = args.variant
         else:
             variants = ["fp32"]
         evaluate_and_report(args.model, variants)
         return
 
     parser.print_help()
+    print(f"\nAvailable variants: fp32, qdq, qdq_pc, qdq_pc_noh, qio")
     print("\nExamples:")
-    print("  python eval_accuracy.py --model yolov8n --all-variants   # n: FP32 vs QDQ vs QIO")
-    print("  python eval_accuracy.py --compare-all                    # All models x all variants")
-    print("  python eval_accuracy.py --model yolov8m --variant qdq    # Single variant")
+    print("  python eval_accuracy.py --model yolov8n --all-variants")
+    print("  python eval_accuracy.py --model yolov8n --variant fp32 qdq qdq_pc qdq_pc_noh")
+    print("  python eval_accuracy.py --compare-all")
+    print("  python eval_accuracy.py --model yolov8n --variant qdq_pc")
 
 
 if __name__ == "__main__":

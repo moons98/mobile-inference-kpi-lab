@@ -18,8 +18,8 @@
         { "model": "YOLOV8N", "executionProvider": "CPU" },
         { "model": "YOLOV8N", "executionProvider": "QNN_GPU" },
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU" },
-        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU" }
+        { "model": "YOLOV8N_INT8_QDQ_NOH", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8N_INT8_QDQ_PC_NOH", "executionProvider": "QNN_NPU", "useNpuFp16": true }
       ]
     },
     {
@@ -29,8 +29,8 @@
         { "model": "YOLOV8S", "executionProvider": "CPU" },
         { "model": "YOLOV8S", "executionProvider": "QNN_GPU" },
         { "model": "YOLOV8S", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8S_INT8_QDQ", "executionProvider": "QNN_NPU" },
-        { "model": "YOLOV8S_INT8_QIO", "executionProvider": "QNN_NPU" }
+        { "model": "YOLOV8S_INT8_QDQ_NOH", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8S_INT8_QDQ_PC_NOH", "executionProvider": "QNN_NPU", "useNpuFp16": true }
       ]
     },
     {
@@ -40,8 +40,8 @@
         { "model": "YOLOV8M", "executionProvider": "CPU" },
         { "model": "YOLOV8M", "executionProvider": "QNN_GPU" },
         { "model": "YOLOV8M", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU" },
-        { "model": "YOLOV8M_INT8_QIO", "executionProvider": "QNN_NPU" }
+        { "model": "YOLOV8M_INT8_QDQ_NOH", "executionProvider": "QNN_NPU", "useNpuFp16": true },
+        { "model": "YOLOV8M_INT8_QDQ_PC_NOH", "executionProvider": "QNN_NPU", "useNpuFp16": true }
       ]
     },
     {

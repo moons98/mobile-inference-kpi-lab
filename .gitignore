@@ -68,6 +68,7 @@ outputs/
 # Logs
 *.log
 logs/
+runs/
 
 # Temporary
 tmp/
@@ -77,6 +78,7 @@ temp/
 # Dataset (COCO val2017 — shared by calibration and accuracy evaluation)
 scripts/coco_val2017
 
-#
+# weight
+weights/
+
 deprecated/
-runs/

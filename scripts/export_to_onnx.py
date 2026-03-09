@@ -44,11 +44,45 @@ MODELS = {
         "source": "ultralytics",
         "variant": "n",
         "filename_static": "yolov8n_int8_qdq.onnx",
-        "description": "YOLOv8n (INT8) - ultralytics + onnxruntime quantization",
+        "description": "YOLOv8n INT8 QDQ baseline (per-tensor, full graph)",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
         "dtype": "INT8",
         "quantize": True,
+        "quant_strategy": "baseline",
+    },
+    "yolov8n-quantized-pc": {
+        "source": "ultralytics",
+        "variant": "n",
+        "filename_static": "yolov8n_int8_qdq_pc.onnx",
+        "description": "YOLOv8n INT8 QDQ per-channel (full graph)",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+        "quant_strategy": "per_channel",
+    },
+    "yolov8n-quantized-noh": {
+        "source": "ultralytics",
+        "variant": "n",
+        "filename_static": "yolov8n_int8_qdq_noh.onnx",
+        "description": "YOLOv8n INT8 QDQ per-tensor + head excluded (FP32 head)",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+        "quant_strategy": "exclude_head",
+    },
+    "yolov8n-quantized-pc-noh": {
+        "source": "ultralytics",
+        "variant": "n",
+        "filename_static": "yolov8n_int8_qdq_pc_noh.onnx",
+        "description": "YOLOv8n INT8 QDQ per-channel + head excluded (FP32 head)",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+        "quant_strategy": "per_channel_exclude_head",
     },
     "yolov8s": {
         "source": "ultralytics",
@@ -63,11 +97,45 @@ MODELS = {
         "source": "ultralytics",
         "variant": "s",
         "filename_static": "yolov8s_int8_qdq.onnx",
-        "description": "YOLOv8s (INT8) - ultralytics + onnxruntime quantization",
+        "description": "YOLOv8s INT8 QDQ baseline (per-tensor, full graph)",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
         "dtype": "INT8",
         "quantize": True,
+        "quant_strategy": "baseline",
+    },
+    "yolov8s-quantized-pc": {
+        "source": "ultralytics",
+        "variant": "s",
+        "filename_static": "yolov8s_int8_qdq_pc.onnx",
+        "description": "YOLOv8s INT8 QDQ per-channel (full graph)",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+        "quant_strategy": "per_channel",
+    },
+    "yolov8s-quantized-noh": {
+        "source": "ultralytics",
+        "variant": "s",
+        "filename_static": "yolov8s_int8_qdq_noh.onnx",
+        "description": "YOLOv8s INT8 QDQ per-tensor + head excluded (FP32 head)",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+        "quant_strategy": "exclude_head",
+    },
+    "yolov8s-quantized-pc-noh": {
+        "source": "ultralytics",
+        "variant": "s",
+        "filename_static": "yolov8s_int8_qdq_pc_noh.onnx",
+        "description": "YOLOv8s INT8 QDQ per-channel + head excluded (FP32 head)",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+        "quant_strategy": "per_channel_exclude_head",
     },
     "yolov8m": {
         "source": "ultralytics",
@@ -82,24 +150,60 @@ MODELS = {
         "source": "ultralytics",
         "variant": "m",
         "filename_static": "yolov8m_int8_qdq.onnx",
-        "description": "YOLOv8m (INT8) - ultralytics + onnxruntime quantization",
+        "description": "YOLOv8m INT8 QDQ baseline (per-tensor, full graph)",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
         "dtype": "INT8",
         "quantize": True,
+        "quant_strategy": "baseline",
+    },
+    "yolov8m-quantized-pc": {
+        "source": "ultralytics",
+        "variant": "m",
+        "filename_static": "yolov8m_int8_qdq_pc.onnx",
+        "description": "YOLOv8m INT8 QDQ per-channel (full graph)",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+        "quant_strategy": "per_channel",
+    },
+    "yolov8m-quantized-noh": {
+        "source": "ultralytics",
+        "variant": "m",
+        "filename_static": "yolov8m_int8_qdq_noh.onnx",
+        "description": "YOLOv8m INT8 QDQ per-tensor + head excluded (FP32 head)",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+        "quant_strategy": "exclude_head",
+    },
+    "yolov8m-quantized-pc-noh": {
+        "source": "ultralytics",
+        "variant": "m",
+        "filename_static": "yolov8m_int8_qdq_pc_noh.onnx",
+        "description": "YOLOv8m INT8 QDQ per-channel + head excluded (FP32 head)",
+        "input_shape": [1, 3, 640, 640],
+        "output": "Object detection boxes",
+        "dtype": "INT8",
+        "quantize": True,
+        "quant_strategy": "per_channel_exclude_head",
     },
 }
 
 ASSETS_DIR = Path(__file__).parent.parent / "android" / "app" / "src" / "main" / "assets"
 
 
-def export_yolov8(variant: str, output_path: Path, quantize: bool = False) -> bool:
+def export_yolov8(variant: str, output_path: Path, quantize: bool = False,
+                  quant_strategy: str = "baseline") -> bool:
     """Export YOLOv8 variant from ultralytics to ONNX.
 
     Args:
         variant: Model variant letter (e.g., "n", "m", "l", "x")
         output_path: Destination path for the ONNX model
         quantize: Whether to quantize to INT8
+        quant_strategy: baseline / per_channel / per_channel_exclude_head
     """
     try:
         from ultralytics import YOLO
@@ -112,6 +216,18 @@ def export_yolov8(variant: str, output_path: Path, quantize: bool = False) -> bo
     pt_file = f"{model_name}.pt"
 
     try:
+        # For quantization, reuse existing FP32 model if available in assets
+        if quantize:
+            existing_fp32 = output_path.parent / f"{model_name}.onnx"
+            if existing_fp32.exists():
+                print(f"Reusing existing FP32 model: {existing_fp32}")
+                fp32_path = output_path.with_suffix(".fp32.onnx")
+                shutil.copy(str(existing_fp32), str(fp32_path))
+                return quantize_onnx_model(fp32_path, output_path,
+                                           input_shape=[1, 3, 640, 640],
+                                           strategy=quant_strategy)
+
+        from ultralytics import YOLO
         print(f"Loading {model_name} from ultralytics...")
         model = YOLO(pt_file)
 
@@ -140,7 +256,9 @@ def export_yolov8(variant: str, output_path: Path, quantize: bool = False) -> bo
                 pt_path.unlink()
 
             if quantize:
-                return quantize_onnx_model(fp32_path, output_path, input_shape=[1, 3, 640, 640])
+                return quantize_onnx_model(fp32_path, output_path,
+                                           input_shape=[1, 3, 640, 640],
+                                           strategy=quant_strategy)
 
             return True
         else:
@@ -243,26 +361,29 @@ class ImageCalibrationDataReader:
         self.current = 0
 
 
-def quantize_onnx_model(input_path: Path, output_path: Path, input_shape: list = None) -> bool:
-    """Quantize ONNX model to INT8 (static/QDQ) using onnxruntime.
+def quantize_onnx_model(input_path: Path, output_path: Path,
+                        input_shape: list = None, strategy: str = "baseline") -> bool:
+    """Quantize ONNX model to INT8 (QDQ) using QNN-optimized config.
 
     Args:
         input_path: Path to FP32 ONNX model
         output_path: Path to save quantized model
         input_shape: Input shape for static quantization calibration
+        strategy: baseline / per_channel / per_channel_exclude_head
 
     Returns:
         True if successful, False otherwise
     """
     try:
         import onnxruntime.quantization  # noqa: F401
+        from onnxruntime.quantization.execution_providers.qnn import get_qnn_qdq_config  # noqa: F401
     except ImportError:
-        print("Error: onnxruntime.quantization not available")
+        print("Error: onnxruntime.quantization with QNN support not available")
         print("Install with: pip install onnxruntime")
         return False
 
     try:
-        return quantize_static_onnx(input_path, output_path, input_shape)
+        return quantize_static_onnx(input_path, output_path, input_shape, strategy=strategy)
 
     except Exception as e:
         print(f"Quantization failed: {e}")
@@ -319,87 +440,129 @@ def preprocess_for_quantization(input_path: Path) -> Path:
         return input_path
 
 
-def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list = None) -> bool:
-    """Static quantization (QDQ format - supported by QNN EP)."""
-    global CALIBRATION_DATA_PATH, CALIBRATION_SAMPLES, CALIBRATION_METHOD
+def get_yolov8_head_nodes(model_path: str) -> list:
+    """Extract YOLOv8 detection head node names (model.22/*) from ONNX graph.
 
-    from onnxruntime.quantization import quantize_static, QuantType, QuantFormat, CalibrationMethod
+    The detection head contains box regression (cv2), classification (cv3),
+    DFL processing, and output concat/reshape. Excluding these from quantization
+    preserves confidence score precision while keeping backbone+neck in INT8.
+    """
     import onnx
+    model = onnx.load(str(model_path))
+    head_nodes = [node.name for node in model.graph.node if "/model.22/" in node.name]
+    return head_nodes
 
-    print(f"Quantizing (static/QDQ) to INT8: {output_path}")
-    print("  [OK] QDQ format supported by QNN EP for NPU acceleration")
 
-    # Preprocess model for better quantization
-    preprocessed_path = preprocess_for_quantization(input_path)
+def create_calibration_reader(input_name: str, input_shape: list):
+    """Create calibration data reader from available sources."""
+    global CALIBRATION_DATA_PATH, CALIBRATION_SAMPLES
 
-    # Get input name and shape from model if not provided
-    model = onnx.load(str(preprocessed_path))
-    input_info = model.graph.input[0]
-    input_name = input_info.name
-
-    if input_shape is None:
-        input_shape = []
-        for dim in input_info.type.tensor_type.shape.dim:
-            input_shape.append(dim.dim_value if dim.dim_value > 0 else 1)
-
-    print(f"  Input: {input_name} {input_shape}")
-
-    # Check if real calibration data is available
     if CALIBRATION_DATA_PATH and Path(CALIBRATION_DATA_PATH).exists():
         print(f"  Using real calibration data: {CALIBRATION_DATA_PATH}")
-        calibration_reader = ImageCalibrationDataReader(
+        return ImageCalibrationDataReader(
             calibration_dir=str(CALIBRATION_DATA_PATH),
             input_name=input_name,
             input_shape=input_shape,
             num_samples=CALIBRATION_SAMPLES
         )
-    else:
-        # Check default COCO val2017 location (shared with eval_accuracy.py)
-        default_coco = Path(__file__).parent / "coco_val2017" / "val2017"
 
-        if default_coco.exists() and any(default_coco.glob("*.jpg")):
-            print(f"  Using COCO val2017 calibration data: {default_coco}")
-            calibration_reader = ImageCalibrationDataReader(
-                calibration_dir=str(default_coco),
-                input_name=input_name,
-                input_shape=input_shape,
-                num_samples=CALIBRATION_SAMPLES
-            )
-        else:
-            print(f"  Using synthetic calibration data ({CALIBRATION_SAMPLES} samples)")
-            print("  [!] For better accuracy, run: python eval_accuracy.py --setup")
-            calibration_reader = RandomCalibrationDataReader(
-                input_name=input_name,
-                input_shape=input_shape,
-                num_samples=CALIBRATION_SAMPLES
-            )
+    default_coco = Path(__file__).parent / "coco_val2017" / "val2017"
+    if default_coco.exists() and any(default_coco.glob("*.jpg")):
+        print(f"  Using COCO val2017 calibration data: {default_coco}")
+        return ImageCalibrationDataReader(
+            calibration_dir=str(default_coco),
+            input_name=input_name,
+            input_shape=input_shape,
+            num_samples=CALIBRATION_SAMPLES
+        )
 
-    # Select calibration method
+    print(f"  Using synthetic calibration data ({CALIBRATION_SAMPLES} samples)")
+    print("  [!] For better accuracy, run: python eval_accuracy.py --setup")
+    return RandomCalibrationDataReader(
+        input_name=input_name,
+        input_shape=input_shape,
+        num_samples=CALIBRATION_SAMPLES
+    )
+
+
+def quantize_static_onnx(input_path: Path, output_path: Path,
+                         input_shape: list = None, strategy: str = "baseline") -> bool:
+    """Static quantization using QNN-optimized config.
+
+    Strategies:
+        baseline:                  per-tensor, full graph quantization
+        per_channel:               per-channel Conv weights, full graph
+        exclude_head:              per-tensor + detection head (model.22) in FP32
+        per_channel_exclude_head:  per-channel + detection head (model.22) in FP32
+    """
+    global CALIBRATION_DATA_PATH, CALIBRATION_SAMPLES, CALIBRATION_METHOD
+
+    from onnxruntime.quantization import quantize, CalibrationMethod
+    from onnxruntime.quantization.execution_providers.qnn import get_qnn_qdq_config
+    import onnx
+
+    strategy_labels = {
+        "baseline": "per-tensor, full graph",
+        "per_channel": "per-channel Conv, full graph",
+        "exclude_head": "per-tensor, head excluded (FP32)",
+        "per_channel_exclude_head": "per-channel Conv, head excluded (FP32)",
+    }
+    print(f"Quantizing (QNN QDQ) to INT8: {output_path}")
+    print(f"  Strategy: {strategy_labels.get(strategy, strategy)}")
+
+    # Preprocess model for better quantization
+    preprocessed_path = preprocess_for_quantization(input_path)
+
+    # Get input info from model
+    model = onnx.load(str(preprocessed_path))
+    input_info = model.graph.input[0]
+    input_name = input_info.name
+    if input_shape is None:
+        input_shape = [
+            dim.dim_value if dim.dim_value > 0 else 1
+            for dim in input_info.type.tensor_type.shape.dim
+        ]
+    print(f"  Input: {input_name} {input_shape}")
+
+    # Create calibration reader
+    calibration_reader = create_calibration_reader(input_name, input_shape)
+
+    # Calibration method
     if CALIBRATION_METHOD == "minmax":
         calib_method = CalibrationMethod.MinMax
-        extra_opts = {}
-        print(f"  Calibration: MinMax")
+        print("  Calibration: MinMax")
     else:
-        # Percentile is more robust than MinMax for detection models:
-        # MinMax is sensitive to outliers and can compress the confidence distribution,
-        # causing all detections to fall below threshold.
         calib_method = CalibrationMethod.Percentile
-        extra_opts = {
-            "CalibPercentile": 99.99,
-            "ActivationSymmetric": False,
-            "WeightSymmetric": True,
-        }
-        print(f"  Calibration: Percentile (99.99th)")
+        print("  Calibration: Percentile (99.99th)")
 
-    quantize_static(
+    # Strategy-specific options
+    per_channel = strategy in ("per_channel", "per_channel_exclude_head")
+    nodes_to_exclude = None
+    if strategy in ("exclude_head", "per_channel_exclude_head"):
+        nodes_to_exclude = get_yolov8_head_nodes(str(preprocessed_path))
+        print(f"  Excluding {len(nodes_to_exclude)} head nodes (model.22/*)")
+
+    print(f"  Per-channel: {per_channel}")
+
+    # Build QNN-optimized config
+    # get_qnn_qdq_config auto-handles:
+    #   - QDQ format with QUInt8 activations
+    #   - Per-channel axis for Conv weights (axis 0)
+    #   - MatMul forced to per-tensor (QNN limitation)
+    #   - Proper weight symmetry settings
+    qnn_config = get_qnn_qdq_config(
+        model_input=str(preprocessed_path),
+        calibration_data_reader=calibration_reader,
+        calibrate_method=calib_method,
+        per_channel=per_channel,
+        nodes_to_exclude=nodes_to_exclude,
+        activation_symmetric=False,
+    )
+
+    quantize(
         model_input=str(preprocessed_path),
         model_output=str(output_path),
-        calibration_data_reader=calibration_reader,
-        quant_format=QuantFormat.QDQ,
-        activation_type=QuantType.QUInt8,
-        weight_type=QuantType.QInt8,
-        calibrate_method=calib_method,
-        extra_options=extra_opts if extra_opts else None,
+        quant_config=qnn_config,
     )
 
     if not output_path.exists():
@@ -408,7 +571,7 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
 
     print(f"Quantized: {output_path.name} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
 
-    # Remove intermediate files only after successful quantization
+    # Remove intermediate files
     if preprocessed_path != input_path and preprocessed_path.exists():
         preprocessed_path.unlink()
     if input_path != output_path and input_path.exists():
@@ -449,7 +612,9 @@ def export_model(model_key: str, output_dir: Path) -> list:
     success = False
     if model["source"] == "ultralytics":
         variant = model.get("variant", "n")
-        success = export_yolov8(variant, dest, quantize=quantize)
+        quant_strategy = model.get("quant_strategy", "baseline")
+        success = export_yolov8(variant, dest, quantize=quantize,
+                                quant_strategy=quant_strategy)
     else:
         print(f"Unknown source: {model['source']}")
 
@@ -518,34 +683,10 @@ def main():
         description="Export models from ultralytics to ONNX for mobile inference"
     )
     parser.add_argument(
-        "--export-yolov8n",
-        action="store_true",
-        help="Export YOLOv8n FP32 from ultralytics"
-    )
-    parser.add_argument(
-        "--export-yolov8n-quantized",
-        action="store_true",
-        help="Export YOLOv8n INT8 quantized"
-    )
-    parser.add_argument(
-        "--export-yolov8s",
-        action="store_true",
-        help="Export YOLOv8s FP32 from ultralytics"
-    )
-    parser.add_argument(
-        "--export-yolov8s-quantized",
-        action="store_true",
-        help="Export YOLOv8s INT8 quantized"
-    )
-    parser.add_argument(
-        "--export-yolov8m",
-        action="store_true",
-        help="Export YOLOv8m FP32 from ultralytics"
-    )
-    parser.add_argument(
-        "--export-yolov8m-quantized",
-        action="store_true",
-        help="Export YOLOv8m INT8 quantized"
+        "--export",
+        nargs="+",
+        metavar="MODEL",
+        help="Model keys to export (e.g., yolov8n yolov8n-quantized yolov8n-quantized-pc)"
     )
     parser.add_argument(
         "--export-all",
@@ -605,29 +746,21 @@ def main():
     exports = []
     if args.export_all:
         exports = list(MODELS.keys())
-    else:
-        if args.export_yolov8n:
-            exports.append("yolov8n")
-        if args.export_yolov8n_quantized:
-            exports.append("yolov8n-quantized")
-        if args.export_yolov8s:
-            exports.append("yolov8s")
-        if args.export_yolov8s_quantized:
-            exports.append("yolov8s-quantized")
-        if args.export_yolov8m:
-            exports.append("yolov8m")
-        if args.export_yolov8m_quantized:
-            exports.append("yolov8m-quantized")
+    elif args.export:
+        for key in args.export:
+            if key in MODELS:
+                exports.append(key)
+            else:
+                print(f"Unknown model: {key}")
+                print(f"Available: {', '.join(MODELS.keys())}")
+                return
 
     if not exports:
         parser.print_help()
+        print(f"\nAvailable models: {', '.join(MODELS.keys())}")
         print("\nExamples:")
-        print("  python export_to_onnx.py --export-yolov8n")
-        print("  python export_to_onnx.py --export-yolov8s")
-        print("  python export_to_onnx.py --export-yolov8m")
-        print("  python export_to_onnx.py --export-yolov8n-quantized")
-        print("  python export_to_onnx.py --export-yolov8s-quantized")
-        print("  python export_to_onnx.py --export-yolov8m-quantized")
+        print("  python export_to_onnx.py --export yolov8n")
+        print("  python export_to_onnx.py --export yolov8n-quantized yolov8n-quantized-pc yolov8n-quantized-pc-noh")
         print("  python export_to_onnx.py --export-all")
         print("  python export_to_onnx.py --list")
         print("  python export_to_onnx.py --status")
