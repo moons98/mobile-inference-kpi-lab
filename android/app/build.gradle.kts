@@ -17,6 +17,8 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+
+        buildConfigField("String", "ORT_VERSION", "\"1.23.2\"")
     }
 
     buildTypes {

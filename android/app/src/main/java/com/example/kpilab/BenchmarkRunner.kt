@@ -87,7 +87,6 @@ class BenchmarkRunner(
         private const val MEMORY_METRICS_INTERVAL_MS = 5000L  // 5 seconds
         private const val COOLDOWN_SECONDS = 30  // Cooldown between batch experiments
         private const val WARMUP_ITERATIONS = 10  // Always run warm-up for steady-state
-        private const val PROFILING_ITERATIONS = 50  // ORT profiling phase (separate from main loop)
     }
 
     private val _progress = MutableStateFlow(BenchmarkProgress())
@@ -218,7 +217,8 @@ class BenchmarkRunner(
                 config.executionProvider,
                 config.useNpuFp16,
                 config.useContextCache,
-                config.htpPerformanceMode
+                config.htpPerformanceMode,
+                config.phase
             )
         }
 
@@ -276,11 +276,6 @@ class BenchmarkRunner(
             runner.runWarmUp(WARMUP_ITERATIONS)
         }
 
-        // Dedicated profiling phase
-        withContext(Dispatchers.IO) {
-            runner.runProfilingPhase(PROFILING_ITERATIONS)
-        }
-
         _progress.value = _progress.value.copy(state = BenchmarkState.RUNNING)
         startTimeMs = System.currentTimeMillis()
 
@@ -294,12 +289,6 @@ class BenchmarkRunner(
         when (config.phase) {
             BenchmarkPhase.BURST -> runBurstLoop(config, runner)
             BenchmarkPhase.SUSTAINED -> runSustainedLoop(config, runner)
-        }
-
-        // Run pipeline benchmark (overlap simulation)
-        _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
-        withContext(Dispatchers.IO) {
-            runner.runPipelineBenchmark(iterations = 100)
         }
 
         // End session
@@ -325,45 +314,38 @@ class BenchmarkRunner(
     /**
      * Phase 1: Burst Latency Test
      * Fixed iterations with sleep between each inference.
+     * Records inference breakdown only (inputCreate + run + outputCopy).
+     * ORT profiling runs during entire loop for NPU/CPU/fence breakdown.
      * Input: Camera Single (same frame repeated)
      */
     private suspend fun runBurstLoop(config: BenchmarkConfig, runner: OrtRunner) {
         var inferenceCount = 0
         val intervalMs = config.intervalMs
         val totalIterations = config.iterations
-        var prevOverlayMs = 0f
 
-        Log.i(TAG, "=== Phase 1: Burst Latency ($totalIterations iterations, ${config.frequencyHz} Hz) ===")
+        Log.i(TAG, "=== Phase 1: Burst Latency ($totalIterations iterations, ${config.frequencyHz} Hz, profiling=ON) ===")
 
         for (i in 0 until totalIterations) {
             if (!currentCoroutineContext().isActive) break
 
             val loopStart = System.currentTimeMillis()
 
-            // Acquire frame (Camera Single returns cached frame after first)
-            var acquireMs = 0f
-            if (config.inputMode == InputMode.CAMERA_SINGLE || config.inputMode == InputMode.CAMERA_LIVE) {
-                val acquireStart = System.nanoTime()
+            // Acquire frame for source data (not timed — Phase 1 measures inference only)
+            if (config.inputMode != InputMode.STATIC_IMAGE) {
                 val frame = acquireCameraFrame(config.inputMode)
-                acquireMs = ((System.nanoTime() - acquireStart) / 1_000_000.0).toFloat()
                 if (frame != null) {
                     runner.setSourceBitmap(frame.first)
                 }
             }
 
-            // Read previous frame's overlay draw time
-            val overlayMs = prevOverlayMs
-
-            // Run inference (passes previous frame's overlay time for recording)
+            // Run inference (Phase 1: records inference breakdown only)
             val outcome = withContext(Dispatchers.IO) {
-                runner.runInference(acquireMs = acquireMs, overlayMs = overlayMs)
+                runner.runInference(phase = BenchmarkPhase.BURST)
             }
 
             if (outcome != null) {
                 inferenceCount++
                 _lastDetections.value = DetectionResult(outcome.detections, outcome.sourceWidth, outcome.sourceHeight)
-                // Next iteration will read the overlay time from this frame's draw
-                prevOverlayMs = overlayView?.lastDrawMs ?: 0f
 
                 val currentElapsed = System.currentTimeMillis() - startTimeMs
                 _progress.value = _progress.value.copy(
@@ -388,6 +370,8 @@ class BenchmarkRunner(
     /**
      * Phase 2: Sustained Throughput Test
      * Target FPS for fixed duration with frame drop tracking.
+     * Records full E2E pipeline (acquire + pre + inference + post + overlay).
+     * ORT profiling OFF — no trace overhead at 30Hz.
      * Input: Camera Live (new frame each iteration)
      */
     private suspend fun runSustainedLoop(config: BenchmarkConfig, runner: OrtRunner) {
@@ -397,7 +381,7 @@ class BenchmarkRunner(
         val targetIntervalMs = intervalMs
         var prevOverlayMs = 0f
 
-        Log.i(TAG, "=== Phase 2: Sustained Throughput (${config.durationMinutes} min, ${config.frequencyHz} Hz target) ===")
+        Log.i(TAG, "=== Phase 2: Sustained Throughput (${config.durationMinutes} min, ${config.frequencyHz} Hz target, profiling=OFF) ===")
 
         while (currentCoroutineContext().isActive) {
             val elapsed = System.currentTimeMillis() - startTimeMs
@@ -405,7 +389,7 @@ class BenchmarkRunner(
 
             val loopStart = System.currentTimeMillis()
 
-            // Acquire live camera frame
+            // Acquire live camera frame (timed — part of E2E)
             var acquireMs = 0f
             if (config.inputMode != InputMode.STATIC_IMAGE) {
                 val acquireStart = System.nanoTime()
@@ -418,9 +402,14 @@ class BenchmarkRunner(
 
             val overlayMs = prevOverlayMs
 
-            // Run inference with frame drop detection
+            // Run inference (Phase 2: records full E2E with frame drop detection)
             val outcome = withContext(Dispatchers.IO) {
-                runner.runInference(acquireMs = acquireMs, targetIntervalMs = targetIntervalMs, overlayMs = overlayMs)
+                runner.runInference(
+                    phase = BenchmarkPhase.SUSTAINED,
+                    acquireMs = acquireMs,
+                    targetIntervalMs = targetIntervalMs,
+                    overlayMs = overlayMs
+                )
             }
 
             if (outcome != null) {
@@ -472,19 +461,16 @@ class BenchmarkRunner(
             // Collect thermal and power every second
             val metrics = kpiCollector.collectAll()
 
-            // Log to runner (memory every 5 seconds, use -1 for "not sampled")
-            val memoryMb = if (elapsed - lastMemoryTime >= MEMORY_METRICS_INTERVAL_MS) {
+            // Log to runner (memory every 5 seconds, forward fill previous value)
+            if (elapsed - lastMemoryTime >= MEMORY_METRICS_INTERVAL_MS) {
                 lastMemoryTime = elapsed
                 lastMemoryValue = metrics.memoryMb
-                metrics.memoryMb
-            } else {
-                -1  // Not sampled this interval
             }
 
             runner.logSystemMetrics(
                 metrics.thermalC,
                 metrics.powerMw,
-                memoryMb
+                lastMemoryValue
             )
 
             // Update progress (keep last known memory value for UI)

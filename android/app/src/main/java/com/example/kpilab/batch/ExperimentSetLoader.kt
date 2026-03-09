@@ -5,7 +5,6 @@ import android.os.Environment
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
-import java.io.File
 import java.io.InputStreamReader
 
 /**
@@ -19,8 +18,6 @@ class ExperimentSetLoader(private val context: Context) {
         private const val TAG = "ExperimentSetLoader"
         private const val FILE_PREFIX = "experiment_sets_"
         private const val FILE_SUFFIX = ".json"
-        // Legacy single file support
-        private const val LEGACY_FILENAME = "experiment_sets.json"
     }
 
     private val gson: Gson = GsonBuilder()
@@ -119,15 +116,7 @@ class ExperimentSetLoader(private val context: Context) {
                 file.name.startsWith(FILE_PREFIX) && file.name.endsWith(FILE_SUFFIX)
             } ?: emptyArray()
 
-            // Also check for legacy single file
-            val legacyFile = File(documentsDir, LEGACY_FILENAME)
-            val allFiles = if (legacyFile.exists() && files.isEmpty()) {
-                arrayOf(legacyFile)
-            } else {
-                files
-            }
-
-            for (file in allFiles.sortedBy { it.name }) {
+            for (file in files.sortedBy { it.name }) {
                 Log.i(TAG, "Loading from external: ${file.name}")
                 try {
                     val config = parseConfig(file.readText())
@@ -164,14 +153,7 @@ class ExperimentSetLoader(private val context: Context) {
                 it.startsWith(FILE_PREFIX) && it.endsWith(FILE_SUFFIX)
             }.sorted()
 
-            // Also check for legacy single file if no split files found
-            val filesToLoad = if (matchingFiles.isEmpty() && LEGACY_FILENAME in assetsList) {
-                listOf(LEGACY_FILENAME)
-            } else {
-                matchingFiles
-            }
-
-            for (filename in filesToLoad) {
+            for (filename in matchingFiles) {
                 Log.i(TAG, "Loading from assets: $filename")
                 try {
                     context.assets.open(filename).use { inputStream ->

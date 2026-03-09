@@ -113,7 +113,7 @@ data class BenchmarkConfig(
             executionProvider: ExecutionProvider,
             useNpuFp16: Boolean = true,
             useContextCache: Boolean = false,
-            htpPerformanceMode: String = "burst"
+            htpPerformanceMode: String = "sustained_high"
         ) = BenchmarkConfig(
             modelType = modelType,
             executionProvider = executionProvider,

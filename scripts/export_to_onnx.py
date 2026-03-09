@@ -7,32 +7,28 @@ Supported models:
 - YOLOv8s (ultralytics) - Object detection (small)
 - YOLOv8m (ultralytics) - Object detection (medium)
 
-Quantization methods:
-- dynamic: Fast, no calibration data needed, but NOT supported by QNN EP (CPU fallback)
-- static: Requires calibration data, fully supported by QNN EP (NPU acceleration)
-- both: Export both dynamic and static versions (default)
+Quantization: static/QDQ format, fully supported by QNN EP (NPU acceleration)
 
 Usage:
     python export_to_onnx.py --export-yolov8n
     python export_to_onnx.py --export-yolov8s
     python export_to_onnx.py --export-yolov8m
-    python export_to_onnx.py --export-yolov8n-quantized --quant-method static
-    python export_to_onnx.py --export-yolov8s-quantized --quant-method static
-    python export_to_onnx.py --export-yolov8m-quantized --quant-method static
-    python export_to_onnx.py --export-all                                # all models, both quant methods
+    python export_to_onnx.py --export-yolov8n-quantized
+    python export_to_onnx.py --export-yolov8s-quantized
+    python export_to_onnx.py --export-yolov8m-quantized
+    python export_to_onnx.py --export-all
     python export_to_onnx.py --list
     python export_to_onnx.py --status
 """
 
 import argparse
 import shutil
-import sys
 from pathlib import Path
 
 # Global settings (will be overridden by CLI args)
-QUANT_METHOD = "both"
 CALIBRATION_DATA_PATH = None
 CALIBRATION_SAMPLES = 100
+CALIBRATION_METHOD = "percentile"  # "minmax" or "percentile"
 
 MODELS = {
     "yolov8n": {
@@ -47,8 +43,7 @@ MODELS = {
     "yolov8n-quantized": {
         "source": "ultralytics",
         "variant": "n",
-        "filename_dynamic": "yolov8n_int8_dynamic.onnx",  # CPU fallback
-        "filename_static": "yolov8n_int8_qdq.onnx",       # NPU supported
+        "filename_static": "yolov8n_int8_qdq.onnx",
         "description": "YOLOv8n (INT8) - ultralytics + onnxruntime quantization",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
@@ -67,8 +62,7 @@ MODELS = {
     "yolov8s-quantized": {
         "source": "ultralytics",
         "variant": "s",
-        "filename_dynamic": "yolov8s_int8_dynamic.onnx",  # CPU fallback
-        "filename_static": "yolov8s_int8_qdq.onnx",       # NPU supported
+        "filename_static": "yolov8s_int8_qdq.onnx",
         "description": "YOLOv8s (INT8) - ultralytics + onnxruntime quantization",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
@@ -87,8 +81,7 @@ MODELS = {
     "yolov8m-quantized": {
         "source": "ultralytics",
         "variant": "m",
-        "filename_dynamic": "yolov8m_int8_dynamic.onnx",  # CPU fallback
-        "filename_static": "yolov8m_int8_qdq.onnx",       # NPU supported
+        "filename_static": "yolov8m_int8_qdq.onnx",
         "description": "YOLOv8m (INT8) - ultralytics + onnxruntime quantization",
         "input_shape": [1, 3, 640, 640],
         "output": "Object detection boxes",
@@ -251,7 +244,7 @@ class ImageCalibrationDataReader:
 
 
 def quantize_onnx_model(input_path: Path, output_path: Path, input_shape: list = None) -> bool:
-    """Quantize ONNX model to INT8 using onnxruntime.
+    """Quantize ONNX model to INT8 (static/QDQ) using onnxruntime.
 
     Args:
         input_path: Path to FP32 ONNX model
@@ -261,8 +254,6 @@ def quantize_onnx_model(input_path: Path, output_path: Path, input_shape: list =
     Returns:
         True if successful, False otherwise
     """
-    global QUANT_METHOD
-
     try:
         import onnxruntime.quantization  # noqa: F401
     except ImportError:
@@ -271,48 +262,13 @@ def quantize_onnx_model(input_path: Path, output_path: Path, input_shape: list =
         return False
 
     try:
-        if QUANT_METHOD == "static":
-            return quantize_static_onnx(input_path, output_path, input_shape)
-        else:
-            return quantize_dynamic_onnx(input_path, output_path)
+        return quantize_static_onnx(input_path, output_path, input_shape)
 
     except Exception as e:
         print(f"Quantization failed: {e}")
         import traceback
         traceback.print_exc()
         return False
-
-
-def quantize_dynamic_onnx(input_path: Path, output_path: Path) -> bool:
-    """Dynamic quantization (NOT supported by QNN EP - will fallback to CPU)."""
-    from onnxruntime.quantization import quantize_dynamic, QuantType
-
-    print(f"Quantizing (dynamic) to INT8: {output_path}")
-    print("  [!] Warning: Dynamic quantization NOT supported by QNN EP")
-    print("  [!] Use --quant-method static for NPU acceleration")
-
-    # Preprocess model for better quantization results
-    preprocessed_path = preprocess_for_quantization(input_path)
-
-    quantize_dynamic(
-        model_input=str(preprocessed_path),
-        model_output=str(output_path),
-        weight_type=QuantType.QUInt8,
-    )
-
-    if not output_path.exists():
-        print("Error: Quantization produced no output")
-        return False
-
-    print(f"Quantized: {output_path.name} ({output_path.stat().st_size / 1024 / 1024:.2f} MB)")
-
-    # Remove intermediate files only after successful quantization
-    if preprocessed_path != input_path and preprocessed_path.exists():
-        preprocessed_path.unlink()
-    if input_path != output_path and input_path.exists():
-        input_path.unlink()
-
-    return True
 
 
 def preprocess_for_quantization(input_path: Path) -> Path:
@@ -365,7 +321,7 @@ def preprocess_for_quantization(input_path: Path) -> Path:
 
 def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list = None) -> bool:
     """Static quantization (QDQ format - supported by QNN EP)."""
-    global CALIBRATION_DATA_PATH, CALIBRATION_SAMPLES
+    global CALIBRATION_DATA_PATH, CALIBRATION_SAMPLES, CALIBRATION_METHOD
 
     from onnxruntime.quantization import quantize_static, QuantType, QuantFormat, CalibrationMethod
     import onnx
@@ -418,7 +374,23 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
                 num_samples=CALIBRATION_SAMPLES
             )
 
-    # Quantize with static method
+    # Select calibration method
+    if CALIBRATION_METHOD == "minmax":
+        calib_method = CalibrationMethod.MinMax
+        extra_opts = {}
+        print(f"  Calibration: MinMax")
+    else:
+        # Percentile is more robust than MinMax for detection models:
+        # MinMax is sensitive to outliers and can compress the confidence distribution,
+        # causing all detections to fall below threshold.
+        calib_method = CalibrationMethod.Percentile
+        extra_opts = {
+            "CalibPercentile": 99.99,
+            "ActivationSymmetric": False,
+            "WeightSymmetric": True,
+        }
+        print(f"  Calibration: Percentile (99.99th)")
+
     quantize_static(
         model_input=str(preprocessed_path),
         model_output=str(output_path),
@@ -426,7 +398,8 @@ def quantize_static_onnx(input_path: Path, output_path: Path, input_shape: list 
         quant_format=QuantFormat.QDQ,
         activation_type=QuantType.QUInt8,
         weight_type=QuantType.QInt8,
-        calibrate_method=CalibrationMethod.MinMax,
+        calibrate_method=calib_method,
+        extra_options=extra_opts if extra_opts else None,
     )
 
     if not output_path.exists():
@@ -462,51 +435,30 @@ def export_model(model_key: str, output_dir: Path) -> list:
 
     exported = []
 
-    # Handle "both" option for quantized models
-    if quantize and QUANT_METHOD == "both":
-        quant_methods = ["dynamic", "static"]
-    elif quantize:
-        quant_methods = [QUANT_METHOD]
+    if quantize:
+        filename = model.get("filename_static", model.get("filename"))
     else:
-        quant_methods = [None]  # FP32 model
+        filename = model["filename"]
 
-    for method in quant_methods:
-        # Select filename based on quantization method
-        if quantize:
-            if method == "static":
-                filename = model.get("filename_static", model.get("filename"))
-            else:
-                filename = model.get("filename_dynamic", model.get("filename"))
-        else:
-            filename = model["filename"]
+    dest = output_dir / filename
 
-        dest = output_dir / filename
+    print("=" * 60)
+    print(f"Exporting {model['description']}")
+    if quantize:
+        print(f"Quantization: static/QDQ → {filename}")
+    print("=" * 60)
 
-        print("=" * 60)
-        print(f"Exporting {model['description']}")
-        if quantize:
-            print(f"Quantization: {method} → {filename}")
-        print("=" * 60)
+    success = False
+    if model["source"] == "ultralytics":
+        variant = model.get("variant", "n")
+        success = export_yolov8(variant, dest, quantize=quantize)
+    else:
+        print(f"Unknown source: {model['source']}")
 
-        # Temporarily set global QUANT_METHOD for quantization functions
-        old_method = QUANT_METHOD
-        if method:
-            QUANT_METHOD = method
+    if success:
+        exported.append((model_key, "static" if quantize else None))
 
-        success = False
-        try:
-            if model["source"] == "ultralytics":
-                variant = model.get("variant", "n")
-                success = export_yolov8(variant, dest, quantize=quantize)
-            else:
-                print(f"Unknown source: {model['source']}")
-        finally:
-            QUANT_METHOD = old_method
-
-        if success:
-            exported.append((model_key, method))
-
-        print()  # Add spacing between exports
+    print()  # Add spacing between exports
 
     return exported
 
@@ -525,8 +477,7 @@ def list_models():
         print(f"    Output: {model['output']}")
         print(f"    Data type: {model['dtype']}")
         if model.get("quantize"):
-            print(f"    Filename (dynamic): {model['filename_dynamic']} [CPU fallback]")
-            print(f"    Filename (static):  {model['filename_static']} [NPU supported]")
+            print(f"    Filename: {model['filename_static']} [static/QDQ, NPU supported]")
         else:
             print(f"    Filename: {model['filename']}")
         print()
@@ -554,15 +505,6 @@ def check_assets():
     print("INT8 quantized models:")
     for model in MODELS.values():
         if model.get("quantize"):
-            # Check dynamic
-            path_dynamic = ASSETS_DIR / model["filename_dynamic"]
-            if path_dynamic.exists():
-                size = path_dynamic.stat().st_size / 1024 / 1024
-                print(f"  [OK] {model['filename_dynamic']} ({size:.2f} MB) [dynamic/CPU]")
-            else:
-                print(f"  [--] {model['filename_dynamic']} (not found) [dynamic/CPU]")
-
-            # Check static
             path_static = ASSETS_DIR / model["filename_static"]
             if path_static.exists():
                 size = path_static.stat().st_size / 1024 / 1024
@@ -629,12 +571,6 @@ def main():
         help=f"Output directory (default: {ASSETS_DIR})"
     )
     parser.add_argument(
-        "--quant-method",
-        choices=["dynamic", "static", "both"],
-        default="both",
-        help="Quantization method: dynamic (CPU fallback), static (NPU supported), or both"
-    )
-    parser.add_argument(
         "--calibration-samples",
         type=int,
         default=100,
@@ -646,13 +582,19 @@ def main():
         default=None,
         help="Path to calibration data directory (images for static quantization)"
     )
+    parser.add_argument(
+        "--calibration-method",
+        choices=["minmax", "percentile"],
+        default="percentile",
+        help="Calibration method: minmax (fast, outlier-sensitive) or percentile (robust, default)"
+    )
     args = parser.parse_args()
 
     # Set global settings
-    global QUANT_METHOD, CALIBRATION_DATA_PATH, CALIBRATION_SAMPLES
-    QUANT_METHOD = args.quant_method
+    global CALIBRATION_DATA_PATH, CALIBRATION_SAMPLES, CALIBRATION_METHOD
     CALIBRATION_DATA_PATH = args.calibration_data
     CALIBRATION_SAMPLES = args.calibration_samples
+    CALIBRATION_METHOD = args.calibration_method
 
     if args.list:
         list_models()
@@ -685,16 +627,12 @@ def main():
         print("  python export_to_onnx.py --export-yolov8n")
         print("  python export_to_onnx.py --export-yolov8s")
         print("  python export_to_onnx.py --export-yolov8m")
-        print("  python export_to_onnx.py --export-yolov8n-quantized --quant-method static")
-        print("  python export_to_onnx.py --export-yolov8s-quantized --quant-method static")
-        print("  python export_to_onnx.py --export-yolov8m-quantized --quant-method static")
-        print("  python export_to_onnx.py --export-all                                      # all models, both quant methods")
+        print("  python export_to_onnx.py --export-yolov8n-quantized")
+        print("  python export_to_onnx.py --export-yolov8s-quantized")
+        print("  python export_to_onnx.py --export-yolov8m-quantized")
+        print("  python export_to_onnx.py --export-all")
         print("  python export_to_onnx.py --list")
         print("  python export_to_onnx.py --status")
-        print("\nQuantization methods:")
-        print("  dynamic: Fast, no calibration needed, but CPU fallback on QNN EP")
-        print("  static:  Uses QDQ format, fully supported by QNN EP for NPU acceleration")
-        print("  both:    Export both dynamic and static versions (default)")
         return
 
     exported = []
@@ -723,13 +661,7 @@ def main():
         print(f"Failed: {', '.join(failed)}")
     print(f"Output directory: {args.output}")
     if any(m for _, m in exported if m):
-        print(f"Quantization method: {args.quant_method}")
-        if args.quant_method == "both":
-            print("  [OK] Both dynamic and static versions exported")
-        elif args.quant_method == "dynamic":
-            print("  [!] Note: Dynamic quantization will fallback to CPU on QNN EP")
-        else:
-            print("  [OK] Static (QDQ) quantization supported by QNN EP")
+        print("  [OK] Static (QDQ) quantization supported by QNN EP")
 
     if exported:
         print()

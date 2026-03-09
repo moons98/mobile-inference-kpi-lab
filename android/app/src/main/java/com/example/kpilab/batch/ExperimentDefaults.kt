@@ -10,7 +10,7 @@ data class ExperimentDefaults(
     val iterations: Int = 100,
     val phase: String = "BURST",
     val inputMode: String = "CAMERA_SINGLE",
-    val useNpuFp16: Boolean = true,
+    val useNpuFp16: Boolean = false,
     val useContextCache: Boolean = false,
     val htpPerformanceMode: String = "burst"
 )

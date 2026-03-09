@@ -24,8 +24,8 @@ Android App (Kotlin)
   ├─ CameraX (ImageAnalysis) → Real-time frame input
   └─ ONNX Runtime 1.23.2
        ├─ CPU EP (ARM Cortex-X3)
-       ├─ QNN EP → QNN SDK v2.34 → Adreno GPU
-       └─ QNN EP → QNN SDK v2.34 → Hexagon HTP (NPU)
+       ├─ QNN EP → QNN SDK v2.42.0 → Adreno GPU
+       └─ QNN EP → QNN SDK v2.42.0 → Hexagon HTP (NPU)
 ```
 
 ### 1.2 왜 ORT + QNN EP인가
@@ -92,9 +92,9 @@ Demo mode (detection overlay on preview)를 UI에서 on/off 할 수 있으나, o
 | 항목 | 값 |
 |------|-----|
 | Runtime | ONNX Runtime 1.23.2 |
-| QNN SDK | v2.34 |
+| QNN SDK | v2.42.0 |
 | Android | API 34 |
-| QNN Options | backend=HTP, perf_mode=burst, context_cache=0 |
+| QNN Options | backend=HTP, perf_mode=burst(Phase1)/sustained_high(Phase2), context_cache=0, graph_finalization=3 |
 
 ### 2.3 실험 조건 통제
 
@@ -140,10 +140,9 @@ Demo mode (detection overlay on preview)를 UI에서 on/off 할 수 있으나, o
 
 ```
 Warmup: 10 iterations (연속, 결과 제외)
-Profiling: 50 iterations (ORT profiling 수집)
-Main loop:
+Main loop (ORT profiling ON):
   for i in 1..100:
-      run full E2E inference
+      run inference (inference breakdown만 기록)
       sleep 500ms
 Input: Camera Single (1장 캡처 후 반복)
 ```
@@ -154,18 +153,28 @@ Input: Camera Single (1장 캡처 후 반복)
 | Sleep | 500ms (2 Hz) | Thermal 축적 방지, scheduling interference 최소화 |
 | Warmup | 10 iterations | JIT, cache warming, HTP initialization 안정화 |
 | Input | Camera Single | 변인 통제 (동일 frame 반복) |
+| ORT Profiling | ON (전체 100회) | NPU/CPU/fence/overhead 분해. 측정 시점 = 기록 시점 |
 
 ### 3.3 실험 구성
 
-#### 실험 1: Backend × Precision (YOLOv8n 고정)
+#### 실험 1: Backend × Precision (모델별)
+
+각 모델(n/s/m)에 대해 동일 구성으로 실행:
 
 | # | Backend | Precision | Model |
 |---|---------|-----------|-------|
-| 1 | CPU | FP32 | YOLOv8n |
-| 2 | GPU | FP32 | YOLOv8n |
-| 3 | NPU | FP16 | YOLOv8n |
-| 4 | NPU | INT8 QDQ | YOLOv8n |
-| 5 | NPU | INT8 QIO | YOLOv8n |
+| 1 | CPU | FP32 | YOLOv8{n,s,m} |
+| 2 | GPU | FP32 | YOLOv8{n,s,m} |
+| 3 | NPU | FP16 | YOLOv8{n,s,m} |
+| 4 | NPU | INT8 QDQ | YOLOv8{n,s,m} |
+| 5 | NPU | INT8 QIO | YOLOv8{n,s,m} |
+
+#### 실험 1b: QuantizeIO 비교 (YOLOv8n)
+
+| # | Backend | Precision | Model |
+|---|---------|-----------|-------|
+| 1 | NPU | INT8 QDQ | YOLOv8n |
+| 2 | NPU | INT8 QIO | YOLOv8n |
 
 #### 실험 2: Model Scale (최적 config 고정)
 
@@ -181,13 +190,14 @@ Input: Camera Single (1장 캡처 후 반복)
 
 | 카테고리 | Metric | 설명 |
 |---------|--------|------|
-| **Latency** | E2E P50 / P95 / Min | 전체 pipeline latency 분포 |
-| | Inference P50 / Min | session.run() only |
-| **Breakdown** | Acquire / PreProc / InCreate / Run / OutCopy / PostProc | E2E 구간별 소요 시간 |
-| **ORT Profiling** | NPU(ms) / CPU(ms) / Fence(ms) / ORT(ms) / NPU% | session.run 내부 분해 |
+| **Latency** | Inference P50 / P95 / Min | Inference breakdown (InCreate + Run + OutCopy) |
+| **Breakdown** | InCreate / Run / OutCopy | inference 구간별 소요 시간 |
+| **ORT Profiling** | NPU(ms) / CPU(ms) / Fence(ms) / ORT overhead(ms) / NPU% | session.run 내부 분해 |
 | | CPU Ops | CPU fallback된 op 목록 |
 | **Cold Start** | Load / Session / 1st Inference | 모델 로드 ~ 첫 추론 완료 |
 | **Graph** | Total / QNN / CPU nodes / Coverage% | Graph partitioning 결과 |
+
+> Phase 1은 inference breakdown만 기록한다. Acquire/PreProc/PostProc은 실행되지만 타이밍하지 않는다 (변인 통제).
 
 ---
 
@@ -203,15 +213,15 @@ Input: Camera Single (1장 캡처 후 반복)
 
 ```
 Warmup: 10 iterations (연속)
-Profiling: 50 iterations (ORT profiling)
-Main loop (5 minutes):
+Main loop (5 minutes, ORT profiling OFF):
   target = 30 Hz (33ms interval)
   for each frame:
-      acquire camera frame
-      run full E2E inference
+      acquire camera frame (timed)
+      run full E2E inference (acquire + pre + infer + post)
       if elapsed < 33ms: sleep remaining
       else: record frame_drop
 Input: Camera Live (매 frame 새로 수신)
+HTP Mode: sustained_high
 ```
 
 | 파라미터 | 값 | 근거 |
@@ -219,10 +229,19 @@ Input: Camera Live (매 frame 새로 수신)
 | Target FPS | 30 Hz | 모바일 real-time inference 표준 |
 | Duration | 5 분 | Thermal saturation 관찰에 충분 |
 | Input | Camera Live | Production pipeline 재현 |
+| ORT Profiling | OFF | 30Hz에서 ~1ms/iter 프로파일링 오버헤드 제거 |
+| HTP Mode | sustained_high | 5분 지속 실행에 적합한 성능/전력 균형 |
 
 ### 4.3 실험 구성
 
-Phase 1에서 유망한 **3~4개 configuration** 선별.
+Phase 1에서 유망한 configuration 선별:
+
+| # | Model | Backend | Precision |
+|---|-------|---------|-----------|
+| 1 | YOLOv8n | GPU | FP32 |
+| 2 | YOLOv8n | NPU | FP16 |
+| 3 | YOLOv8n | NPU | INT8 QDQ |
+| 4 | YOLOv8n | NPU | INT8 QIO |
 
 선별 기준:
 - E2E P50 < 33ms (30 FPS 가능) 또는 경계선 config

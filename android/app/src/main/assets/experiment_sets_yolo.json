@@ -6,72 +6,73 @@
     "iterations": 100,
     "phase": "BURST",
     "inputMode": "CAMERA_SINGLE",
-    "useNpuFp16": true,
-    "useContextCache": false
+    "useNpuFp16": false,
+    "useContextCache": false,
+    "htpPerformanceMode": "burst"
   },
   "experimentSets": [
     {
       "id": "phase1_backend_precision_n",
       "name": "[Phase1] Backend × Precision (YOLOv8n)",
       "experiments": [
-        { "model": "YOLOV8N", "executionProvider": "CPU", "useNpuFp16": false },
-        { "model": "YOLOV8N", "executionProvider": "QNN_GPU", "useNpuFp16": false },
+        { "model": "YOLOV8N", "executionProvider": "CPU" },
+        { "model": "YOLOV8N", "executionProvider": "QNN_GPU" },
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU" }
       ]
     },
     {
       "id": "phase1_backend_precision_s",
       "name": "[Phase1] Backend × Precision (YOLOv8s)",
       "experiments": [
-        { "model": "YOLOV8S", "executionProvider": "CPU", "useNpuFp16": false },
-        { "model": "YOLOV8S", "executionProvider": "QNN_GPU", "useNpuFp16": false },
+        { "model": "YOLOV8S", "executionProvider": "CPU" },
+        { "model": "YOLOV8S", "executionProvider": "QNN_GPU" },
         { "model": "YOLOV8S", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8S_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8S_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+        { "model": "YOLOV8S_INT8_QDQ", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8S_INT8_QIO", "executionProvider": "QNN_NPU" }
       ]
     },
     {
       "id": "phase1_backend_precision_m",
       "name": "[Phase1] Backend × Precision (YOLOv8m)",
       "experiments": [
-        { "model": "YOLOV8M", "executionProvider": "CPU", "useNpuFp16": false },
-        { "model": "YOLOV8M", "executionProvider": "QNN_GPU", "useNpuFp16": false },
+        { "model": "YOLOV8M", "executionProvider": "CPU" },
+        { "model": "YOLOV8M", "executionProvider": "QNN_GPU" },
         { "model": "YOLOV8M", "executionProvider": "QNN_NPU", "useNpuFp16": true },
-        { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8M_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+        { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8M_INT8_QIO", "executionProvider": "QNN_NPU" }
       ]
     },
     {
       "id": "phase1_model_scale",
       "name": "[Phase1] Model Scale (n/s/m, INT8 QDQ)",
       "experiments": [
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8S_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8S_INT8_QDQ", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8M_INT8_QDQ", "executionProvider": "QNN_NPU" }
       ]
     },
     {
       "id": "phase2_sustained",
       "name": "[Phase2] Sustained Throughput (30Hz, 5min)",
       "experiments": [
-        { "model": "YOLOV8N", "executionProvider": "QNN_GPU", "useNpuFp16": false,
-          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30 },
+        { "model": "YOLOV8N", "executionProvider": "QNN_GPU",
+          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30, "htpPerformanceMode": "sustained_high" },
         { "model": "YOLOV8N", "executionProvider": "QNN_NPU", "useNpuFp16": true,
-          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30 },
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false,
-          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30 },
-        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false,
-          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30 }
+          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30, "htpPerformanceMode": "sustained_high" },
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU",
+          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30, "htpPerformanceMode": "sustained_high" },
+        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU",
+          "phase": "SUSTAINED", "inputMode": "CAMERA_LIVE", "frequencyHz": 30, "htpPerformanceMode": "sustained_high" }
       ]
     },
     {
       "id": "phase1_quantize_io",
       "name": "[Phase1] QuantizeIO: INT8 QDQ vs QIO",
       "experiments": [
-        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU", "useNpuFp16": false },
-        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU", "useNpuFp16": false }
+        { "model": "YOLOV8N_INT8_QDQ", "executionProvider": "QNN_NPU" },
+        { "model": "YOLOV8N_INT8_QIO", "executionProvider": "QNN_NPU" }
       ]
     }
   ]

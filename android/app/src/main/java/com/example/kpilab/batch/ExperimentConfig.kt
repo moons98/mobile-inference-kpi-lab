@@ -107,6 +107,9 @@ data class ExperimentConfig(
         if (iterations != null && iterations != defaults.iterations) {
             overrides.add("${iterations}iter")
         }
+        if (htpPerformanceMode != null && htpPerformanceMode != defaults.htpPerformanceMode) {
+            overrides.add("htp:$htpPerformanceMode")
+        }
 
         return if (overrides.isEmpty()) base else "$base [${overrides.joinToString(", ")}]"
     }
