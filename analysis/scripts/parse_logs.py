@@ -36,7 +36,6 @@ class KpiMetrics:
     preprocess_p50: float       # Image preprocessing P50
     input_create_p50: float     # Input tensor creation (JNI boundary)
     inference_only_p50: float   # Model inference only P50
-    inference_only_min: float   # Model inference only Min (best case, for QAI Hub comparison)
     output_copy_p50: float      # Output tensor copy (native → JVM)
     postprocess_p50: float      # NMS + coordinate transform P50
     overlay_p50: float          # Overlay rendering (bbox draw) P50
@@ -326,8 +325,9 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
     # Power metrics
     powers = system_df['power_mw'].dropna()
 
-    # Memory metrics
+    # Memory metrics (filter out 0 values from delayed first read in older data)
     memories = system_df['memory_mb'].dropna()
+    valid_memories = memories[memories > 0]
 
     # Cold start metrics from metadata
     cold_start = None
@@ -356,18 +356,11 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         s = inference_df[col_name].dropna()
         return float(s.quantile(0.50)) if len(s) > 0 else 0.0
 
-    def _col_min(col_name: str) -> float:
-        if col_name not in inference_df.columns:
-            return 0.0
-        s = inference_df[col_name].dropna()
-        return float(s.min()) if len(s) > 0 else 0.0
-
     # E2E breakdown (all columns are optional for backward compat with old CSVs)
     acquire_p50 = _col_p50('acquire_ms')
     preprocess_p50 = _col_p50('preprocess_ms')
     input_create_p50 = _col_p50('input_create_ms')
     inference_only_p50 = _col_p50('inference_ms')
-    inference_only_min = _col_min('inference_ms')
     output_copy_p50 = _col_p50('output_copy_ms')
     postprocess_p50 = _col_p50('postprocess_ms')
     overlay_p50 = _col_p50('overlay_ms')
@@ -378,7 +371,6 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
     # Fallback: if no inference_ms column, use latency_ms as inference time
     if inference_only_p50 == 0 and len(latencies) > 0:
         inference_only_p50 = float(latencies.quantile(0.50))
-        inference_only_min = float(latencies.min())
 
     # Frame drop metrics (Phase 2)
     frame_drop_count = 0
@@ -448,7 +440,6 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         preprocess_p50=preprocess_p50,
         input_create_p50=input_create_p50,
         inference_only_p50=inference_only_p50,
-        inference_only_min=inference_only_min,
         output_copy_p50=output_copy_p50,
         postprocess_p50=postprocess_p50,
         overlay_p50=overlay_p50,
@@ -481,12 +472,12 @@ def calculate_metrics(df: pd.DataFrame, metadata: dict = None) -> KpiMetrics:
         power_mean=powers.mean() if len(powers) > 0 else 0,
         power_std=powers.std() if len(powers) > 0 else 0,
 
-        # Memory
-        memory_peak=int(memories.max()) if len(memories) > 0 else 0,
-        memory_mean=memories.mean() if len(memories) > 0 else 0,
-        memory_min=int(memories.min()) if len(memories) > 0 else 0,
-        memory_start=int(memories.iloc[0]) if len(memories) > 0 else 0,
-        memory_end=int(memories.iloc[-1]) if len(memories) > 0 else 0,
+        # Memory (filter out 0 values from delayed first read in older data)
+        memory_peak=int(valid_memories.max()) if len(valid_memories) > 0 else 0,
+        memory_mean=valid_memories.mean() if len(valid_memories) > 0 else 0,
+        memory_min=int(valid_memories.min()) if len(valid_memories) > 0 else 0,
+        memory_start=int(valid_memories.iloc[0]) if len(valid_memories) > 0 else 0,
+        memory_end=int(valid_memories.iloc[-1]) if len(valid_memories) > 0 else 0,
 
         # Duration
         duration_seconds=duration,
@@ -813,7 +804,7 @@ def generate_comparison_table(file_paths: list) -> str:
         header = f"{'#':<4} {'Label':<35} "
         if has_acquire_data:
             header += f"{'Acq':<8} "
-        header += f"{'Pre':<8} {'InCr':<8} {'Infer':<8} {'InfMin':<8} {'OutCp':<8} {'Post':<8} "
+        header += f"{'Pre':<8} {'InCr':<8} {'Infer':<8} {'OutCp':<8} {'Post':<8} "
         if has_overlay_data:
             header += f"{'Ovlay':<8} "
         header += f"{'Dets':<6} {'E2E':<8}"
@@ -827,7 +818,7 @@ def generate_comparison_table(file_paths: list) -> str:
             if has_acquire_data:
                 row += f"{m.acquire_p50:<8.2f} "
             row += f"{m.preprocess_p50:<8.2f} {m.input_create_p50:<8.2f} "
-            row += f"{m.inference_only_p50:<8.2f} {m.inference_only_min:<8.2f} {m.output_copy_p50:<8.2f} "
+            row += f"{m.inference_only_p50:<8.2f} {m.output_copy_p50:<8.2f} "
             row += f"{m.postprocess_p50:<8.2f} "
             if has_overlay_data:
                 row += f"{m.overlay_p50:<8.2f} "
@@ -841,18 +832,18 @@ def generate_comparison_table(file_paths: list) -> str:
         lines.append("    Pre:    Image preprocessing (letterbox + normalize + CHW)")
         lines.append("    InCr:   Input tensor creation (Java→Native JNI boundary)")
         lines.append("    Infer:  Model inference only (session.run) P50")
-        lines.append("    InfMin: Model inference minimum (best case, comparable to QAI Hub)")
         lines.append("    OutCp:  Output tensor copy (Native→Java buffer copy)")
         lines.append("    Post:   Confidence filter + NMS + coordinate transform")
         if has_overlay_data:
             lines.append("    Ovlay:  Overlay bbox rendering (prev frame's onDraw)")
         if has_framedrop_data:
             lines.append("    Drop%:  Frame drop rate (E2E > target interval)")
+        lines.append("    * 각 컴포넌트는 독립적으로 P50 계산되므로 합산 ≠ E2E P50 (percentile non-additivity)")
 
-    # Section 2c: ORT Profiling (NPU compute vs framework overhead)
+    # Section 2c: ORT Profiling (session.run Breakdown)
     has_profiling_data = any(exp['metrics'].profiling_iterations > 0 for exp in experiments)
     if has_profiling_data:
-        lines.append(f"\n\n[2c] ORT Profiling (session.run Breakdown)")
+        lines.append(f"\n\n[2c] ORT Profiling (session.run Breakdown, Mean)")
         lines.append("-" * 140)
         lines.append(f"{'#':<4} {'Label':<35} {'session.run':<12} {'NPU(ms)':<10} {'CPU(ms)':<10} {'Fence(ms)':<10} {'ORT(ms)':<10} {'NPU%':<8} {'CPU Ops'}")
         lines.append("-" * 140)
@@ -867,11 +858,12 @@ def generate_comparison_table(file_paths: list) -> str:
             else:
                 lines.append(f"{i:<4} {exp['label']:<35} {'N/A':<12} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<10} {'N/A':<8} {'N/A'}")
         lines.append("")
+        lines.append("    * 모든 값은 ORT 내부 JSON profiling의 Mean (누적합/iteration수). [2b] Infer는 벽시계 P50이므로 소폭 차이 정상")
         lines.append("    session.run = NPU + CPU + Fence + ORT overhead")
         lines.append("    NPU:   QNN EP 실제 연산 시간 (HTP 커널 실행)")
         lines.append("    CPU:   CPU fallback 노드 실행 시간")
-        lines.append("    Fence: EP 동기화 배리어 (HTP dispatch + completion wait)")
-        lines.append("    ORT:   프레임워크 오버헤드 (그래프 스케줄링, 텐서 관리, JNI)")
+        lines.append("    Fence: EP 간 동기화 배리어 (NPU dispatch/completion wait, EP 전환 시 발생)")
+        lines.append("    ORT:   프레임워크 오버헤드 = session.run - NPU - CPU - Fence (역산)")
         lines.append("    NPU%:  session.run() 중 실제 NPU 연산 비율")
         lines.append("    CPU Ops: CPU에서 실행된 연산 목록 (op_name(count per iteration))")
 
@@ -963,7 +955,7 @@ def generate_comparison_table(file_paths: list) -> str:
         m = exp['metrics']
         lines.append(f"{i:<4} {exp['label']:<40} {m.power_mean:<12.1f} {m.thermal_slope:<14.2f} {m.memory_peak:<12}")
     lines.append("")
-    lines.append("    Power: 평균 전력 소비량 (mW)")
+    lines.append("    Power: 평균 전력 소비량 (mW, 디바이스 전체 전력. Phase 1은 sleep 비중이 커 baseline 지배적)")
     lines.append("    Slope: 온도 상승률 (°C/min, lower=better)")
     lines.append("    MemPeak: 최대 메모리 사용량 (MB)")
 

@@ -449,7 +449,7 @@ class BenchmarkRunner(
     }
 
     private suspend fun collectSystemMetrics(durationMs: Long, runner: OrtRunner) {
-        var lastMemoryTime = 0L
+        var lastMemoryTime = -MEMORY_METRICS_INTERVAL_MS  // Force immediate read on first iteration
         var lastMemoryValue = 0
 
         while (currentCoroutineContext().isActive) {
@@ -461,7 +461,7 @@ class BenchmarkRunner(
             // Collect thermal and power every second
             val metrics = kpiCollector.collectAll()
 
-            // Log to runner (memory every 5 seconds, forward fill previous value)
+            // Log to runner (memory every 5 seconds, read immediately on first iteration)
             if (elapsed - lastMemoryTime >= MEMORY_METRICS_INTERVAL_MS) {
                 lastMemoryTime = elapsed
                 lastMemoryValue = metrics.memoryMb
