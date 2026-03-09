@@ -633,7 +633,7 @@ def generate_single_report(file_path: str) -> Tuple[str, dict, KpiMetrics]:
         lines.append(f"  Output copy:    {metrics.output_copy_p50:.2f} ms")
         lines.append(f"  Postprocess:    {metrics.postprocess_p50:.2f} ms")
         if metrics.overlay_p50 > 0:
-            lines.append(f"  Overlay:        {metrics.overlay_p50:.2f} ms")
+            lines.append(f"  Overlay:        {metrics.overlay_p50:.2f} ms (async, E2E 미포함)")
         lines.append(f"  Avg Detections: {metrics.detection_count_mean:.1f}")
 
     if metrics.frame_drop_count > 0:
@@ -790,7 +790,7 @@ def generate_comparison_table(file_paths: list) -> str:
         lines.append(f"{i:<4} {exp['label']:<40} {m.latency_p50:<13.2f} {m.latency_p95:<13.2f} "
                      f"{m.latency_mean:<14.2f} {max_fps:<10.1f}")
     lines.append("")
-    lines.append("    E2E P50/P95: 전체 파이프라인(pre+infer+post) 50th/95th percentile latency (lower=better)")
+    lines.append("    E2E P50/P95: 전체 파이프라인(acq+pre+infer+post) latency, overlay 제외 (lower=better)")
     lines.append("    MaxFPS: Theoretical max throughput = 1000/E2E P50 (higher=better)")
 
     # Section 2b: E2E Breakdown
@@ -835,9 +835,10 @@ def generate_comparison_table(file_paths: list) -> str:
         lines.append("    OutCp:  Output tensor copy (Native→Java buffer copy)")
         lines.append("    Post:   Confidence filter + NMS + coordinate transform")
         if has_overlay_data:
-            lines.append("    Ovlay:  Overlay bbox rendering (prev frame's onDraw)")
+            lines.append("    Ovlay:  Overlay bbox rendering (prev frame's onDraw, Main 스레드 비동기)")
         if has_framedrop_data:
             lines.append("    Drop%:  Frame drop rate (E2E > target interval)")
+        lines.append("    * E2E = Acq+Pre+InCr+Infer+OutCp+Post. Overlay는 비동기 렌더링이므로 E2E에서 제외")
         lines.append("    * 각 컴포넌트는 독립적으로 P50 계산되므로 합산 ≠ E2E P50 (percentile non-additivity)")
 
     # Section 2c: ORT Profiling (session.run Breakdown)

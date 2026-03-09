@@ -295,8 +295,12 @@ class MainActivity : AppCompatActivity() {
     private fun observeDetections() {
         lifecycleScope.launch {
             benchmarkRunner.lastDetections.collectLatest { result ->
-                if (binding.checkDemoMode.isChecked && result.detections.isNotEmpty()) {
-                    binding.overlayView.setDetections(result.detections, result.sourceWidth, result.sourceHeight)
+                if (binding.checkDemoMode.isChecked) {
+                    if (result.detections.isNotEmpty()) {
+                        binding.overlayView.setDetections(result.detections, result.sourceWidth, result.sourceHeight)
+                    } else {
+                        binding.overlayView.clear()
+                    }
                 }
             }
         }

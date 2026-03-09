@@ -96,13 +96,16 @@ class BenchmarkRunner(
     val batchProgress: StateFlow<BatchProgress> = _batchProgress.asStateFlow()
 
     // Latest detections for demo overlay (with source image dimensions for correct scaling)
+    // frameId ensures StateFlow re-emits even when detections are structurally identical
     data class DetectionResult(
         val detections: List<Detection> = emptyList(),
         val sourceWidth: Int = 640,
-        val sourceHeight: Int = 640
+        val sourceHeight: Int = 640,
+        val frameId: Long = 0
     )
     private val _lastDetections = MutableStateFlow(DetectionResult())
     val lastDetections: StateFlow<DetectionResult> = _lastDetections.asStateFlow()
+    private var detectionFrameCounter = 0L
 
     private var ortRunner: OrtRunner? = null
     private var benchmarkJob: Job? = null
@@ -322,6 +325,7 @@ class BenchmarkRunner(
         var inferenceCount = 0
         val intervalMs = config.intervalMs
         val totalIterations = config.iterations
+        var prevOverlayMs = 0f
 
         Log.i(TAG, "=== Phase 1: Burst Latency ($totalIterations iterations, ${config.frequencyHz} Hz, profiling=ON) ===")
 
@@ -330,22 +334,32 @@ class BenchmarkRunner(
 
             val loopStart = System.currentTimeMillis()
 
-            // Acquire frame for source data (not timed — Phase 1 measures inference only)
+            // Acquire frame (timed — full pipeline measurement)
+            var acquireMs = 0f
             if (config.inputMode != InputMode.STATIC_IMAGE) {
+                val acquireStart = System.nanoTime()
                 val frame = acquireCameraFrame(config.inputMode)
+                acquireMs = ((System.nanoTime() - acquireStart) / 1_000_000.0).toFloat()
                 if (frame != null) {
                     runner.setSourceBitmap(frame.first)
                 }
             }
 
-            // Run inference (Phase 1: records inference breakdown only)
+            val overlayMs = prevOverlayMs
+
+            // Run inference (full pipeline: pre + infer + post, all timed)
             val outcome = withContext(Dispatchers.IO) {
-                runner.runInference(phase = BenchmarkPhase.BURST)
+                runner.runInference(
+                    phase = BenchmarkPhase.BURST,
+                    acquireMs = acquireMs,
+                    overlayMs = overlayMs
+                )
             }
 
             if (outcome != null) {
                 inferenceCount++
-                _lastDetections.value = DetectionResult(outcome.detections, outcome.sourceWidth, outcome.sourceHeight)
+                _lastDetections.value = DetectionResult(outcome.detections, outcome.sourceWidth, outcome.sourceHeight, ++detectionFrameCounter)
+                prevOverlayMs = overlayView?.lastDrawMs ?: 0f
 
                 val currentElapsed = System.currentTimeMillis() - startTimeMs
                 _progress.value = _progress.value.copy(
@@ -415,7 +429,7 @@ class BenchmarkRunner(
             if (outcome != null) {
                 inferenceCount++
                 if (outcome.frameDropped) frameDropCount++
-                _lastDetections.value = DetectionResult(outcome.detections, outcome.sourceWidth, outcome.sourceHeight)
+                _lastDetections.value = DetectionResult(outcome.detections, outcome.sourceWidth, outcome.sourceHeight, ++detectionFrameCounter)
                 prevOverlayMs = overlayView?.lastDrawMs ?: 0f
 
                 val currentElapsed = System.currentTimeMillis() - startTimeMs

@@ -142,7 +142,7 @@ Demo mode (detection overlay on preview)를 UI에서 on/off 할 수 있으나, o
 Warmup: 10 iterations (연속, 결과 제외)
 Main loop (ORT profiling ON):
   for i in 1..100:
-      run inference (inference breakdown만 기록)
+      run full pipeline (acquire + pre + infer + post, 모든 구간 개별 측정)
       sleep 500ms
 Input: Camera Single (1장 캡처 후 반복)
 ```
@@ -190,14 +190,15 @@ Input: Camera Single (1장 캡처 후 반복)
 
 | 카테고리 | Metric | 설명 |
 |---------|--------|------|
-| **Latency** | Inference P50 / P95 / Min | Inference breakdown (InCreate + Run + OutCopy) |
-| **Breakdown** | InCreate / Run / OutCopy | inference 구간별 소요 시간 |
-| **ORT Profiling** | NPU(ms) / CPU(ms) / Fence(ms) / ORT overhead(ms) / NPU% | session.run 내부 분해 |
+| **E2E Latency** | E2E P50 / P95 / Min | Acq + Pre + InCr + Infer + OutCp + Post (overlay 제외) |
+| **Pipeline** | Acquire / PreProc / PostProc / Overlay | 전처리·후처리·overlay 구간별 소요 시간 |
+| **Inference** | InCreate / Run / OutCopy | inference 내부 구간별 소요 시간 |
+| **ORT Profiling** | NPU(ms) / CPU(ms) / Fence(ms) / ORT overhead(ms) / NPU% | session.run 내부 분해 (Mean) |
 | | CPU Ops | CPU fallback된 op 목록 |
 | **Cold Start** | Load / Session / 1st Inference | 모델 로드 ~ 첫 추론 완료 |
 | **Graph** | Total / QNN / CPU nodes / Coverage% | Graph partitioning 결과 |
 
-> Phase 1은 inference breakdown만 기록한다. Acquire/PreProc/PostProc은 실행되지만 타이밍하지 않는다 (변인 통제).
+> Phase 1도 전체 pipeline을 실행하며 모든 구간을 개별 측정한다. Overlay는 비동기 렌더링이므로 E2E에서 제외.
 
 ---
 

@@ -610,27 +610,23 @@ class OrtRunner(private val context: Context) {
         currentModel ?: return null
         val isSustained = phase == BenchmarkPhase.SUSTAINED
 
-        // Preprocess (always needed for input data; timed only in Phase 2)
-        val preStart = if (isSustained) System.nanoTime() else 0L
+        // Preprocess (always timed)
+        val preStart = System.nanoTime()
         val inputData = preprocess()
-        val preprocessMs = if (isSustained) ((System.nanoTime() - preStart) / 1_000_000.0).toFloat() else 0f
+        val preprocessMs = ((System.nanoTime() - preStart) / 1_000_000.0).toFloat()
 
         // Inference (always timed — this is the core metric)
         val inferenceResult = runInferenceInternal(inputData) ?: return null
 
-        // Postprocess (always needed for detections; timed only in Phase 2)
-        val postStart = if (isSustained) System.nanoTime() else 0L
+        // Postprocess (always timed)
+        val postStart = System.nanoTime()
         val detections = postprocess(inferenceResult)
-        val postprocessMs = if (isSustained) ((System.nanoTime() - postStart) / 1_000_000.0).toFloat() else 0f
+        val postprocessMs = ((System.nanoTime() - postStart) / 1_000_000.0).toFloat()
 
-        // Phase 1: latency = inference breakdown only (inputCreate + run + outputCopy)
-        // Phase 2: latency = full E2E (acquire + pre + inference + post)
-        val totalMs = if (isSustained) {
-            acquireMs + preprocessMs + inferenceResult.inputCreateMs +
-                    inferenceResult.inferenceMs + inferenceResult.outputCopyMs + postprocessMs
-        } else {
-            inferenceResult.inputCreateMs + inferenceResult.inferenceMs + inferenceResult.outputCopyMs
-        }
+        // E2E = full pipeline (acquire + pre + inference breakdown + post)
+        // overlay is measured separately (async on Main thread)
+        val totalMs = acquireMs + preprocessMs + inferenceResult.inputCreateMs +
+                inferenceResult.inferenceMs + inferenceResult.outputCopyMs + postprocessMs
 
         val frameDropped = isSustained && targetIntervalMs > 0 && totalMs > targetIntervalMs
 
@@ -639,11 +635,9 @@ class OrtRunner(private val context: Context) {
             firstInferenceMs = totalMs
             val detail = buildString {
                 append("First inference (${phase.name}): total=%.2fms".format(totalMs))
-                append(" (inputCreate=%.2fms, inf=%.2fms, outputCopy=%.2fms".format(
-                    inferenceResult.inputCreateMs, inferenceResult.inferenceMs, inferenceResult.outputCopyMs))
-                if (isSustained) {
-                    append(", acq=%.2fms, pre=%.2fms, post=%.2fms".format(acquireMs, preprocessMs, postprocessMs))
-                }
+                append(" (acq=%.2fms, pre=%.2fms, inCreate=%.2fms, inf=%.2fms, outCopy=%.2fms, post=%.2fms".format(
+                    acquireMs, preprocessMs, inferenceResult.inputCreateMs,
+                    inferenceResult.inferenceMs, inferenceResult.outputCopyMs, postprocessMs))
                 append("), detections=${detections.size}")
             }
             Log.i(TAG, detail)
@@ -660,13 +654,13 @@ class OrtRunner(private val context: Context) {
                 timestamp = System.currentTimeMillis(),
                 eventType = EventType.INFERENCE,
                 latencyMs = totalMs,
-                acquireMs = if (isSustained) acquireMs else 0f,
+                acquireMs = acquireMs,
                 preprocessMs = preprocessMs,
                 inferenceMs = inferenceResult.inferenceMs,
                 inputCreateMs = inferenceResult.inputCreateMs,
                 outputCopyMs = inferenceResult.outputCopyMs,
                 postprocessMs = postprocessMs,
-                overlayMs = if (isSustained) overlayMs else 0f,
+                overlayMs = overlayMs,
                 detectionCount = detections.size,
                 thermalC = 0f,
                 powerMw = 0f,
