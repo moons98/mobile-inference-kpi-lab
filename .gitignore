@@ -1,5 +1,6 @@
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Android
 *.iml
@@ -75,10 +76,8 @@ tmp/
 temp/
 *.tmp
 
-# Dataset (COCO val2017 — shared by calibration and accuracy evaluation)
-scripts/coco_val2017
-
 # weight
 weights/
 
+# deprecated
 deprecated/

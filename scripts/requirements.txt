@@ -3,3 +3,12 @@ onnxruntime
 onnxscript
 numpy
 ultralytics
+
+# Stable Diffusion export & quality evaluation
+torch
+diffusers
+transformers
+onnxconverter-common
+scikit-image
+lpips
+Pillow
