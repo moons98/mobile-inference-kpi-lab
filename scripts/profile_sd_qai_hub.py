@@ -1,29 +1,24 @@
 #!/usr/bin/env python3
 """
-Profile Stable Diffusion v2.1 components on Qualcomm AI Hub.
+Profile SD v1.5 Inpainting pipeline components on Qualcomm AI Hub.
 
-Submits compile + profile jobs for TextEncoder, UNet, VAE Decoder
+Submits compile + profile jobs for VAE Encoder, Text Encoder, UNet, VAE Decoder
 on real Snapdragon 8 Gen 2 hardware via cloud-hosted device.
 
 Prerequisites:
-    pip install qai-hub
-    pip install qai-hub-models          # for --from-hub-models (auto export)
+    pip install qai-hub numpy
     qai-hub configure --api_token <your_token>
 
 Usage:
     # List available devices
     python profile_sd_qai_hub.py --list-devices
 
-    # Profile all 3 components using qai_hub_models (auto export + compile + profile)
-    python profile_sd_qai_hub.py --profile-all
+    # Profile all 4 components from local ONNX files
+    python profile_sd_qai_hub.py --profile-all --onnx-dir weights/sd_v1.5_inpaint/onnx
 
     # Profile individual components
-    python profile_sd_qai_hub.py --profile text_encoder
-    python profile_sd_qai_hub.py --profile unet
-    python profile_sd_qai_hub.py --profile vae_decoder
-
-    # Profile from local ONNX files
-    python profile_sd_qai_hub.py --profile-all --onnx-dir ./sd_models/
+    python profile_sd_qai_hub.py --profile vae_encoder --onnx-dir weights/sd_v1.5_inpaint/onnx
+    python profile_sd_qai_hub.py --profile unet --onnx-dir weights/sd_v1.5_inpaint/onnx
 
     # Check job status and results
     python profile_sd_qai_hub.py --check-jobs
@@ -46,35 +41,43 @@ except ImportError:
     sys.exit(1)
 
 RESULTS_FILE = Path(__file__).parent.parent / "outputs" / "sd_qai_hub_jobs.json"
+MODEL_DIR = Path(__file__).parent.parent / "weights" / "sd_v1.5_inpaint" / "onnx"
 
 # Target device: Snapdragon 8 Gen 2 (SM8550) — Galaxy S23 Ultra
 TARGET_DEVICE_KEYWORDS = ["8 Gen 2", "SM8550", "S23"]
 
-# SD v2.1 component input specs
+# SD v1.5 Inpainting component input specs
+# UNet: 9ch input (latent 4 + mask 1 + masked_image latent 4)
+# Text Encoder: CLIP ViT-L/14, 768-dim hidden states
 SD_COMPONENTS = {
+    "vae_encoder": {
+        "input_specs": dict(sample=((1, 3, 512, 512), "float32")),
+        "description": "VAE Encoder (image → latent)",
+    },
     "text_encoder": {
-        "input_specs": dict(tokens=((1, 77), "int32")),
-        "description": "CLIP ViT-L/14 Text Encoder",
+        "input_specs": dict(input_ids=((1, 77), "int64")),
+        "description": "CLIP ViT-L/14 Text Encoder (768-dim)",
     },
     "unet": {
         "input_specs": dict(
-            latent=((1, 4, 64, 64), "float32"),
-            timestep=((1, 1), "float32"),
-            text_emb=((1, 77, 1024), "float32"),
+            sample=((1, 9, 64, 64), "float32"),
+            timestep=((1,), "int64"),
+            encoder_hidden_states=((1, 77, 768), "float32"),
         ),
-        "description": "UNet2D Conditional (single step)",
+        "description": "Inpainting UNet2D (9ch, single step)",
     },
     "vae_decoder": {
-        "input_specs": dict(latent=((1, 4, 64, 64), "float32")),
+        "input_specs": dict(latent_sample=((1, 4, 64, 64), "float32")),
         "description": "VAE Decoder (latent → 512×512 image)",
     },
 }
 
-# ONNX file naming convention
+# ONNX file naming convention (INT8 QDQ preferred, then FP32)
 ONNX_FILENAMES = {
-    "text_encoder": ["text_encoder_quantized.onnx", "text_encoder.onnx"],
-    "unet": ["unet_quantized.onnx", "unet.onnx"],
-    "vae_decoder": ["vae_decoder_quantized.onnx", "vae_decoder.onnx"],
+    "vae_encoder": ["vae_encoder_int8_qdq.onnx", "vae_encoder_fp32.onnx"],
+    "text_encoder": ["text_encoder_int8_qdq.onnx", "text_encoder_fp32.onnx"],
+    "unet": ["unet_int8_qdq.onnx", "unet_fp32.onnx"],
+    "vae_decoder": ["vae_decoder_int8_qdq.onnx", "vae_decoder_fp32.onnx"],
 }
 
 
@@ -126,37 +129,6 @@ def find_onnx_file(onnx_dir: Path, component: str) -> Path | None:
         if path.exists():
             return path
     return None
-
-
-_sd_model_cache = None
-
-def _get_sd_model():
-    """Load SD v2.1 Quantized model (cached)."""
-    global _sd_model_cache
-    if _sd_model_cache is None:
-        try:
-            from qai_hub_models.models.stable_diffusion_v2_1.model import (
-                StableDiffusionV2_1_Quantized,
-            )
-        except ImportError:
-            print("Error: qai-hub-models not installed or missing dependencies")
-            print("Install with: pip install qai-hub-models onnxsim")
-            print("Or provide ONNX files with --onnx-dir")
-            sys.exit(1)
-        print("Loading SD v2.1 Quantized from HuggingFace (first time may download ~2GB)...")
-        _sd_model_cache = StableDiffusionV2_1_Quantized.from_pretrained()
-    return _sd_model_cache
-
-
-def export_from_hub_models(component: str):
-    """Export model from qai_hub_models package. Returns model object for compile."""
-    sd = _get_sd_model()
-    component_map = {
-        "text_encoder": sd.text_encoder,
-        "unet": sd.unet,
-        "vae_decoder": sd.vae_decoder,
-    }
-    return component_map[component]
 
 
 def profile_component(component: str, device_name: str, model_source,
@@ -251,9 +223,9 @@ def print_profile_results(job_id):
 
 
 def print_pipeline_summary(results):
-    """Print combined pipeline summary from all 3 component results."""
+    """Print combined pipeline summary from all 4 component results."""
     print(f"\n{'='*60}")
-    print("SD v2.1 Pipeline Summary (single UNet step)")
+    print("SD v1.5 Inpainting Pipeline Summary (single UNet step)")
     print(f"{'='*60}")
 
     total_inference = sum(r.get("inference_time_ms", 0) for r in results.values())
@@ -261,7 +233,7 @@ def print_pipeline_summary(results):
 
     print(f"\n| {'Component':<16} | {'Inference':<12} | {'First Load':<12} | {'Warm Load':<12} |")
     print(f"|{'-'*18}|{'-'*14}|{'-'*14}|{'-'*14}|")
-    for comp in ["text_encoder", "unet", "vae_decoder"]:
+    for comp in ["vae_encoder", "text_encoder", "unet", "vae_decoder"]:
         if comp in results:
             r = results[comp]
             print(f"| {comp:<16} | {r['inference_time_ms']:>8.1f} ms | "
@@ -271,12 +243,13 @@ def print_pipeline_summary(results):
 
     if "unet" in results:
         unet_ms = results["unet"]["inference_time_ms"]
+        non_unet = total_inference - unet_ms
         print(f"\nEstimated E2E (20 steps): "
-              f"{total_inference - unet_ms + unet_ms * 20:.0f} ms "
-              f"({(total_inference - unet_ms + unet_ms * 20)/1000:.1f} s)")
+              f"{non_unet + unet_ms * 20:.0f} ms "
+              f"({(non_unet + unet_ms * 20)/1000:.1f} s)")
         print(f"Estimated E2E (50 steps): "
-              f"{total_inference - unet_ms + unet_ms * 50:.0f} ms "
-              f"({(total_inference - unet_ms + unet_ms * 50)/1000:.1f} s)")
+              f"{non_unet + unet_ms * 50:.0f} ms "
+              f"({(non_unet + unet_ms * 50)/1000:.1f} s)")
 
 
 def save_job_info(jobs):
@@ -295,18 +268,19 @@ def save_job_info(jobs):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Profile SD v2.1 components on Qualcomm AI Hub (Snapdragon 8 Gen 2)"
+        description="Profile SD v1.5 Inpainting components on Qualcomm AI Hub (Snapdragon 8 Gen 2)"
     )
     parser.add_argument("--list-devices", action="store_true",
                         help="List available 8 Gen 2 devices")
     parser.add_argument("--device", type=str, default=None,
                         help="Device name (from --list-devices)")
-    parser.add_argument("--profile", type=str, choices=["text_encoder", "unet", "vae_decoder"],
+    parser.add_argument("--profile", type=str,
+                        choices=["vae_encoder", "text_encoder", "unet", "vae_decoder"],
                         help="Profile a single component")
     parser.add_argument("--profile-all", action="store_true",
-                        help="Profile all 3 components")
+                        help="Profile all 4 components")
     parser.add_argument("--onnx-dir", type=str, default=None,
-                        help="Directory with pre-exported ONNX files")
+                        help="Directory with ONNX files (default: weights/sd_v1.5_inpaint/onnx)")
     parser.add_argument("--check-jobs", action="store_true",
                         help="Check status & results of saved jobs")
     parser.add_argument("--result", type=str,
@@ -357,7 +331,7 @@ def main():
     # --- Profile mode ---
     components_to_profile = []
     if args.profile_all:
-        components_to_profile = ["text_encoder", "unet", "vae_decoder"]
+        components_to_profile = list(SD_COMPONENTS.keys())
     elif args.profile:
         components_to_profile = [args.profile]
     else:
@@ -374,25 +348,20 @@ def main():
         device_name = matches[0].name
         print(f"Using device: {device_name}")
 
+    # Determine ONNX directory
+    onnx_dir = Path(args.onnx_dir) if args.onnx_dir else MODEL_DIR
+
     # Profile each component
     jobs = []
     for component in components_to_profile:
-        # Determine model source
-        model_source = None
-
-        if args.onnx_dir:
-            onnx_path = find_onnx_file(Path(args.onnx_dir), component)
-            if onnx_path:
-                model_source = str(onnx_path)
-                print(f"\nUsing ONNX file: {onnx_path}")
-            else:
-                print(f"\nWARNING: No ONNX file found for {component} in {args.onnx_dir}")
-                print(f"  Expected: {ONNX_FILENAMES[component]}")
-                continue
-
-        if model_source is None:
-            print(f"\nExporting {component} from qai_hub_models...")
-            model_source = export_from_hub_models(component)
+        onnx_path = find_onnx_file(onnx_dir, component)
+        if onnx_path:
+            model_source = str(onnx_path)
+            print(f"\nUsing ONNX file: {onnx_path}")
+        else:
+            print(f"\nERROR: No ONNX file found for {component} in {onnx_dir}")
+            print(f"  Expected: {ONNX_FILENAMES[component]}")
+            continue
 
         job = profile_component(component, device_name, model_source)
         if job:
