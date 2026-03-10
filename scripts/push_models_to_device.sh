@@ -103,7 +103,7 @@ push_sd_fp32() {
         if [ -f "$SD_ONNX_DIR/$f" ]; then
             push_file "$SD_ONNX_DIR/$f"
         else
-            echo "  [MISS] $f — run: python scripts/export_sd_to_onnx.py --export-all --precision fp32"
+            echo "  [MISS] $f ??run: python scripts/sd/export_sd_to_onnx.py --export-all --precision fp32"
         fi
     done
     # UNet external data file
@@ -118,7 +118,7 @@ push_sd_int8() {
         if [ -f "$SD_ONNX_DIR/$f" ]; then
             push_file "$SD_ONNX_DIR/$f"
         else
-            echo "  [MISS] $f — run: python scripts/export_sd_to_onnx.py --export-all --precision int8"
+            echo "  [MISS] $f ??run: python scripts/sd/export_sd_to_onnx.py --export-all --precision int8"
         fi
     done
     # UNet INT8 external data file
@@ -160,3 +160,4 @@ esac
 echo ""
 echo "=== Done ==="
 adb shell "ls -la $DEVICE_DIR/" 2>/dev/null | tail -20
+

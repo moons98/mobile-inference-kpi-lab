@@ -11,18 +11,18 @@ Prerequisites:
 
 Usage:
     # List available devices
-    python profile_sd_qai_hub.py --list-devices
+    python scripts/sd/profile_sd_qai_hub.py --list-devices
 
     # Profile all 4 components from local ONNX files
-    python profile_sd_qai_hub.py --profile-all --onnx-dir weights/sd_v1.5_inpaint/onnx
+    python scripts/sd/profile_sd_qai_hub.py --profile-all --onnx-dir weights/sd_v1.5_inpaint/onnx
 
     # Profile individual components
-    python profile_sd_qai_hub.py --profile vae_encoder --onnx-dir weights/sd_v1.5_inpaint/onnx
-    python profile_sd_qai_hub.py --profile unet --onnx-dir weights/sd_v1.5_inpaint/onnx
+    python scripts/sd/profile_sd_qai_hub.py --profile vae_encoder --onnx-dir weights/sd_v1.5_inpaint/onnx
+    python scripts/sd/profile_sd_qai_hub.py --profile unet --onnx-dir weights/sd_v1.5_inpaint/onnx
 
     # Check job status and results
-    python profile_sd_qai_hub.py --check-jobs
-    python profile_sd_qai_hub.py --result <job_id>
+    python scripts/sd/profile_sd_qai_hub.py --check-jobs
+    python scripts/sd/profile_sd_qai_hub.py --result <job_id>
 """
 
 import argparse
@@ -40,10 +40,12 @@ except ImportError:
     print("Configure with: qai-hub configure --api_token <your_token>")
     sys.exit(1)
 
-RESULTS_FILE = Path(__file__).parent.parent / "outputs" / "sd_qai_hub_jobs.json"
-MODEL_DIR = Path(__file__).parent.parent / "weights" / "sd_v1.5_inpaint" / "onnx"
+SCRIPTS_DIR = Path(__file__).parent
+PROJECT_ROOT = SCRIPTS_DIR.parent.parent
+RESULTS_FILE = PROJECT_ROOT / "outputs" / "sd_qai_hub_jobs.json"
+MODEL_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "onnx"
 
-# Target device: Snapdragon 8 Gen 2 (SM8550) — Galaxy S23 Ultra
+# Target device: Snapdragon 8 Gen 2 (SM8550) ??Galaxy S23 Ultra
 TARGET_DEVICE_KEYWORDS = ["8 Gen 2", "SM8550", "S23"]
 
 # SD v1.5 Inpainting component input specs
@@ -52,7 +54,7 @@ TARGET_DEVICE_KEYWORDS = ["8 Gen 2", "SM8550", "S23"]
 SD_COMPONENTS = {
     "vae_encoder": {
         "input_specs": dict(sample=((1, 3, 512, 512), "float32")),
-        "description": "VAE Encoder (image → latent)",
+        "description": "VAE Encoder (image ??latent)",
     },
     "text_encoder": {
         "input_specs": dict(input_ids=((1, 77), "int64")),
@@ -68,7 +70,7 @@ SD_COMPONENTS = {
     },
     "vae_decoder": {
         "input_specs": dict(latent_sample=((1, 4, 64, 64), "float32")),
-        "description": "VAE Decoder (latent → 512×512 image)",
+        "description": "VAE Decoder (latent ??512횞512 image)",
     },
 }
 
@@ -137,7 +139,7 @@ def profile_component(component: str, device_name: str, model_source,
     spec = SD_COMPONENTS[component]
 
     print(f"\n{'='*60}")
-    print(f"Component: {component} — {spec['description']}")
+    print(f"Component: {component} ??{spec['description']}")
     print(f"Device: {device_name}")
     print(f"Runtime: {target_runtime}")
     print(f"Input specs: {list(spec['input_specs'].keys())}")
@@ -377,3 +379,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

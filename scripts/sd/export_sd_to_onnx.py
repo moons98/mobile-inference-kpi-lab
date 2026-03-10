@@ -17,16 +17,16 @@ Note: FP16 is NOT a separate ONNX export. On-device FP16 inference is achieved
 by running the FP32 model with the QNN EP `useNpuFp16` runtime option.
 
 Usage:
-    python export_sd_to_onnx.py --export-all
-    python export_sd_to_onnx.py --export text_encoder --precision fp32
-    python export_sd_to_onnx.py --export unet --precision int8
-    python export_sd_to_onnx.py --export vae_encoder --precision fp32 int8
-    python export_sd_to_onnx.py --status
-    python export_sd_to_onnx.py --list
+    python scripts/sd/export_sd_to_onnx.py --export-all
+    python scripts/sd/export_sd_to_onnx.py --export text_encoder --precision fp32
+    python scripts/sd/export_sd_to_onnx.py --export unet --precision int8
+    python scripts/sd/export_sd_to_onnx.py --export vae_encoder --precision fp32 int8
+    python scripts/sd/export_sd_to_onnx.py --status
+    python scripts/sd/export_sd_to_onnx.py --list
 
     # Real-data calibration workflow (recommended):
-    python export_sd_to_onnx.py --generate-calib-data              # local: generate NPZ
-    python export_sd_to_onnx.py --export vae_encoder --precision int8 --calib-data weights/sd_v1.5_inpaint/onnx
+    python scripts/sd/export_sd_to_onnx.py --generate-calib-data              # local: generate NPZ
+    python scripts/sd/export_sd_to_onnx.py --export vae_encoder --precision int8 --calib-data weights/sd_v1.5_inpaint/onnx
 """
 
 import argparse
@@ -38,8 +38,9 @@ import numpy as np
 
 SD_MODEL_ID = "stable-diffusion-v1-5/stable-diffusion-inpainting"
 SCRIPTS_DIR = Path(__file__).parent
-OUTPUT_DIR = SCRIPTS_DIR.parent / "weights" / "sd_v1.5_inpaint" / "onnx"
-CALIB_IMAGES_DIR = SCRIPTS_DIR.parent / "datasets" / "coco" / "val2017"
+PROJECT_ROOT = SCRIPTS_DIR.parent.parent
+OUTPUT_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "onnx"
+CALIB_IMAGES_DIR = PROJECT_ROOT / "datasets" / "coco" / "val2017"
 SEED = 42
 
 # Representative prompts for calibration (diverse scenes/styles/objects)
@@ -164,6 +165,7 @@ EXPECTED_SIZES_MB = {
 CALIBRATION_SAMPLES = 64   # default for vae/text_encoder
 CALIBRATION_SAMPLES_UNET = 64  # UNet (heavier, can reduce if OOM)
 CALIBRATION_METHOD = "percentile"  # "minmax" or "percentile"
+CALIBRATION_STREAMING_CHUNK = 1
 
 
 def _update_output_dir(new_dir):
@@ -182,7 +184,7 @@ def get_output_path(component: str, precision: str) -> Path:
     return OUTPUT_DIR / get_output_filename(component, precision)
 
 
-WEIGHTS_DIR = SCRIPTS_DIR.parent / "weights" / "sd_v1.5_inpaint"
+WEIGHTS_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint"
 
 
 def load_sd_pipeline():
@@ -426,81 +428,121 @@ def _has_external_data(onnx_path: Path) -> bool:
 class SdCalibrationDataReader:
     """Calibration data reader for SD pipeline components.
 
-    Supports two modes:
-    - NPZ mode (recommended): Load pre-generated real calibration data from NPZ files.
-      Generate with --generate-calib-data, then use --calib-data <dir> for quantization.
-    - Random mode (fallback): Generate random data with appropriate distributions.
+    Loads pre-generated real calibration data from NPZ files.
+    Generate with --generate-calib-data, then use --calib-data <dir> for quantization.
     """
 
     def __init__(self, component: str, num_samples: int = 20, calib_data_dir=None):
-        if calib_data_dir:
-            self.data = self._load_from_npz(calib_data_dir, component)
-        else:
-            self.data = self._generate_random(component, num_samples)
-        self.iter = iter(self.data)
+        self._real_arrays = None
+        self._keys = []
+        self._num_samples = 0
+        self._index = 0
+        if not calib_data_dir:
+            raise ValueError("Calibration NPZ directory is required. Use --calib-data <dir>.")
 
-    def get_next(self):
-        return next(self.iter, None)
-
-    def rewind(self):
-        self.iter = iter(self.data)
-
-    def _load_from_npz(self, calib_dir, component):
-        npz_path = Path(calib_dir) / f"calib_{component}.npz"
+        npz_path = Path(calib_data_dir) / f"calib_{component}.npz"
         if not npz_path.exists():
             raise FileNotFoundError(f"Calibration data not found: {npz_path}")
-        npz = np.load(npz_path)
-        keys = list(npz.keys())
-        n = len(npz[keys[0]])
-        samples = []
-        for i in range(n):
-            sample = {}
-            for key in keys:
-                sample[key] = npz[key][i:i+1]  # keep batch dim (1, ...)
-            samples.append(sample)
-        print(f"    Loaded {n} real calibration samples from {npz_path.name}")
-        return samples
+        # NOTE: npz + mmap_mode is not true lazy slicing; per-sample access can re-read full arrays.
+        # Load arrays once and reuse slices to avoid repeated full-array decode/allocation.
+        with np.load(npz_path) as npz:
+            self._keys = list(npz.keys())
+            self._real_arrays = {key: npz[key] for key in self._keys}
+        if not self._keys:
+            raise ValueError(f"No tensors found in calibration file: {npz_path}")
+        available = len(self._real_arrays[self._keys[0]])
+        self._num_samples = min(num_samples, available)
+        print(
+            f"    Loaded {self._num_samples}/{available} real calibration samples "
+            f"from {npz_path.name} (cached arrays)"
+        )
 
-    def _generate_random(self, component, n):
-        rng = np.random.default_rng(SEED)
-        samples = []
+    def get_next(self):
+        if self._index >= self._num_samples:
+            return None
 
-        if component == "vae_encoder":
-            for _ in range(n):
-                img = rng.uniform(-1, 1, size=(1, 3, 512, 512)).astype(np.float32)
-                samples.append({"sample": img})
+        i = self._index
+        self._index += 1
 
-        elif component == "text_encoder":
-            from transformers import CLIPTokenizer
-            tokenizer = CLIPTokenizer.from_pretrained(SD_MODEL_ID, subfolder="tokenizer")
-            for i in range(n):
-                prompt = CALIB_PROMPTS[i % len(CALIB_PROMPTS)]
-                tok = tokenizer(
-                    prompt, padding="max_length", max_length=77,
-                    truncation=True, return_tensors="np",
-                )
-                samples.append({"input_ids": tok.input_ids.astype(np.int64)})
+        # Copy only one sample at a time for ORT input ownership safety.
+        return {
+            key: np.ascontiguousarray(self._real_arrays[key][i:i + 1])
+            for key in self._keys
+        }
 
-        elif component == "unet":
-            for _ in range(n):
-                latent = rng.standard_normal((1, 4, 64, 64)).astype(np.float32)
-                mask = (rng.random((1, 1, 64, 64)) > 0.5).astype(np.float32)
-                masked_img_latent = rng.standard_normal((1, 4, 64, 64)).astype(np.float32)
-                sample_9ch = np.concatenate([latent, mask, masked_img_latent], axis=1)
-                samples.append({
-                    "sample": sample_9ch,
-                    "timestep": np.array([rng.integers(1, 1000)], dtype=np.int64),
-                    "encoder_hidden_states": rng.standard_normal((1, 77, 768)).astype(np.float32),
-                })
+    def rewind(self):
+        self._index = 0
 
-        elif component == "vae_decoder":
-            for _ in range(n):
-                samples.append({
-                    "latent_sample": rng.standard_normal((1, 4, 64, 64)).astype(np.float32),
-                })
+def _select_calibration_method(component: str, calibration_method: str):
+    from onnxruntime.quantization import CalibrationMethod
 
-        print(f"    Using {n} random calibration samples (no --calib-data provided)")
-        return samples
+    if component == "text_encoder":
+        return CalibrationMethod.MinMax, "text_encoder has inf mask values with Percentile"
+
+    if calibration_method == "minmax":
+        return CalibrationMethod.MinMax, None
+
+    return CalibrationMethod.Percentile, None
+
+
+def _enable_histogram_streaming_patch(chunk_size: int = 1):
+    """Patch ORT HistogramCalibrater to collect histogram incrementally (lower peak RAM)."""
+    import copy
+    from onnxruntime.quantization import calibrate as ort_calib
+
+    chunk_size = max(1, int(chunk_size))
+    current = ort_calib.HistogramCalibrater.collect_data
+    if getattr(current, "_streaming_patch", False):
+        return
+
+    def _collect_data_streaming(self, data_reader):
+        input_names_set = {node_arg.name for node_arg in self.infer_session.get_inputs()}
+        output_names = [node_arg.name for node_arg in self.infer_session.get_outputs()]
+
+        if not self.collector:
+            self.collector = ort_calib.HistogramCollector(
+                method=self.method,
+                symmetric=self.symmetric,
+                num_bins=self.num_bins,
+                num_quantized_bins=self.num_quantized_bins,
+                percentile=self.percentile,
+                scenario=self.scenario,
+            )
+
+        seen = 0
+        pending = {}
+
+        while True:
+            inputs = data_reader.get_next()
+            if not inputs:
+                break
+
+            outputs = self.infer_session.run(None, inputs)
+            for output_index, output in enumerate(outputs):
+                name = output_names[output_index]
+                if name not in self.tensors_to_calibrate:
+                    continue
+                if name in input_names_set:
+                    output = copy.copy(output)
+                pending.setdefault(name, []).append(output)
+
+            seen += 1
+            if seen % chunk_size == 0:
+                self.collector.collect(pending)
+                pending = {}
+
+            del outputs
+
+        if pending:
+            self.collector.collect(pending)
+
+        if seen == 0:
+            raise ValueError("No data is collected.")
+
+        self.clear_collected_data()
+
+    _collect_data_streaming._streaming_patch = True
+    ort_calib.HistogramCalibrater.collect_data = _collect_data_streaming
 
 
 def _load_coco_images(num_images: int, image_dir: Path, seed: int = SEED):
@@ -576,7 +618,7 @@ def generate_calibration_data(num_samples: int, output_dir: Path,
     rng = np.random.default_rng(SEED)
     gen = torch.Generator().manual_seed(SEED)
 
-    # 1. Text encoder: diverse real prompts → hidden states
+    # 1. Text encoder: diverse real prompts ??hidden states
     print("\n  [1/4] Text encoder: tokenizing prompts...")
     text_enc_input_ids = []
     text_enc_hidden_states = []
@@ -596,15 +638,15 @@ def generate_calibration_data(num_samples: int, output_dir: Path,
     text_enc_hidden_states = np.concatenate(text_enc_hidden_states, axis=0)
     np.savez(output_dir / "calib_text_encoder.npz",
              input_ids=text_enc_input_ids)
-    print(f"    {num_samples} prompts → input_ids {text_enc_input_ids.shape}")
+    print(f"    {num_samples} prompts ??input_ids {text_enc_input_ids.shape}")
 
     # 2. VAE encoder: real COCO images
     print("\n  [2/4] VAE encoder: real COCO images...")
     vae_enc_samples = np.concatenate(coco_images, axis=0)  # (N, 3, 512, 512)
     np.savez(output_dir / "calib_vae_encoder.npz", sample=vae_enc_samples)
-    print(f"    {num_samples} images → {vae_enc_samples.shape}")
+    print(f"    {num_samples} images ??{vae_enc_samples.shape}")
 
-    # 3. VAE decoder: encode real images → real latents
+    # 3. VAE decoder: encode real images ??real latents
     print("\n  [3/4] VAE decoder: encoding images to latents...")
     vae_dec_samples = []
     with torch.no_grad():
@@ -616,7 +658,7 @@ def generate_calibration_data(num_samples: int, output_dir: Path,
 
     vae_dec_samples = np.concatenate(vae_dec_samples, axis=0)
     np.savez(output_dir / "calib_vae_decoder.npz", latent_sample=vae_dec_samples)
-    print(f"    {num_samples} latents → {vae_dec_samples.shape}")
+    print(f"    {num_samples} latents ??{vae_dec_samples.shape}")
 
     # 4. UNet: real text embeddings + noisy real latents at stratified timesteps
     print("\n  [4/4] UNet: assembling inpainting inputs...")
@@ -724,17 +766,31 @@ def quantize_static_qdq(fp32_path: Path, output_path: Path, component: str,
     # Preprocess model
     preprocessed_path = preprocess_for_quantization(fp32_path)
 
+    if not calib_data_dir:
+        raise ValueError("INT8 quantization requires --calib-data <dir> with calib_*.npz files.")
+
     # Calibration data
     num_samples = CALIBRATION_SAMPLES_UNET if component == "unet" else CALIBRATION_SAMPLES
-    source = "real NPZ" if calib_data_dir else "random"
-    print(f"    Calibration: {num_samples} samples ({CALIBRATION_METHOD}, {source})")
+    print(f"    Calibration: {num_samples} samples ({CALIBRATION_METHOD}, real NPZ)")
     calibrator = SdCalibrationDataReader(component, num_samples, calib_data_dir)
 
-    # Text encoder needs MinMax (Percentile fails due to inf in causal attention mask)
-    if component == "text_encoder" or CALIBRATION_METHOD == "minmax":
-        calib_method = CalibrationMethod.MinMax
+    calib_method, reason = _select_calibration_method(component, CALIBRATION_METHOD)
+    if reason:
+        print(f"    Calibration override: {reason}")
+
+    if calib_method == CalibrationMethod.Percentile:
+        _enable_histogram_streaming_patch(CALIBRATION_STREAMING_CHUNK)
+        print(f"    Histogram collection: streaming (chunk={CALIBRATION_STREAMING_CHUNK})")
+
+    extra_options = {}
+    if calib_method == CalibrationMethod.MinMax:
+        # Moving-average MinMax is often more robust than raw MinMax with outliers.
+        extra_options["CalibMovingAverage"] = True
+        extra_options["CalibMovingAverageConstant"] = 0.01
     else:
-        calib_method = CalibrationMethod.Percentile
+        # Keep percentile defaults explicit for reproducibility and easier tuning.
+        extra_options["num_bins"] = 2048
+        extra_options["percentile"] = 99.999
 
     # UNet with external data needs use_external_data_format
     use_external = _has_external_data(preprocessed_path)
@@ -749,6 +805,7 @@ def quantize_static_qdq(fp32_path: Path, output_path: Path, component: str,
         per_channel=False,
         calibrate_method=calib_method,
         use_external_data_format=use_external,
+        extra_options=extra_options,
     )
 
     # Cleanup preprocessed file
@@ -871,7 +928,7 @@ def check_status():
 
 
 def main():
-    global CALIBRATION_SAMPLES, CALIBRATION_SAMPLES_UNET, CALIBRATION_METHOD
+    global CALIBRATION_SAMPLES, CALIBRATION_SAMPLES_UNET, CALIBRATION_METHOD, CALIBRATION_STREAMING_CHUNK
 
     parser = argparse.ArgumentParser(
         description="Export SD v1.5 Inpainting sub-models to ONNX with quantization"
@@ -929,6 +986,12 @@ def main():
         help="Calibration method (default: percentile)"
     )
     parser.add_argument(
+        "--calibration-streaming-chunk",
+        type=int,
+        default=CALIBRATION_STREAMING_CHUNK,
+        help="Histogram calibration streaming chunk size (default: 1, lower peak RAM)"
+    )
+    parser.add_argument(
         "--generate-calib-data",
         action="store_true",
         help="Generate real calibration NPZ files from COCO images + SD pipeline"
@@ -953,6 +1016,7 @@ def main():
 
     CALIBRATION_SAMPLES = args.calibration_samples
     CALIBRATION_METHOD = args.calibration_method
+    CALIBRATION_STREAMING_CHUNK = max(1, args.calibration_streaming_chunk)
 
     if args.generate_calib_data:
         calib_dir = args.output or OUTPUT_DIR
@@ -968,6 +1032,14 @@ def main():
     if args.status:
         check_status()
         return
+
+    if "int8" in args.precision and args.calib_data is None:
+        parser.error(
+            "INT8 quantization requires --calib-data <dir>. "
+            "Generate first with --generate-calib-data."
+        )
+    if args.calib_data is not None and not args.calib_data.exists():
+        parser.error(f"--calib-data directory does not exist: {args.calib_data}")
 
     if args.force:
         for comp in (args.export or list(COMPONENTS.keys()) if args.export_all else []):
@@ -987,10 +1059,10 @@ def main():
         parser.print_help()
         print(f"\nAvailable components: {', '.join(COMPONENTS.keys())}")
         print("\nExamples:")
-        print("  python export_sd_to_onnx.py --export-all")
-        print("  python export_sd_to_onnx.py --export text_encoder unet --precision int8")
-        print("  python export_sd_to_onnx.py --export vae_encoder --precision fp32 int8")
-        print("  python export_sd_to_onnx.py --status")
+        print("  python scripts/sd/export_sd_to_onnx.py --export-all")
+        print("  python scripts/sd/export_sd_to_onnx.py --export text_encoder unet --precision int8")
+        print("  python scripts/sd/export_sd_to_onnx.py --export vae_encoder --precision fp32 int8")
+        print("  python scripts/sd/export_sd_to_onnx.py --status")
         return
 
     all_exported = []
@@ -1027,3 +1099,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -15,27 +15,85 @@ Precision variants:
 Calibration uses COCO val2017 images for representative data.
 
 Usage:
-    python export_yolo_seg.py --export-all
-    python export_yolo_seg.py --export fp32
-    python export_yolo_seg.py --export int8
-    python export_yolo_seg.py --export int8_full
-    python export_yolo_seg.py --status
-    python export_yolo_seg.py --export int8 --calib-data path/to/images/
+    python scripts/yolo/export_yolo_seg.py --export-all
+    python scripts/yolo/export_yolo_seg.py --export fp32
+    python scripts/yolo/export_yolo_seg.py --export int8
+    python scripts/yolo/export_yolo_seg.py --export int8_full
+    python scripts/yolo/export_yolo_seg.py --status
+    python scripts/yolo/export_yolo_seg.py --export int8 --calib-data path/to/images/
 """
 
 import argparse
+import copy
 import glob
 from pathlib import Path
 
 import numpy as np
 
 SCRIPTS_DIR = Path(__file__).parent
-OUTPUT_DIR = SCRIPTS_DIR.parent / "weights" / "yolov8n_seg" / "onnx"
+PROJECT_ROOT = SCRIPTS_DIR.parent.parent
+OUTPUT_DIR = PROJECT_ROOT / "weights" / "yolov8n_seg" / "onnx"
 MODEL_NAME = "yolov8n-seg"
 INPUT_SIZE = 640
 
 # Expected sizes
 EXPECTED_SIZES_MB = {"fp32": 13, "int8_noh": 7, "int8_full": 7}
+CALIBRATION_STREAMING_CHUNK = 1
+
+
+def _enable_histogram_streaming_patch(chunk_size: int = 1):
+    """Patch ORT HistogramCalibrater to collect histogram incrementally."""
+    from onnxruntime.quantization import calibrate as ort_calib
+
+    chunk_size = max(1, int(chunk_size))
+    current = ort_calib.HistogramCalibrater.collect_data
+    if getattr(current, "_streaming_patch", False):
+        return
+
+    def _collect_data_streaming(self, data_reader):
+        input_names_set = {node_arg.name for node_arg in self.infer_session.get_inputs()}
+        output_names = [node_arg.name for node_arg in self.infer_session.get_outputs()]
+
+        if not self.collector:
+            self.collector = ort_calib.HistogramCollector(
+                method=self.method,
+                symmetric=self.symmetric,
+                num_bins=self.num_bins,
+                num_quantized_bins=self.num_quantized_bins,
+                percentile=self.percentile,
+                scenario=self.scenario,
+            )
+
+        seen = 0
+        pending = {}
+        while True:
+            inputs = data_reader.get_next()
+            if not inputs:
+                break
+
+            outputs = self.infer_session.run(None, inputs)
+            for output_index, output in enumerate(outputs):
+                name = output_names[output_index]
+                if name not in self.tensors_to_calibrate:
+                    continue
+                if name in input_names_set:
+                    output = copy.copy(output)
+                pending.setdefault(name, []).append(output)
+
+            seen += 1
+            if seen % chunk_size == 0:
+                self.collector.collect(pending)
+                pending = {}
+            del outputs
+
+        if pending:
+            self.collector.collect(pending)
+        if seen == 0:
+            raise ValueError("No data is collected.")
+        self.clear_collected_data()
+
+    _collect_data_streaming._streaming_patch = True
+    ort_calib.HistogramCalibrater.collect_data = _collect_data_streaming
 
 
 def export_fp32(output_dir: Path, force: bool = False) -> Path:
@@ -107,42 +165,41 @@ def quantize_int8(fp32_path: Path, output_dir: Path,
         print(f"  Reusing existing: {int8_path.name} ({size_mb:.1f} MB)")
         return int8_path
 
+    if calib_data_dir is None:
+        raise ValueError("INT8 quantization requires --calib-data <image_dir>.")
+    if not Path(calib_data_dir).exists():
+        raise FileNotFoundError(f"Calibration image directory not found: {calib_data_dir}")
+
     # Get head nodes to exclude
     head_nodes = get_head_nodes(fp32_path)
 
     class YoloCalibReader(CalibrationDataReader):
         def __init__(self, data_dir, n, input_size):
-            self.data = []
-            if data_dir and Path(data_dir).exists():
-                # Use real images from directory
-                from PIL import Image
-                image_files = sorted(glob.glob(str(Path(data_dir) / "*.jpg")))
-                image_files += sorted(glob.glob(str(Path(data_dir) / "*.png")))
-                image_files = image_files[:n]
-                print(f"  Using {len(image_files)} real images from {data_dir}")
-                for img_path in image_files:
-                    img = Image.open(img_path).convert("RGB").resize((input_size, input_size))
-                    arr = np.array(img).astype(np.float32) / 255.0
-                    arr = arr.transpose(2, 0, 1)[np.newaxis]  # (1, 3, H, W)
-                    self.data.append({"images": arr})
-            else:
-                # Fallback: random data
-                print(f"  Using {n} random calibration samples (no image dir specified)")
-                rng = np.random.default_rng(42)
-                for _ in range(n):
-                    self.data.append({
-                        "images": rng.random((1, 3, input_size, input_size)).astype(np.float32),
-                    })
-            self.iter = iter(self.data)
+            self.input_size = input_size
+            from PIL import Image
+            self._Image = Image
+            image_files = sorted(glob.glob(str(Path(data_dir) / "*.jpg")))
+            image_files += sorted(glob.glob(str(Path(data_dir) / "*.png")))
+            self.image_files = image_files[:n]
+            print(f"  Using {len(self.image_files)} real images from {data_dir}")
+            self.idx = 0
 
         def get_next(self):
-            return next(self.iter, None)
+            if self.idx >= len(self.image_files):
+                return None
+            img = self._Image.open(self.image_files[self.idx]).convert("RGB").resize((self.input_size, self.input_size))
+            arr = np.array(img).astype(np.float32) / 255.0
+            arr = arr.transpose(2, 0, 1)[np.newaxis]  # (1, 3, H, W)
+            self.idx += 1
+            return {"images": arr}
 
         def rewind(self):
-            self.iter = iter(self.data)
+            self.idx = 0
 
     print(f"\n  Quantizing {MODEL_NAME} to INT8 QDQ (head excluded)...")
     reader = YoloCalibReader(calib_data_dir, num_samples, INPUT_SIZE)
+    _enable_histogram_streaming_patch(CALIBRATION_STREAMING_CHUNK)
+    print(f"  Histogram collection: streaming (chunk={CALIBRATION_STREAMING_CHUNK})")
 
     quantize_static(
         model_input=str(fp32_path),
@@ -154,6 +211,7 @@ def quantize_int8(fp32_path: Path, output_dir: Path,
         per_channel=False,
         calibrate_method=CalibrationMethod.Percentile,
         nodes_to_exclude=head_nodes,
+        extra_options={"num_bins": 2048, "percentile": 99.999},
     )
 
     fp32_size = fp32_path.stat().st_size / 1024 / 1024
@@ -166,7 +224,7 @@ def quantize_int8(fp32_path: Path, output_dir: Path,
 def quantize_int8_full(fp32_path: Path, output_dir: Path,
                        calib_data_dir: Path = None, num_samples: int = 20,
                        force: bool = False) -> Path:
-    """Quantize YOLOv8n-seg to INT8 QDQ — all nodes including head."""
+    """Quantize YOLOv8n-seg to INT8 QDQ (all nodes including head)."""
     from onnxruntime.quantization import (
         quantize_static, QuantFormat, QuantType, CalibrationMethod,
     )
@@ -179,37 +237,38 @@ def quantize_int8_full(fp32_path: Path, output_dir: Path,
         print(f"  Reusing existing: {int8_full_path.name} ({size_mb:.1f} MB)")
         return int8_full_path
 
+    if calib_data_dir is None:
+        raise ValueError("INT8 quantization requires --calib-data <image_dir>.")
+    if not Path(calib_data_dir).exists():
+        raise FileNotFoundError(f"Calibration image directory not found: {calib_data_dir}")
+
     class YoloCalibReader(CalibrationDataReader):
         def __init__(self, data_dir, n, input_size):
-            self.data = []
-            if data_dir and Path(data_dir).exists():
-                from PIL import Image
-                image_files = sorted(glob.glob(str(Path(data_dir) / "*.jpg")))
-                image_files += sorted(glob.glob(str(Path(data_dir) / "*.png")))
-                image_files = image_files[:n]
-                print(f"  Using {len(image_files)} real images from {data_dir}")
-                for img_path in image_files:
-                    img = Image.open(img_path).convert("RGB").resize((input_size, input_size))
-                    arr = np.array(img).astype(np.float32) / 255.0
-                    arr = arr.transpose(2, 0, 1)[np.newaxis]
-                    self.data.append({"images": arr})
-            else:
-                print(f"  Using {n} random calibration samples (no image dir specified)")
-                rng = np.random.default_rng(42)
-                for _ in range(n):
-                    self.data.append({
-                        "images": rng.random((1, 3, input_size, input_size)).astype(np.float32),
-                    })
-            self.iter = iter(self.data)
+            self.input_size = input_size
+            from PIL import Image
+            self._Image = Image
+            image_files = sorted(glob.glob(str(Path(data_dir) / "*.jpg")))
+            image_files += sorted(glob.glob(str(Path(data_dir) / "*.png")))
+            self.image_files = image_files[:n]
+            print(f"  Using {len(self.image_files)} real images from {data_dir}")
+            self.idx = 0
 
         def get_next(self):
-            return next(self.iter, None)
+            if self.idx >= len(self.image_files):
+                return None
+            img = self._Image.open(self.image_files[self.idx]).convert("RGB").resize((self.input_size, self.input_size))
+            arr = np.array(img).astype(np.float32) / 255.0
+            arr = arr.transpose(2, 0, 1)[np.newaxis]  # (1, 3, H, W)
+            self.idx += 1
+            return {"images": arr}
 
         def rewind(self):
-            self.iter = iter(self.data)
+            self.idx = 0
 
-    print(f"\n  Quantizing {MODEL_NAME} to INT8 QDQ (full — head included)...")
+    print(f"\n  Quantizing {MODEL_NAME} to INT8 QDQ (full, head included)...")
     reader = YoloCalibReader(calib_data_dir, num_samples, INPUT_SIZE)
+    _enable_histogram_streaming_patch(CALIBRATION_STREAMING_CHUNK)
+    print(f"  Histogram collection: streaming (chunk={CALIBRATION_STREAMING_CHUNK})")
 
     quantize_static(
         model_input=str(fp32_path),
@@ -220,7 +279,8 @@ def quantize_int8_full(fp32_path: Path, output_dir: Path,
         weight_type=QuantType.QInt8,
         per_channel=False,
         calibrate_method=CalibrationMethod.Percentile,
-        # No nodes_to_exclude — quantize everything
+        extra_options={"num_bins": 2048, "percentile": 99.999},
+        # No nodes_to_exclude: quantize everything
     )
 
     fp32_size = fp32_path.stat().st_size / 1024 / 1024
@@ -251,6 +311,7 @@ def check_status():
 
 
 def main():
+    global CALIBRATION_STREAMING_CHUNK
     parser = argparse.ArgumentParser(
         description="Export YOLOv8n-seg to ONNX with INT8 quantization"
     )
@@ -275,12 +336,22 @@ def main():
         default=20,
         help="Number of calibration samples (default: 20)",
     )
+    parser.add_argument(
+        "--calibration-streaming-chunk",
+        type=int,
+        default=CALIBRATION_STREAMING_CHUNK,
+        help="Histogram calibration streaming chunk size for percentile (default: 1)",
+    )
 
     args = parser.parse_args()
+    CALIBRATION_STREAMING_CHUNK = max(1, args.calibration_streaming_chunk)
 
     if args.status:
         check_status()
         return
+
+    if args.calib_data is not None and not args.calib_data.exists():
+        parser.error(f"--calib-data directory does not exist: {args.calib_data}")
 
     precisions = []
     if args.export_all or (args.export and "all" in args.export):
@@ -291,11 +362,14 @@ def main():
     if not precisions:
         parser.print_help()
         print(f"\nExamples:")
-        print(f"  python export_yolo_seg.py --export-all")
-        print(f"  python export_yolo_seg.py --export int8 int8_full")
-        print(f"  python export_yolo_seg.py --export int8 --calib-data path/to/coco/val2017/")
-        print(f"  python export_yolo_seg.py --status")
+        print(f"  python scripts/yolo/export_yolo_seg.py --export-all")
+        print(f"  python scripts/yolo/export_yolo_seg.py --export int8 int8_full")
+        print(f"  python scripts/yolo/export_yolo_seg.py --export int8 --calib-data path/to/coco/val2017/")
+        print(f"  python scripts/yolo/export_yolo_seg.py --status")
         return
+
+    if ("int8" in precisions or "int8_full" in precisions) and args.calib_data is None:
+        parser.error("INT8 quantization requires --calib-data <image_dir>.")
 
     # FP32 is always needed for INT8 variants
     fp32_path = None
@@ -325,3 +399,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

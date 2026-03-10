@@ -19,11 +19,11 @@ Methodology:
 3. Optionally run ultralytics val() for official COCO mAP
 
 Usage:
-    python eval_yolo_seg_quality.py --compare --download-coco
-    python eval_yolo_seg_quality.py --compare --data-dir path/to/coco/val2017/images/
-    python eval_yolo_seg_quality.py --compare --num-images 50
-    python eval_yolo_seg_quality.py --coco-val --data path/to/coco.yaml
-    python eval_yolo_seg_quality.py --status
+    python scripts/yolo/eval_yolo_seg_quality.py --compare --download-coco
+    python scripts/yolo/eval_yolo_seg_quality.py --compare --data-dir path/to/coco/val2017/images/
+    python scripts/yolo/eval_yolo_seg_quality.py --compare --num-images 50
+    python scripts/yolo/eval_yolo_seg_quality.py --coco-val --data path/to/coco.yaml
+    python scripts/yolo/eval_yolo_seg_quality.py --status
 """
 
 import argparse
@@ -35,15 +35,16 @@ from pathlib import Path
 import numpy as np
 
 SCRIPTS_DIR = Path(__file__).parent
-WEIGHTS_DIR = SCRIPTS_DIR.parent / "weights" / "yolov8n_seg" / "onnx"
-OUTPUTS_DIR = SCRIPTS_DIR.parent / "outputs" / "yolo_seg_quality"
+PROJECT_ROOT = SCRIPTS_DIR.parent.parent
+WEIGHTS_DIR = PROJECT_ROOT / "weights" / "yolov8n_seg" / "onnx"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs" / "yolo_seg_quality"
 
 MODEL_NAME = "yolov8n-seg"
 FP32_PATH = WEIGHTS_DIR / f"{MODEL_NAME}.onnx"
 INT8_NOH_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_int8_qdq_noh.onnx"
 INT8_FULL_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_int8_qdq.onnx"
 
-DATASETS_DIR = SCRIPTS_DIR.parent / "datasets"
+DATASETS_DIR = PROJECT_ROOT / "datasets"
 COCO_VAL_DIR = DATASETS_DIR / "coco" / "val2017"
 
 INPUT_SIZE = 640
@@ -155,8 +156,8 @@ def decode_yolo_seg_outputs(outputs, conf_thresh=CONF_THRESHOLD,
     """Decode YOLOv8-seg raw outputs into boxes, scores, classes, masks.
 
     YOLOv8-seg outputs:
-    - output0: [1, 116, 8400] — 4 bbox + 80 classes + 32 mask coefficients
-    - output1: [1, 32, 160, 160] — prototype masks
+    - output0: [1, 116, 8400] ??4 bbox + 80 classes + 32 mask coefficients
+    - output1: [1, 32, 160, 160] ??prototype masks
 
     Returns:
         boxes: (N, 4) in xyxy format (input_size scale)
@@ -405,12 +406,12 @@ def run_pairwise_comparison(image_dir: Path, num_images: int = 50,
 
     if not FP32_PATH.exists():
         print(f"  Error: FP32 model not found: {FP32_PATH}")
-        print(f"  Run: python export_yolo_seg.py --export-all")
+        print(f"  Run: python scripts/yolo/export_yolo_seg.py --export-all")
         return {}
 
     if not variants:
         print(f"  Error: No INT8 models found.")
-        print(f"  Run: python export_yolo_seg.py --export-all")
+        print(f"  Run: python scripts/yolo/export_yolo_seg.py --export-all")
         return {}
 
     print("\n" + "=" * 70)
@@ -567,7 +568,7 @@ def run_coco_val(data_yaml: str):
     model_list = [("FP32", FP32_PATH), ("INT8_noh", INT8_NOH_PATH), ("INT8_full", INT8_FULL_PATH)]
     for label, model_path in model_list:
         if not model_path.exists():
-            print(f"\n  {label}: Model not found — {model_path}")
+            print(f"\n  {label}: Model not found ??{model_path}")
             continue
 
         print(f"\n  Evaluating {label}: {model_path.name}")
@@ -633,7 +634,7 @@ def print_summary(all_agg: dict):
     print(f"  FP32:   {FP32_PATH.name} ({FP32_PATH.stat().st_size / 1024 / 1024:.1f} MB)")
 
     for label, agg in all_agg.items():
-        print(f"\n  {'─' * 70}")
+        print(f"\n  {'?' * 70}")
         print(f"  Variant: {label}")
         print(f"  Images:  {agg['num_images']}")
 
@@ -651,20 +652,20 @@ def print_summary(all_agg: dict):
         print(f"      Class match: {agg['class_match_rate'] * 100:.1f}%")
 
         print(f"\n    Latency (CPU):")
-        print(f"      FP32:    {agg['fp32_latency_mean_ms']:.1f} ± {agg['fp32_latency_std_ms']:.1f} ms")
-        print(f"      {label}: {agg['int8_latency_mean_ms']:.1f} ± {agg['int8_latency_std_ms']:.1f} ms")
+        print(f"      FP32:    {agg['fp32_latency_mean_ms']:.1f} 짹 {agg['fp32_latency_std_ms']:.1f} ms")
+        print(f"      {label}: {agg['int8_latency_mean_ms']:.1f} 짹 {agg['int8_latency_std_ms']:.1f} ms")
         print(f"      Speedup: {agg['speedup']:.2f}x")
 
     # Comparison table if multiple variants
     if len(all_agg) > 1:
         print(f"\n  {'=' * 70}")
         print(f"  Variant Comparison")
-        print(f"  {'─' * 70}")
+        print(f"  {'?' * 70}")
         header = f"  {'Metric':<22}"
         for label in all_agg:
             header += f" {label:>14}"
         print(header)
-        print(f"  {'─' * 70}")
+        print(f"  {'?' * 70}")
         for metric, fmt in [
             ("mask_iou_mean", ".4f"), ("bbox_iou_mean", ".4f"),
             ("match_rate", ".1f"), ("class_match_rate", ".1%"),
@@ -685,14 +686,14 @@ def print_summary(all_agg: dict):
         miou = agg["mask_iou_mean"]
         mrate = agg["match_rate"]
         if miou >= 0.95:
-            qual = "Excellent — negligible impact"
+            qual = "Excellent ??negligible impact"
         elif miou >= 0.90:
-            qual = "Good — minor differences"
+            qual = "Good ??minor differences"
         elif miou >= 0.80:
-            qual = "Moderate — visible differences"
+            qual = "Moderate ??visible differences"
         else:
             qual = "Significant degradation"
-        print(f"    {label}: Mask IoU={miou:.4f}, Match={mrate:.1f}% → {qual}")
+        print(f"    {label}: Mask IoU={miou:.4f}, Match={mrate:.1f}% ??{qual}")
 
     print()
 
@@ -837,10 +838,10 @@ def main():
     if not args.compare and not args.coco_val:
         parser.print_help()
         print("\nExamples:")
-        print("  python eval_yolo_seg_quality.py --compare --download-coco")
-        print("  python eval_yolo_seg_quality.py --compare --data-dir path/to/images/ --num-images 100")
-        print("  python eval_yolo_seg_quality.py --coco-val --data coco.yaml")
-        print("  python eval_yolo_seg_quality.py --status")
+        print("  python scripts/yolo/eval_yolo_seg_quality.py --compare --download-coco")
+        print("  python scripts/yolo/eval_yolo_seg_quality.py --compare --data-dir path/to/images/ --num-images 100")
+        print("  python scripts/yolo/eval_yolo_seg_quality.py --coco-val --data coco.yaml")
+        print("  python scripts/yolo/eval_yolo_seg_quality.py --status")
         return
 
     all_agg = {}
@@ -878,3 +879,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

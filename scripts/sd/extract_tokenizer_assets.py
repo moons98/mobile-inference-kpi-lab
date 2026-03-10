@@ -6,8 +6,8 @@ These files are required by the on-device Tokenizer.kt for SD v1.5 inpainting.
 Output goes to android/app/src/main/assets/ for APK bundling.
 
 Usage:
-    python extract_tokenizer_assets.py
-    python extract_tokenizer_assets.py --output /path/to/output
+    python scripts/sd/extract_tokenizer_assets.py
+    python scripts/sd/extract_tokenizer_assets.py --output /path/to/output
 """
 
 import argparse
@@ -17,8 +17,9 @@ from pathlib import Path
 
 SD_MODEL_ID = "stable-diffusion-v1-5/stable-diffusion-inpainting"
 SCRIPTS_DIR = Path(__file__).parent
-WEIGHTS_DIR = SCRIPTS_DIR.parent / "weights" / "sd_v1.5_inpaint"
-DEFAULT_OUTPUT = SCRIPTS_DIR.parent / "android" / "app" / "src" / "main" / "assets"
+PROJECT_ROOT = SCRIPTS_DIR.parent.parent
+WEIGHTS_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint"
+DEFAULT_OUTPUT = PROJECT_ROOT / "android" / "app" / "src" / "main" / "assets"
 
 
 def extract_tokenizer(output_dir: Path):
@@ -86,3 +87,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

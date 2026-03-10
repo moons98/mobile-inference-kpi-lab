@@ -2,7 +2,7 @@
 """
 Evaluate SD v1.5 Inpainting INT8 QDQ quantization quality degradation.
 
-Component-level comparison: same input → FP32 vs INT8 output → measure error.
+Component-level comparison: same input ??FP32 vs INT8 output ??measure error.
 Uses pre-generated calibration NPZ as test inputs.
 
 Metrics:
@@ -13,9 +13,9 @@ Metrics:
 - SSIM: structural similarity (for vae_decoder image output)
 
 Usage:
-    python eval_sd_inpaint_quality.py
-    python eval_sd_inpaint_quality.py --components vae_encoder text_encoder
-    python eval_sd_inpaint_quality.py --num-samples 8
+    python scripts/sd/eval_sd_inpaint_quality.py
+    python scripts/sd/eval_sd_inpaint_quality.py --components vae_encoder text_encoder
+    python scripts/sd/eval_sd_inpaint_quality.py --num-samples 8
 """
 
 import argparse
@@ -26,7 +26,8 @@ from pathlib import Path
 import numpy as np
 
 SCRIPTS_DIR = Path(__file__).parent
-MODEL_DIR = SCRIPTS_DIR.parent / "weights" / "sd_v1.5_inpaint" / "onnx"
+PROJECT_ROOT = SCRIPTS_DIR.parent.parent
+MODEL_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "onnx"
 
 ALL_COMPONENTS = ["vae_encoder", "text_encoder", "vae_decoder", "unet"]
 
@@ -239,3 +240,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
