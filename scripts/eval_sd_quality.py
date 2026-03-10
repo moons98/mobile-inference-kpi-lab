@@ -278,9 +278,8 @@ def generate_onnx_images(
         uncond_ids = uncond_input.input_ids.astype(np.int64)
 
         # 2. Text Encoder
-        text_embeddings = text_enc_sess.run(None, {"input_ids": input_ids})[0]
+        text_embeddings_cond = text_enc_sess.run(None, {"input_ids": input_ids})[0]
         uncond_embeddings = text_enc_sess.run(None, {"input_ids": uncond_ids})[0]
-        text_embeddings = np.concatenate([uncond_embeddings, text_embeddings])
 
         # 3. Prepare latents
         rng = np.random.default_rng(seed + i)
@@ -292,19 +291,23 @@ def generate_onnx_images(
         # 4. UNet denoising loop
         guidance_scale = 7.5
         for t_idx, t in enumerate(scheduler.timesteps):
-            latent_model_input = np.concatenate([latents, latents])
-
             # Scale model input
-            timestep_val = np.array([float(t)], dtype=np.float32)
+            timestep_val = np.array([int(t)], dtype=np.int64)
 
-            noise_pred = unet_sess.run(None, {
-                "sample": latent_model_input.astype(np.float32),
+            # Run UNet twice (batch=1) for classifier-free guidance
+            # (ONNX exported with fixed batch=1, no dynamic_axes)
+            noise_pred_uncond = unet_sess.run(None, {
+                "sample": latents.astype(np.float32),
                 "timestep": timestep_val,
-                "encoder_hidden_states": text_embeddings.astype(np.float32),
+                "encoder_hidden_states": uncond_embeddings.astype(np.float32),
+            })[0]
+            noise_pred_text = unet_sess.run(None, {
+                "sample": latents.astype(np.float32),
+                "timestep": timestep_val,
+                "encoder_hidden_states": text_embeddings_cond.astype(np.float32),
             })[0]
 
             # Classifier-free guidance
-            noise_pred_uncond, noise_pred_text = np.split(noise_pred, 2)
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
             # Scheduler step

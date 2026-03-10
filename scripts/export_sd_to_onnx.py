@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-Export Stable Diffusion v2.1 sub-models to ONNX and quantize.
+Export Stable Diffusion v1.5 Inpainting sub-models to ONNX and quantize.
 
-Exports four pipeline components independently (img2img pipeline):
-- VAE Encoder (AutoencoderKL encoder) - image -> latent
-- Text Encoder (CLIP ViT-L/14)
-- UNet (UNet2DConditionModel)
+Exports four pipeline components independently (AI Eraser / inpainting pipeline):
+- VAE Encoder (AutoencoderKL encoder) - image -> latent (for masked image encoding)
+- Text Encoder (CLIP ViT-L/14, 768 dim)
+- UNet (UNet2DConditionModel, 9ch input: latent 4 + mask 1 + masked_image 4)
 - VAE Decoder (AutoencoderKL decoder)
 
 Precision variants:
 - FP32: PyTorch default export (baseline, also used with useNpuFp16 runtime option)
 - INT8 QDQ: Static quantization with calibration (QNN EP / NPU compatible)
-  Uses get_qnn_qdq_config() + quantize() - same approach as YOLO quantization.
-  W8A16 vs W8A8 distinction is handled by QAI Hub at QNN compilation level.
+  Uses quantize_static() with QDQ format for NPU INT8 inference.
 
 Note: FP16 is NOT a separate ONNX export. On-device FP16 inference is achieved
 by running the FP32 model with the QNN EP `useNpuFp16` runtime option.
@@ -24,6 +23,10 @@ Usage:
     python export_sd_to_onnx.py --export vae_encoder --precision fp32 int8
     python export_sd_to_onnx.py --status
     python export_sd_to_onnx.py --list
+
+    # Real-data calibration workflow (recommended):
+    python export_sd_to_onnx.py --generate-calib-data              # local: generate NPZ
+    python export_sd_to_onnx.py --export vae_encoder --precision int8 --calib-data weights/sd_v1.5_inpaint/onnx
 """
 
 import argparse
@@ -33,9 +36,79 @@ from pathlib import Path
 
 import numpy as np
 
-SD_MODEL_ID = "sd2-community/stable-diffusion-2-1"
+SD_MODEL_ID = "stable-diffusion-v1-5/stable-diffusion-inpainting"
 SCRIPTS_DIR = Path(__file__).parent
-OUTPUT_DIR = SCRIPTS_DIR.parent / "weights" / "sd_v2.1" / "onnx"
+OUTPUT_DIR = SCRIPTS_DIR.parent / "weights" / "sd_v1.5_inpaint" / "onnx"
+CALIB_IMAGES_DIR = SCRIPTS_DIR.parent / "datasets" / "coco" / "val2017"
+SEED = 42
+
+# Representative prompts for calibration (diverse scenes/styles/objects)
+CALIB_PROMPTS = [
+    "a photo of a dog playing in the park",
+    "sunset beach with golden light",
+    "snowy winter cityscape at night",
+    "lush green forest with sunlight filtering through trees",
+    "futuristic neon city street at night",
+    "a photo of a cat sitting on a wooden chair",
+    "mountain landscape with dramatic clouds",
+    "modern architecture building with glass facade",
+    "portrait of a woman in oil painting style",
+    "colorful abstract geometric pattern",
+    "a cozy coffee shop interior with warm lighting",
+    "ocean waves crashing on rocky shore",
+    "autumn leaves in a park pathway",
+    "vintage car on a country road",
+    "night sky with stars and milky way",
+    "japanese garden with cherry blossoms",
+    "underwater coral reef scene with tropical fish",
+    "medieval castle on a hilltop at dawn",
+    "tropical rainforest with waterfall",
+    "minimalist scandinavian living room",
+    "busy city intersection with pedestrians",
+    "close-up of fresh fruits on a table",
+    "snow-covered mountain peak at sunrise",
+    "old brick building with ivy growing on walls",
+    "a bicycle leaning against a fence",
+    "crowded market street with colorful stalls",
+    "calm lake reflecting mountains at dusk",
+    "a person walking through a wheat field",
+    "aerial view of a winding river through forest",
+    "rainy street with reflections and umbrellas",
+    "desert sand dunes under blue sky",
+    "a bowl of ramen on a wooden table",
+    "sunflower field stretching to the horizon",
+    "foggy forest path in early morning",
+    "a lighthouse on a rocky cliff",
+    "children playing in a playground",
+    "a train passing through countryside",
+    "close-up of a butterfly on a flower",
+    "an old library with tall bookshelves",
+    "a sailboat on calm turquoise water",
+    "graffiti art on an urban wall",
+    "a campfire under starry night sky",
+    "birds flying over a golden field at sunset",
+    "a narrow alley in an italian village",
+    "fresh snow on pine tree branches",
+    "a cup of coffee with latte art",
+    "horses grazing in a green meadow",
+    "an abandoned factory with broken windows",
+    "a surfer riding a big wave",
+    "a cozy bedroom with soft natural light",
+    "a busy kitchen with steam rising from pots",
+    "autumn forest with orange and red leaves",
+    "a dog running on a sandy beach",
+    "rooftop view of a cityscape at golden hour",
+    "a field of lavender in provence",
+    "an old wooden door with peeling paint",
+    "a waterfall in a tropical jungle",
+    "a street musician playing guitar",
+    "close-up of raindrops on a leaf",
+    "a hot air balloon over rolling hills",
+    "a snowy village with warm lit windows",
+    "a bridge over a river in autumn",
+    "an eagle soaring over mountain peaks",
+    "a plate of sushi on a black slate",
+]
 
 # Component definitions
 COMPONENTS = {
@@ -49,21 +122,21 @@ COMPONENTS = {
     },
     "text_encoder": {
         "description": "CLIP ViT-L/14 Text Encoder",
-        "params": "~340M",
+        "params": "~123M",
         "input_names": ["input_ids"],
         "output_names": ["last_hidden_state", "pooler_output"],
         "input_shapes": {"input_ids": [1, 77]},
         "dynamic_axes": None,
     },
     "unet": {
-        "description": "UNet2D Conditional Denoiser",
+        "description": "UNet2D Conditional Denoiser (Inpainting, 9ch)",
         "params": "~860M",
         "input_names": ["sample", "timestep", "encoder_hidden_states"],
         "output_names": ["out_sample"],
         "input_shapes": {
-            "sample": [1, 4, 64, 64],
+            "sample": [1, 9, 64, 64],
             "timestep": [1],
-            "encoder_hidden_states": [1, 77, 1024],
+            "encoder_hidden_states": [1, 77, 768],
         },
         "dynamic_axes": None,
     },
@@ -82,13 +155,14 @@ PRECISIONS = ["fp32", "int8"]
 # Expected file sizes (approximate, for status check)
 EXPECTED_SIZES_MB = {
     "vae_encoder":  {"fp32": 130, "int8": 35},
-    "text_encoder": {"fp32": 1300, "int8": 350},
-    "unet":         {"fp32": 3400, "int8": 900},
+    "text_encoder": {"fp32": 470, "int8": 125},
+    "unet":         {"fp32": 1700, "int8": 450},
     "vae_decoder":  {"fp32": 190, "int8": 50},
 }
 
 # Calibration settings
-CALIBRATION_SAMPLES = 20
+CALIBRATION_SAMPLES = 64   # default for vae/text_encoder
+CALIBRATION_SAMPLES_UNET = 64  # UNet (heavier, can reduce if OOM)
 CALIBRATION_METHOD = "percentile"  # "minmax" or "percentile"
 
 
@@ -108,13 +182,13 @@ def get_output_path(component: str, precision: str) -> Path:
     return OUTPUT_DIR / get_output_filename(component, precision)
 
 
-WEIGHTS_DIR = SCRIPTS_DIR.parent / "weights" / "sd_v2.1"
+WEIGHTS_DIR = SCRIPTS_DIR.parent / "weights" / "sd_v1.5_inpaint"
 
 
 def load_sd_pipeline():
-    """Load SD v2.1 pipeline (FP32) from local weights or HuggingFace."""
+    """Load SD v1.5 Inpainting pipeline (FP32) from local weights or HuggingFace."""
     import torch
-    from diffusers import StableDiffusionPipeline
+    from diffusers import StableDiffusionInpaintPipeline
 
     if WEIGHTS_DIR.exists() and (WEIGHTS_DIR / "model_index.json").exists():
         source = str(WEIGHTS_DIR)
@@ -123,7 +197,7 @@ def load_sd_pipeline():
         source = SD_MODEL_ID
         print(f"Loading from HuggingFace: {SD_MODEL_ID}")
 
-    pipe = StableDiffusionPipeline.from_pretrained(
+    pipe = StableDiffusionInpaintPipeline.from_pretrained(
         source,
         torch_dtype=torch.float32,
     )
@@ -168,6 +242,7 @@ def export_vae_encoder(pipe, output_path: Path, precision: str) -> bool:
         output_names=["latent_sample"],
         opset_version=17,
         do_constant_folding=True,
+        dynamo=False,
     )
 
     size_mb = output_path.stat().st_size / 1024 / 1024
@@ -195,6 +270,7 @@ def export_text_encoder(pipe, output_path: Path, precision: str) -> bool:
         output_names=["last_hidden_state", "pooler_output"],
         opset_version=17,
         do_constant_folding=True,
+        dynamo=False,
     )
 
     size_mb = output_path.stat().st_size / 1024 / 1024
@@ -203,17 +279,18 @@ def export_text_encoder(pipe, output_path: Path, precision: str) -> bool:
 
 
 def export_unet(pipe, output_path: Path, precision: str) -> bool:
-    """Export UNet to ONNX."""
+    """Export Inpainting UNet to ONNX (9ch input: latent 4 + mask 1 + masked_image 4)."""
     import torch
 
-    print(f"\n  Exporting UNet ({precision})...")
+    print(f"\n  Exporting Inpainting UNet ({precision})...")
     unet = pipe.unet
     unet.eval()
     unet = unet.to("cpu")
 
-    dummy_sample = torch.randn(1, 4, 64, 64, dtype=torch.float32)
+    # Inpainting UNet: 9 input channels (latent=4, mask=1, masked_image_latent=4)
+    dummy_sample = torch.randn(1, 9, 64, 64, dtype=torch.float32)
     dummy_timestep = torch.tensor([1], dtype=torch.long)
-    dummy_encoder_hidden = torch.randn(1, 77, 1024, dtype=torch.float32)
+    dummy_encoder_hidden = torch.randn(1, 77, 768, dtype=torch.float32)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -232,6 +309,8 @@ def export_unet(pipe, output_path: Path, precision: str) -> bool:
 
     wrapper = UNetWrapper(unet)
 
+    # Use dynamo=False to force legacy exporter (torch 2.10+ defaults to
+    # dynamo-based exporter which bloats UNet from ~1.7GB to ~6.5GB)
     torch.onnx.export(
         wrapper,
         (dummy_sample, dummy_timestep, dummy_encoder_hidden),
@@ -240,6 +319,7 @@ def export_unet(pipe, output_path: Path, precision: str) -> bool:
         output_names=["out_sample"],
         opset_version=17,
         do_constant_folding=True,
+        dynamo=False,
     )
 
     # UNet is >2GB so torch exports with external data files.
@@ -281,6 +361,7 @@ def export_vae_decoder(pipe, output_path: Path, precision: str) -> bool:
         output_names=["sample"],
         opset_version=17,
         do_constant_folding=True,
+        dynamo=False,
     )
 
     size_mb = output_path.stat().st_size / 1024 / 1024
@@ -345,12 +426,17 @@ def _has_external_data(onnx_path: Path) -> bool:
 class SdCalibrationDataReader:
     """Calibration data reader for SD pipeline components.
 
-    Generates representative input data for static quantization calibration.
-    Uses random data with appropriate distributions for each component type.
+    Supports two modes:
+    - NPZ mode (recommended): Load pre-generated real calibration data from NPZ files.
+      Generate with --generate-calib-data, then use --calib-data <dir> for quantization.
+    - Random mode (fallback): Generate random data with appropriate distributions.
     """
 
-    def __init__(self, component: str, num_samples: int = 20):
-        self.data = self._generate_data(component, num_samples)
+    def __init__(self, component: str, num_samples: int = 20, calib_data_dir=None):
+        if calib_data_dir:
+            self.data = self._load_from_npz(calib_data_dir, component)
+        else:
+            self.data = self._generate_random(component, num_samples)
         self.iter = iter(self.data)
 
     def get_next(self):
@@ -359,44 +445,36 @@ class SdCalibrationDataReader:
     def rewind(self):
         self.iter = iter(self.data)
 
-    def _generate_data(self, component, n):
-        rng = np.random.default_rng(42)
+    def _load_from_npz(self, calib_dir, component):
+        npz_path = Path(calib_dir) / f"calib_{component}.npz"
+        if not npz_path.exists():
+            raise FileNotFoundError(f"Calibration data not found: {npz_path}")
+        npz = np.load(npz_path)
+        keys = list(npz.keys())
+        n = len(npz[keys[0]])
+        samples = []
+        for i in range(n):
+            sample = {}
+            for key in keys:
+                sample[key] = npz[key][i:i+1]  # keep batch dim (1, ...)
+            samples.append(sample)
+        print(f"    Loaded {n} real calibration samples from {npz_path.name}")
+        return samples
+
+    def _generate_random(self, component, n):
+        rng = np.random.default_rng(SEED)
         samples = []
 
         if component == "vae_encoder":
-            # Normalized images in [-1, 1] range (SD VAE input)
             for _ in range(n):
                 img = rng.uniform(-1, 1, size=(1, 3, 512, 512)).astype(np.float32)
                 samples.append({"sample": img})
 
         elif component == "text_encoder":
-            # Use real tokenized prompts for stable calibration (avoids inf outputs)
             from transformers import CLIPTokenizer
             tokenizer = CLIPTokenizer.from_pretrained(SD_MODEL_ID, subfolder="tokenizer")
-            calib_prompts = [
-                "sunset beach with golden light",
-                "snowy winter cityscape at night",
-                "lush green forest with sunlight",
-                "futuristic neon city",
-                "soft watercolor painting style",
-                "a photo of a cat sitting on a chair",
-                "mountain landscape with clouds",
-                "modern architecture building",
-                "portrait of a woman in oil painting style",
-                "colorful abstract geometric pattern",
-                "a cozy coffee shop interior",
-                "ocean waves crashing on rocks",
-                "autumn leaves in a park",
-                "vintage car on a country road",
-                "night sky with stars and milky way",
-                "japanese garden with cherry blossoms",
-                "underwater coral reef scene",
-                "medieval castle on a hilltop",
-                "tropical rainforest with waterfall",
-                "minimalist scandinavian living room",
-            ]
             for i in range(n):
-                prompt = calib_prompts[i % len(calib_prompts)]
+                prompt = CALIB_PROMPTS[i % len(CALIB_PROMPTS)]
                 tok = tokenizer(
                     prompt, padding="max_length", max_length=77,
                     truncation=True, return_tensors="np",
@@ -404,22 +482,195 @@ class SdCalibrationDataReader:
                 samples.append({"input_ids": tok.input_ids.astype(np.int64)})
 
         elif component == "unet":
-            # Latents (Gaussian), timesteps (uniform 1-1000), text embeddings (Gaussian)
             for _ in range(n):
+                latent = rng.standard_normal((1, 4, 64, 64)).astype(np.float32)
+                mask = (rng.random((1, 1, 64, 64)) > 0.5).astype(np.float32)
+                masked_img_latent = rng.standard_normal((1, 4, 64, 64)).astype(np.float32)
+                sample_9ch = np.concatenate([latent, mask, masked_img_latent], axis=1)
                 samples.append({
-                    "sample": rng.standard_normal((1, 4, 64, 64)).astype(np.float32),
+                    "sample": sample_9ch,
                     "timestep": np.array([rng.integers(1, 1000)], dtype=np.int64),
-                    "encoder_hidden_states": rng.standard_normal((1, 77, 1024)).astype(np.float32),
+                    "encoder_hidden_states": rng.standard_normal((1, 77, 768)).astype(np.float32),
                 })
 
         elif component == "vae_decoder":
-            # Latent samples (Gaussian, typical denoised latent range)
             for _ in range(n):
                 samples.append({
                     "latent_sample": rng.standard_normal((1, 4, 64, 64)).astype(np.float32),
                 })
 
+        print(f"    Using {n} random calibration samples (no --calib-data provided)")
         return samples
+
+
+def _load_coco_images(num_images: int, image_dir: Path, seed: int = SEED):
+    """Load and preprocess COCO images for calibration.
+
+    Returns list of numpy arrays in [-1, 1] range, shape (1, 3, 512, 512).
+    Selects diverse images by strided sampling across sorted file list.
+    """
+    from PIL import Image
+
+    image_files = sorted(image_dir.glob("*.jpg"))
+    if not image_files:
+        raise FileNotFoundError(f"No JPEG images found in {image_dir}")
+
+    # Strided sampling for diversity (spread across the sorted list)
+    rng = np.random.default_rng(seed)
+    indices = rng.choice(len(image_files), size=min(num_images, len(image_files)),
+                         replace=False)
+    indices.sort()
+
+    images = []
+    for idx in indices:
+        img = Image.open(image_files[idx]).convert("RGB")
+        # Center-crop to square, then resize to 512x512
+        w, h = img.size
+        crop_size = min(w, h)
+        left = (w - crop_size) // 2
+        top = (h - crop_size) // 2
+        img = img.crop((left, top, left + crop_size, top + crop_size))
+        img = img.resize((512, 512), Image.LANCZOS)
+        # Normalize to [-1, 1] (SD VAE input range)
+        arr = np.array(img, dtype=np.float32) / 127.5 - 1.0
+        arr = arr.transpose(2, 0, 1)[np.newaxis]  # (1, 3, 512, 512)
+        images.append(arr)
+
+    print(f"  Loaded {len(images)} COCO images from {image_dir.name}/")
+    return images
+
+
+def generate_calibration_data(num_samples: int, output_dir: Path,
+                              image_dir: Path = None):
+    """Generate real calibration data from COCO images + SD pipeline components.
+
+    Produces per-component NPZ files with real intermediate tensors:
+    - calib_vae_encoder.npz: real COCO images (512x512, [-1,1])
+    - calib_text_encoder.npz: diverse real prompts (tokenized)
+    - calib_vae_decoder.npz: VAE-encoded real image latents
+    - calib_unet.npz: real text embeddings + noisy real latents at stratified timesteps
+
+    Run locally (where pipeline + images are available), upload NPZ to RunPod.
+    Quantization with --calib-data only needs onnxruntime, no torch/diffusers.
+    """
+    import torch
+
+    image_dir = image_dir or CALIB_IMAGES_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 60)
+    print(f"Generating real calibration data ({num_samples} samples)")
+    print("=" * 60)
+
+    # Load COCO images
+    coco_images = _load_coco_images(num_samples, image_dir)
+    num_samples = len(coco_images)  # may be less if not enough images
+
+    # Load pipeline
+    pipe = load_sd_pipeline()
+    vae = pipe.vae.eval()
+    text_encoder = pipe.text_encoder.eval()
+    tokenizer = pipe.tokenizer
+    scheduler = pipe.scheduler
+
+    rng = np.random.default_rng(SEED)
+    gen = torch.Generator().manual_seed(SEED)
+
+    # 1. Text encoder: diverse real prompts → hidden states
+    print("\n  [1/4] Text encoder: tokenizing prompts...")
+    text_enc_input_ids = []
+    text_enc_hidden_states = []
+    with torch.no_grad():
+        for i in range(num_samples):
+            prompt = CALIB_PROMPTS[i % len(CALIB_PROMPTS)]
+            tok = tokenizer(
+                prompt, padding="max_length", max_length=77,
+                truncation=True, return_tensors="pt",
+            )
+            input_ids = tok.input_ids
+            text_enc_input_ids.append(input_ids.numpy())
+            hidden = text_encoder(input_ids)[0]
+            text_enc_hidden_states.append(hidden.numpy())
+
+    text_enc_input_ids = np.concatenate(text_enc_input_ids, axis=0)
+    text_enc_hidden_states = np.concatenate(text_enc_hidden_states, axis=0)
+    np.savez(output_dir / "calib_text_encoder.npz",
+             input_ids=text_enc_input_ids)
+    print(f"    {num_samples} prompts → input_ids {text_enc_input_ids.shape}")
+
+    # 2. VAE encoder: real COCO images
+    print("\n  [2/4] VAE encoder: real COCO images...")
+    vae_enc_samples = np.concatenate(coco_images, axis=0)  # (N, 3, 512, 512)
+    np.savez(output_dir / "calib_vae_encoder.npz", sample=vae_enc_samples)
+    print(f"    {num_samples} images → {vae_enc_samples.shape}")
+
+    # 3. VAE decoder: encode real images → real latents
+    print("\n  [3/4] VAE decoder: encoding images to latents...")
+    vae_dec_samples = []
+    with torch.no_grad():
+        for i, img_np in enumerate(coco_images):
+            img_tensor = torch.from_numpy(img_np)
+            latent = vae.encode(img_tensor).latent_dist.sample(gen)
+            latent = latent * vae.config.scaling_factor
+            vae_dec_samples.append(latent.numpy())
+
+    vae_dec_samples = np.concatenate(vae_dec_samples, axis=0)
+    np.savez(output_dir / "calib_vae_decoder.npz", latent_sample=vae_dec_samples)
+    print(f"    {num_samples} latents → {vae_dec_samples.shape}")
+
+    # 4. UNet: real text embeddings + noisy real latents at stratified timesteps
+    print("\n  [4/4] UNet: assembling inpainting inputs...")
+    # Stratified timesteps: evenly spread across [1, 999] for coverage
+    timesteps = np.linspace(1, 999, num_samples, dtype=int)
+    rng.shuffle(timesteps)
+
+    unet_samples = []
+    unet_timesteps = []
+    unet_hidden = []
+    scheduler.set_timesteps(1000)
+    with torch.no_grad():
+        for i in range(num_samples):
+            latent = torch.from_numpy(vae_dec_samples[i:i+1])
+            t = int(timesteps[i])
+            noise = torch.randn_like(latent)
+            noisy = scheduler.add_noise(latent, noise, torch.tensor([t]))
+
+            # Inpainting mask: random rectangular region (realistic)
+            mask = np.zeros((1, 1, 64, 64), dtype=np.float32)
+            mh, mw = rng.integers(16, 48), rng.integers(16, 48)
+            my, mx = rng.integers(0, 64 - mh), rng.integers(0, 64 - mw)
+            mask[:, :, my:my+mh, mx:mx+mw] = 1.0
+            mask_t = torch.from_numpy(mask)
+
+            masked_img_latent = latent * (1 - mask_t)
+            sample_9ch = torch.cat([noisy, mask_t, masked_img_latent], dim=1)
+
+            unet_samples.append(sample_9ch.numpy())
+            unet_timesteps.append(np.array([t], dtype=np.int64))
+            unet_hidden.append(
+                text_enc_hidden_states[i % len(text_enc_hidden_states)][np.newaxis]
+            )
+
+    np.savez(
+        output_dir / "calib_unet.npz",
+        sample=np.concatenate(unet_samples, axis=0),
+        timestep=np.concatenate(unet_timesteps, axis=0),
+        encoder_hidden_states=np.concatenate(unet_hidden, axis=0),
+    )
+    print(f"    {num_samples} samples, timesteps [{int(timesteps.min())}-{int(timesteps.max())}]")
+
+    del pipe
+    gc.collect()
+
+    # Report
+    print("\n" + "-" * 40)
+    total_mb = 0
+    for f in sorted(output_dir.glob("calib_*.npz")):
+        sz = f.stat().st_size / 1024 / 1024
+        total_mb += sz
+        print(f"  {f.name}: {sz:.1f} MB")
+    print(f"  Total: {total_mb:.1f} MB")
+    print(f"\nCalibration data saved to {output_dir}")
 
 
 def preprocess_for_quantization(input_path: Path) -> Path:
@@ -450,17 +701,19 @@ def preprocess_for_quantization(input_path: Path) -> Path:
         return input_path
 
 
-def quantize_static_qdq(fp32_path: Path, output_path: Path, component: str) -> bool:
-    """Static INT8 QDQ quantization using QNN-optimized config.
+def quantize_static_qdq(fp32_path: Path, output_path: Path, component: str,
+                        calib_data_dir=None) -> bool:
+    """Static INT8 QDQ quantization using quantize_static().
 
-    Uses get_qnn_qdq_config() + quantize() for NPU-compatible quantization.
-    Same approach as YOLO quantization in this project.
+    Uses quantize_static() directly instead of get_qnn_qdq_config() to avoid
+    QLinearConv channel mismatch bug with QUInt8 weights on UNet upsampler nodes.
     """
     try:
-        from onnxruntime.quantization import quantize, CalibrationMethod
-        from onnxruntime.quantization.execution_providers.qnn import get_qnn_qdq_config
+        from onnxruntime.quantization import (
+            quantize_static, QuantFormat, QuantType, CalibrationMethod,
+        )
     except ImportError:
-        print("  Error: onnxruntime.quantization with QNN support not available")
+        print("  Error: onnxruntime.quantization not available")
         print("  Install: pip install onnxruntime")
         return False
 
@@ -472,28 +725,30 @@ def quantize_static_qdq(fp32_path: Path, output_path: Path, component: str) -> b
     preprocessed_path = preprocess_for_quantization(fp32_path)
 
     # Calibration data
-    num_samples = 10 if component == "unet" else CALIBRATION_SAMPLES
-    print(f"    Calibration: {num_samples} samples ({CALIBRATION_METHOD})")
-    calibrator = SdCalibrationDataReader(component, num_samples)
+    num_samples = CALIBRATION_SAMPLES_UNET if component == "unet" else CALIBRATION_SAMPLES
+    source = "real NPZ" if calib_data_dir else "random"
+    print(f"    Calibration: {num_samples} samples ({CALIBRATION_METHOD}, {source})")
+    calibrator = SdCalibrationDataReader(component, num_samples, calib_data_dir)
 
-    # Calibration method
-    if CALIBRATION_METHOD == "minmax":
+    # Text encoder needs MinMax (Percentile fails due to inf in causal attention mask)
+    if component == "text_encoder" or CALIBRATION_METHOD == "minmax":
         calib_method = CalibrationMethod.MinMax
     else:
         calib_method = CalibrationMethod.Percentile
 
-    # Build QNN-optimized QDQ config
-    qnn_config = get_qnn_qdq_config(
-        model_input=str(preprocessed_path),
-        calibration_data_reader=calibrator,
-        calibrate_method=calib_method,
-        activation_symmetric=False,
-    )
+    # UNet with external data needs use_external_data_format
+    use_external = _has_external_data(preprocessed_path)
 
-    quantize(
+    quantize_static(
         model_input=str(preprocessed_path),
         model_output=str(output_path),
-        quant_config=qnn_config,
+        calibration_data_reader=calibrator,
+        quant_format=QuantFormat.QDQ,
+        activation_type=QuantType.QUInt8,
+        weight_type=QuantType.QInt8,
+        per_channel=False,
+        calibrate_method=calib_method,
+        use_external_data_format=use_external,
     )
 
     # Cleanup preprocessed file
@@ -518,7 +773,7 @@ def quantize_static_qdq(fp32_path: Path, output_path: Path, component: str) -> b
 # Export Orchestration
 # ============================================================
 
-def export_component(component: str, precisions: list) -> list:
+def export_component(component: str, precisions: list, calib_data_dir=None) -> list:
     """Export a single SD component in specified precisions.
 
     Strategy:
@@ -563,7 +818,7 @@ def export_component(component: str, precisions: list) -> list:
             print("=" * 60)
             print(f"Quantizing {COMPONENTS[component]['description']} to INT8 QDQ")
             print("=" * 60)
-            if quantize_static_qdq(fp32_path, int8_path, component):
+            if quantize_static_qdq(fp32_path, int8_path, component, calib_data_dir):
                 exported.append((component, "int8"))
 
     return exported
@@ -572,7 +827,7 @@ def export_component(component: str, precisions: list) -> list:
 def list_components():
     """List available components and precisions."""
     print("=" * 60)
-    print(f"SD v2.1 Components ({SD_MODEL_ID})")
+    print(f"SD v1.5 Inpainting Components ({SD_MODEL_ID})")
     print("=" * 60)
     for name, comp in COMPONENTS.items():
         print(f"\n  {name}:")
@@ -595,7 +850,7 @@ def list_components():
 def check_status():
     """Check which models are already exported."""
     print("=" * 60)
-    print(f"SD v2.1 Model Status (in {OUTPUT_DIR})")
+    print(f"SD v1.5 Inpainting Model Status (in {OUTPUT_DIR})")
     print("=" * 60)
 
     total_size = 0
@@ -616,10 +871,10 @@ def check_status():
 
 
 def main():
-    global CALIBRATION_SAMPLES, CALIBRATION_METHOD
+    global CALIBRATION_SAMPLES, CALIBRATION_SAMPLES_UNET, CALIBRATION_METHOD
 
     parser = argparse.ArgumentParser(
-        description="Export Stable Diffusion v2.1 sub-models to ONNX with quantization"
+        description="Export SD v1.5 Inpainting sub-models to ONNX with quantization"
     )
     parser.add_argument(
         "--export",
@@ -673,6 +928,23 @@ def main():
         default=CALIBRATION_METHOD,
         help="Calibration method (default: percentile)"
     )
+    parser.add_argument(
+        "--generate-calib-data",
+        action="store_true",
+        help="Generate real calibration NPZ files from COCO images + SD pipeline"
+    )
+    parser.add_argument(
+        "--calib-images-dir",
+        type=Path,
+        default=None,
+        help=f"Directory with calibration images (default: {CALIB_IMAGES_DIR})"
+    )
+    parser.add_argument(
+        "--calib-data",
+        type=Path,
+        default=None,
+        help="Directory containing calib_*.npz files for real-data quantization"
+    )
 
     args = parser.parse_args()
 
@@ -681,6 +953,13 @@ def main():
 
     CALIBRATION_SAMPLES = args.calibration_samples
     CALIBRATION_METHOD = args.calibration_method
+
+    if args.generate_calib_data:
+        calib_dir = args.output or OUTPUT_DIR
+        generate_calibration_data(
+            CALIBRATION_SAMPLES, calib_dir, args.calib_images_dir
+        )
+        return
 
     if args.list:
         list_components()
@@ -718,7 +997,7 @@ def main():
     all_failed = []
 
     for component in components_to_export:
-        results = export_component(component, args.precision)
+        results = export_component(component, args.precision, args.calib_data)
         if results:
             all_exported.extend(results)
         else:
