@@ -1,126 +1,151 @@
 package com.example.kpilab
 
 /**
- * Benchmark configuration for ONNX Runtime
+ * Benchmark configuration for AI Eraser pipeline.
+ * SD v1.5 Inpainting (5 sessions: YOLO-seg + VAE Enc + Text Enc + Inpaint UNet + VAE Dec)
  */
 data class BenchmarkConfig(
-    // Model selection
-    val modelType: OnnxModelType = OnnxModelType.YOLOV8N,
+    // SD Inpainting — execution provider (applied to all 4 SD sessions)
+    val sdBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
 
-    // Execution provider (NPU/GPU/CPU)
-    val executionProvider: ExecutionProvider = ExecutionProvider.QNN_NPU,
+    // SD Inpainting — model precision
+    val sdPrecision: SdPrecision = SdPrecision.FP16,
 
-    // Benchmark phase (determines execution strategy)
-    val phase: BenchmarkPhase = BenchmarkPhase.BURST,
+    // YOLO-seg — execution provider (독립 설정)
+    val yoloBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
 
-    // Input source mode
-    val inputMode: InputMode = InputMode.CAMERA_SINGLE,
+    // YOLO-seg — model precision
+    val yoloPrecision: YoloPrecision = YoloPrecision.FP32,
 
-    // Benchmark settings (overridden by phase defaults when null)
-    val frequencyHz: Int = 2,
-    val durationMinutes: Int = 5,
-    val iterations: Int = 100,
+    // Benchmark phase
+    val phase: BenchmarkPhase = BenchmarkPhase.SINGLE_ERASE,
 
-    // NPU precision: true = FP16, false = FP32 (only affects FP32 models on NPU)
+    // SD pipeline parameters
+    val steps: Int = 20,
+    val strength: Float = 0.7f,
+
+    // ROI size category (테스트 데이터 선택)
+    val roiSize: RoiSize = RoiSize.MEDIUM,
+
+    // ROI padding ratio (bbox 대비)
+    val roiPaddingRatio: Float = 1.5f,
+
+    // Phase 1: trials per config / Phase 2: total consecutive trials
+    val trials: Int = 5,
+
+    // Warmup generations before measurement
+    val warmupTrials: Int = 2,
+
+    // NPU FP16 precision override
     val useNpuFp16: Boolean = true,
 
-    // QNN context cache: caches compiled HTP graph for faster subsequent loads
+    // QNN context cache
     val useContextCache: Boolean = false,
 
-    // HTP performance mode: "burst", "sustained_high", "balanced", "power_saver"
-    val htpPerformanceMode: String = "burst"
-) {
-    /**
-     * Calculate interval between inferences in milliseconds
-     */
-    val intervalMs: Long
-        get() = (1000.0 / frequencyHz).toLong()
+    // HTP performance mode
+    val htpPerformanceMode: String = "burst",
 
-    /**
-     * Total duration in milliseconds.
-     * For BURST phase, derived from iterations × interval.
-     * For SUSTAINED phase, uses durationMinutes.
-     */
-    val durationMs: Long
+    // Model directory on device
+    val modelDir: String = "/sdcard/sd_models"
+) {
+    /** Inpainting resolution — 512 fixed for NPU */
+    val resolution: Int get() = 512
+
+    /** Actual UNet steps = total_steps × strength */
+    val actualSteps: Int get() = (steps * strength).toInt()
+
+    /** Latent space size = resolution / 8 */
+    val latentSize: Int get() = resolution / 8
+
+    /** Fixed prompt for eraser */
+    val prompt: String get() = "remove the object and fill the background naturally"
+
+    /** Total trials for this phase */
+    val totalTrials: Int
         get() = when (phase) {
-            BenchmarkPhase.BURST -> iterations * intervalMs
-            BenchmarkPhase.SUSTAINED -> durationMinutes * 60 * 1000L
+            BenchmarkPhase.SINGLE_ERASE -> trials
+            BenchmarkPhase.SUSTAINED_ERASE -> trials
+            BenchmarkPhase.YOLO_SEG_ONLY -> 20  // YOLO-seg 별도 측정 고정 20회
         }
 
-    /**
-     * Whether this config uses camera input
-     */
-    val usesCamera: Boolean
-        get() = inputMode != InputMode.STATIC_IMAGE
+    /** YOLO-seg model filename */
+    val yoloModelFilename: String
+        get() = "yolov8n-seg${yoloPrecision.suffix}.onnx"
 
-    /**
-     * Generate session ID based on config
-     */
+    /** Generate session ID for CSV/logging */
     fun generateSessionId(): String {
         val timestamp = System.currentTimeMillis()
-
-        val modelStr = modelType.name.lowercase()
-
-        val epStr = when (executionProvider) {
+        val sdEp = when (sdBackend) {
             ExecutionProvider.QNN_NPU -> "npu"
             ExecutionProvider.QNN_GPU -> "gpu"
             ExecutionProvider.CPU -> "cpu"
         }
-
         val phaseStr = when (phase) {
-            BenchmarkPhase.BURST -> "burst"
-            BenchmarkPhase.SUSTAINED -> "sustained"
+            BenchmarkPhase.SINGLE_ERASE -> "single"
+            BenchmarkPhase.SUSTAINED_ERASE -> "sustained"
+            BenchmarkPhase.YOLO_SEG_ONLY -> "yolo"
         }
-
-        val precStr = if (useNpuFp16) "fp16" else "fp32"
-        return "ort_${modelStr}_${epStr}_${precStr}_${phaseStr}_${timestamp}"
+        return "eraser_${sdPrecision.dirSuffix}_${sdEp}_s${steps}_str${(strength * 10).toInt()}_${roiSize.name.lowercase()}_${phaseStr}_${timestamp}"
     }
 
     override fun toString(): String {
-        val precStr = if (useNpuFp16) "FP16" else "FP32"
-        val cacheStr = if (useContextCache) "cached" else "no-cache"
-        return "BenchmarkConfig(model=${modelType.displayName}, ep=${executionProvider.displayName}, " +
-                "phase=${phase.displayName}, input=${inputMode.displayName}, " +
-                "prec=$precStr, cache=$cacheStr, freq=${frequencyHz}Hz)"
+        return "EraseConfig(sdEp=${sdBackend.displayName}, sdPrec=${sdPrecision.displayName}, " +
+                "yoloEp=${yoloBackend.displayName}, yoloPrec=${yoloPrecision.displayName}, " +
+                "steps=$steps, strength=$strength, roi=${roiSize.displayName}, " +
+                "phase=${phase.displayName})"
     }
 
     companion object {
-        /** Create Phase 1 (Burst Latency) config */
-        fun burst(
-            modelType: OnnxModelType,
-            executionProvider: ExecutionProvider,
-            useNpuFp16: Boolean = true,
-            useContextCache: Boolean = false,
-            htpPerformanceMode: String = "burst"
+        /** Phase 1: Single Erase Profiling */
+        fun phase1(
+            sdBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
+            sdPrecision: SdPrecision = SdPrecision.FP16,
+            yoloBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
+            yoloPrecision: YoloPrecision = YoloPrecision.FP32,
+            steps: Int = 20,
+            strength: Float = 0.7f,
+            roiSize: RoiSize = RoiSize.MEDIUM
         ) = BenchmarkConfig(
-            modelType = modelType,
-            executionProvider = executionProvider,
-            phase = BenchmarkPhase.BURST,
-            inputMode = InputMode.CAMERA_SINGLE,
-            frequencyHz = 2,        // 500ms sleep
-            iterations = 100,
-            useNpuFp16 = useNpuFp16,
-            useContextCache = useContextCache,
-            htpPerformanceMode = htpPerformanceMode
+            sdBackend = sdBackend,
+            sdPrecision = sdPrecision,
+            yoloBackend = yoloBackend,
+            yoloPrecision = yoloPrecision,
+            phase = BenchmarkPhase.SINGLE_ERASE,
+            steps = steps,
+            strength = strength,
+            roiSize = roiSize,
+            trials = 5,
+            warmupTrials = 2,
+            htpPerformanceMode = "burst"
         )
 
-        /** Create Phase 2 (Sustained Throughput) config */
-        fun sustained(
-            modelType: OnnxModelType,
-            executionProvider: ExecutionProvider,
-            useNpuFp16: Boolean = true,
-            useContextCache: Boolean = false,
-            htpPerformanceMode: String = "sustained_high"
+        /** Phase 2: Sustained Erase Test */
+        fun phase2(
+            sdBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
+            sdPrecision: SdPrecision = SdPrecision.FP16,
+            steps: Int = 20,
+            strength: Float = 0.7f,
+            roiSize: RoiSize = RoiSize.MEDIUM
         ) = BenchmarkConfig(
-            modelType = modelType,
-            executionProvider = executionProvider,
-            phase = BenchmarkPhase.SUSTAINED,
-            inputMode = InputMode.CAMERA_LIVE,
-            frequencyHz = 30,       // 33ms target
-            durationMinutes = 5,
-            useNpuFp16 = useNpuFp16,
-            useContextCache = useContextCache,
-            htpPerformanceMode = htpPerformanceMode
+            sdBackend = sdBackend,
+            sdPrecision = sdPrecision,
+            phase = BenchmarkPhase.SUSTAINED_ERASE,
+            steps = steps,
+            strength = strength,
+            roiSize = roiSize,
+            trials = 10,
+            warmupTrials = 2,
+            htpPerformanceMode = "sustained_high"
+        )
+
+        /** YOLO-seg only profiling */
+        fun yoloOnly(
+            yoloBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
+            yoloPrecision: YoloPrecision = YoloPrecision.FP32
+        ) = BenchmarkConfig(
+            yoloBackend = yoloBackend,
+            yoloPrecision = yoloPrecision,
+            phase = BenchmarkPhase.YOLO_SEG_ONLY
         )
     }
 }

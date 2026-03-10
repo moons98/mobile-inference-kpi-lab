@@ -1,16 +1,21 @@
 package com.example.kpilab.batch
 
 /**
- * Default values for experiment configuration.
- * Used when individual experiments don't specify a value.
+ * Default values for AI Eraser experiment configuration.
  */
 data class ExperimentDefaults(
-    val frequencyHz: Int = 2,
-    val durationMinutes: Int = 5,
-    val iterations: Int = 100,
-    val phase: String = "BURST",
-    val inputMode: String = "CAMERA_SINGLE",
-    val useNpuFp16: Boolean = false,
+    val phase: String = "SINGLE_ERASE",
+    val steps: Int = 20,
+    val strength: Float = 0.7f,
+    val roiSize: String = "MEDIUM",
+    val roiPaddingRatio: Float = 1.5f,
+    val trials: Int = 5,
+    val warmupTrials: Int = 2,
+    val useNpuFp16: Boolean = true,
     val useContextCache: Boolean = false,
-    val htpPerformanceMode: String = "burst"
+    val htpPerformanceMode: String = "burst",
+    val modelDir: String = "/sdcard/sd_models",
+    // YOLO defaults
+    val yoloBackend: String = "QNN_NPU",
+    val yoloPrecision: String = "FP32"
 )

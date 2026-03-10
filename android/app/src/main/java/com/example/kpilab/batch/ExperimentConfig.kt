@@ -3,114 +3,81 @@ package com.example.kpilab.batch
 import com.example.kpilab.BenchmarkConfig
 import com.example.kpilab.BenchmarkPhase
 import com.example.kpilab.ExecutionProvider
-import com.example.kpilab.InputMode
-import com.example.kpilab.OnnxModelType
+import com.example.kpilab.RoiSize
+import com.example.kpilab.SdPrecision
+import com.example.kpilab.YoloPrecision
 
 /**
- * Individual experiment configuration.
+ * Individual AI Eraser experiment configuration.
  * Null values inherit from ExperimentDefaults.
  */
 data class ExperimentConfig(
-    val model: String,                    // OnnxModelType enum name
-    val executionProvider: String,        // ExecutionProvider enum name
-    val phase: String? = null,            // BenchmarkPhase enum name
-    val inputMode: String? = null,        // InputMode enum name
-    val frequencyHz: Int? = null,
-    val durationMinutes: Int? = null,
-    val iterations: Int? = null,
+    // SD Inpainting settings
+    val sdBackend: String,              // ExecutionProvider enum name
+    val sdPrecision: String,            // SdPrecision enum name
+    val phase: String? = null,
+    val steps: Int? = null,
+    val strength: Float? = null,
+    val roiSize: String? = null,
+    val roiPaddingRatio: Float? = null,
+    val trials: Int? = null,
     val useNpuFp16: Boolean? = null,
     val useContextCache: Boolean? = null,
-    val htpPerformanceMode: String? = null
+    val htpPerformanceMode: String? = null,
+    val modelDir: String? = null,
+    // YOLO-seg settings (독립)
+    val yoloBackend: String? = null,
+    val yoloPrecision: String? = null
 ) {
-    /**
-     * Convert to BenchmarkConfig using defaults for missing values
-     */
     fun toBenchmarkConfig(defaults: ExperimentDefaults): BenchmarkConfig {
-        val modelType = try {
-            OnnxModelType.valueOf(model)
-        } catch (e: IllegalArgumentException) {
-            OnnxModelType.YOLOV8N
-        }
+        val sdEp = try { ExecutionProvider.valueOf(sdBackend) }
+        catch (e: IllegalArgumentException) { ExecutionProvider.QNN_NPU }
 
-        val ep = try {
-            ExecutionProvider.valueOf(executionProvider)
-        } catch (e: IllegalArgumentException) {
-            ExecutionProvider.QNN_NPU
-        }
+        val sdPrec = try { SdPrecision.valueOf(sdPrecision) }
+        catch (e: IllegalArgumentException) { SdPrecision.FP16 }
 
-        val benchPhase = try {
-            BenchmarkPhase.valueOf(phase ?: defaults.phase)
-        } catch (e: IllegalArgumentException) {
-            BenchmarkPhase.BURST
-        }
+        val benchPhase = try { BenchmarkPhase.valueOf(phase ?: defaults.phase) }
+        catch (e: IllegalArgumentException) { BenchmarkPhase.SINGLE_ERASE }
 
-        val benchInputMode = try {
-            InputMode.valueOf(inputMode ?: defaults.inputMode)
-        } catch (e: IllegalArgumentException) {
-            InputMode.CAMERA_SINGLE
-        }
+        val roi = try { RoiSize.valueOf(roiSize ?: defaults.roiSize) }
+        catch (e: IllegalArgumentException) { RoiSize.MEDIUM }
+
+        val yoloEp = try { ExecutionProvider.valueOf(yoloBackend ?: defaults.yoloBackend) }
+        catch (e: IllegalArgumentException) { ExecutionProvider.QNN_NPU }
+
+        val yoloPrec = try { YoloPrecision.valueOf(yoloPrecision ?: defaults.yoloPrecision) }
+        catch (e: IllegalArgumentException) { YoloPrecision.FP32 }
 
         return BenchmarkConfig(
-            modelType = modelType,
-            executionProvider = ep,
+            sdBackend = sdEp,
+            sdPrecision = sdPrec,
+            yoloBackend = yoloEp,
+            yoloPrecision = yoloPrec,
             phase = benchPhase,
-            inputMode = benchInputMode,
-            frequencyHz = frequencyHz ?: defaults.frequencyHz,
-            durationMinutes = durationMinutes ?: defaults.durationMinutes,
-            iterations = iterations ?: defaults.iterations,
+            steps = steps ?: defaults.steps,
+            strength = strength ?: defaults.strength,
+            roiSize = roi,
+            roiPaddingRatio = roiPaddingRatio ?: defaults.roiPaddingRatio,
+            trials = trials ?: defaults.trials,
+            warmupTrials = defaults.warmupTrials,
             useNpuFp16 = useNpuFp16 ?: defaults.useNpuFp16,
             useContextCache = useContextCache ?: defaults.useContextCache,
-            htpPerformanceMode = htpPerformanceMode ?: defaults.htpPerformanceMode
+            htpPerformanceMode = htpPerformanceMode ?: defaults.htpPerformanceMode,
+            modelDir = modelDir ?: defaults.modelDir
         )
     }
 
-    /**
-     * Get display name for this experiment
-     */
     fun getDisplayName(): String {
-        val modelName = try {
-            OnnxModelType.valueOf(model).displayName
-        } catch (e: IllegalArgumentException) {
-            model
-        }
-        val epName = try {
-            ExecutionProvider.valueOf(executionProvider).displayName
-        } catch (e: IllegalArgumentException) {
-            executionProvider
-        }
-        val perfSuffix = if (htpPerformanceMode != null && htpPerformanceMode != "burst") " ($htpPerformanceMode)" else ""
-        return "$modelName / $epName$perfSuffix"
-    }
-
-    /**
-     * Get a detail line showing this experiment's settings with overrides highlighted.
-     * Shows: model / EP + any per-experiment overrides from defaults.
-     */
-    fun getDetailLine(defaults: ExperimentDefaults): String {
-        val base = getDisplayName()
-        val overrides = mutableListOf<String>()
-
-        if (useNpuFp16 != null && useNpuFp16 != defaults.useNpuFp16) {
-            overrides.add(if (useNpuFp16) "FP16" else "FP32")
-        } else if (useNpuFp16 == false && defaults.useNpuFp16) {
-            overrides.add("FP32")
-        }
-        if (phase != null && phase != defaults.phase) {
-            overrides.add(phase)
-        }
-        if (inputMode != null && inputMode != defaults.inputMode) {
-            overrides.add(inputMode.replace("_", " "))
-        }
-        if (frequencyHz != null && frequencyHz != defaults.frequencyHz) {
-            overrides.add("${frequencyHz}Hz")
-        }
-        if (iterations != null && iterations != defaults.iterations) {
-            overrides.add("${iterations}iter")
-        }
-        if (htpPerformanceMode != null && htpPerformanceMode != defaults.htpPerformanceMode) {
-            overrides.add("htp:$htpPerformanceMode")
-        }
-
-        return if (overrides.isEmpty()) base else "$base [${overrides.joinToString(", ")}]"
+        val epName = try { ExecutionProvider.valueOf(sdBackend).displayName }
+        catch (e: IllegalArgumentException) { sdBackend }
+        val precName = try { SdPrecision.valueOf(sdPrecision).displayName }
+        catch (e: IllegalArgumentException) { sdPrecision }
+        val extras = mutableListOf<String>()
+        if (steps != null) extras.add("${steps}steps")
+        if (strength != null) extras.add("str=$strength")
+        if (roiSize != null) extras.add("roi=$roiSize")
+        if (yoloPrecision != null) extras.add("yolo=$yoloPrecision")
+        val suffix = if (extras.isNotEmpty()) " [${extras.joinToString(", ")}]" else ""
+        return "$precName / $epName$suffix"
     }
 }

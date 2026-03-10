@@ -57,7 +57,8 @@ analysis/data/*.csv
 analysis/data/*.json
 results/
 outputs/
-*.png
+
+# Large binary assets
 *.pdf
 
 # IDE
@@ -78,6 +79,10 @@ temp/
 
 # weight
 weights/
+*.pt
+
+# datasets (COCO etc.)
+datasets/
 
 # deprecated
 deprecated/

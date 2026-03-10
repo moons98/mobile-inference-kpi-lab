@@ -4,10 +4,29 @@
     android:height="48dp"
     android:viewportWidth="48"
     android:viewportHeight="48">
+    <!-- Background circle -->
     <path
-        android:fillColor="#1565C0"
+        android:fillColor="#0D1B2A"
         android:pathData="M24,24m-24,0a24,24 0,1 1,48 0a24,24 0,1 1,-48 0"/>
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M17,14L17,34L21,34L21,26L27,34L32,34L24,24L31,14L26,14L21,22L21,14Z"/>
+    <!-- Photo frame -->
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.5"
+        android:pathData="M10,14 L24,14 L24,32 L10,32 Z"
+        android:fillColor="#00000000" />
+    <!-- Mountain -->
+    <path android:fillColor="#80FFFFFF"
+        android:pathData="M10,28 L15,22 L19,26 L22,20 L24,28 Z" />
+    <!-- Arrow -->
+    <path android:strokeColor="#00E5FF" android:strokeWidth="1.5"
+        android:pathData="M27,23 L31,23"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round" />
+    <path android:fillColor="#00E5FF"
+        android:pathData="M30,20 L34,23 L30,26 Z" />
+    <!-- Brush -->
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="2"
+        android:pathData="M36,14 L39,30"
+        android:fillColor="#00000000"
+        android:strokeLineCap="round" />
+    <path android:fillColor="#FF6D00"
+        android:pathData="M38,28 L41,34 L36,34 Z" />
 </vector>

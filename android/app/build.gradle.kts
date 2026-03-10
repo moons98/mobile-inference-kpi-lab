@@ -62,13 +62,6 @@ dependencies {
     // JSON parsing for batch mode
     implementation("com.google.code.gson:gson:2.10.1")
 
-    // CameraX for real-time camera pipeline
-    val cameraxVersion = "1.3.1"
-    implementation("androidx.camera:camera-core:$cameraxVersion")
-    implementation("androidx.camera:camera-camera2:$cameraxVersion")
-    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
-    implementation("androidx.camera:camera-view:$cameraxVersion")
-
     // ONNX Runtime with QNN Execution Provider (NPU)
     // Version 1.23.2 uses QNN SDK 2.37.1 - check device compatibility
     implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.23.2")

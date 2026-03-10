@@ -15,15 +15,50 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Inference KPI Lab"
+            android:text="AI Eraser KPI Lab"
             android:textSize="24sp"
             android:textStyle="bold"
             android:textColor="@color/text_primary"
             android:layout_marginBottom="16dp" />
 
-        <!-- Camera Preview Card (demo mode) -->
+        <!-- Image Selection -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="12dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSelectImage"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="Gallery"
+                android:textSize="13sp"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_marginEnd="4dp"
+                app:cornerRadius="8dp"
+                app:icon="@android:drawable/ic_menu_gallery"
+                app:iconGravity="textStart" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnBuiltinImage"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="Built-in"
+                android:textSize="13sp"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_marginStart="4dp"
+                app:cornerRadius="8dp"
+                app:icon="@android:drawable/ic_menu_slideshow"
+                app:iconGravity="textStart" />
+
+        </LinearLayout>
+
+        <!-- Before/After Image Card -->
         <com.google.android.material.card.MaterialCardView
-            android:id="@+id/cardCameraPreview"
+            android:id="@+id/cardImagePreview"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="12dp"
@@ -31,21 +66,31 @@
             app:cardElevation="2dp"
             app:cardCornerRadius="8dp">
 
-            <FrameLayout
+            <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="240dp">
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp">
 
-                <androidx.camera.view.PreviewView
-                    android:id="@+id/previewView"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent" />
+                <ImageView
+                    android:id="@+id/imgBefore"
+                    android:layout_width="0dp"
+                    android:layout_height="160dp"
+                    android:layout_weight="1"
+                    android:scaleType="centerCrop"
+                    android:layout_marginEnd="4dp"
+                    android:contentDescription="Before" />
 
-                <com.example.kpilab.OverlayView
-                    android:id="@+id/overlayView"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent" />
+                <ImageView
+                    android:id="@+id/imgAfter"
+                    android:layout_width="0dp"
+                    android:layout_height="160dp"
+                    android:layout_weight="1"
+                    android:scaleType="centerCrop"
+                    android:layout_marginStart="4dp"
+                    android:contentDescription="After" />
 
-            </FrameLayout>
+            </LinearLayout>
 
         </com.google.android.material.card.MaterialCardView>
 
@@ -93,7 +138,6 @@
                         android:background="@android:drawable/btn_dropdown"
                         android:spinnerMode="dropdown" />
 
-                    <!-- Experiment set detail: defaults + experiment list -->
                     <LinearLayout
                         android:id="@+id/layoutExperimentDetail"
                         android:layout_width="match_parent"
@@ -129,9 +173,9 @@
 
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Phase & Input Mode Card (Single Mode) -->
+        <!-- SD Config Card -->
         <com.google.android.material.card.MaterialCardView
-            android:id="@+id/cardPhaseInput"
+            android:id="@+id/cardSdConfig"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="12dp"
@@ -144,6 +188,7 @@
                 android:orientation="vertical"
                 android:padding="16dp">
 
+                <!-- Phase -->
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -156,135 +201,88 @@
                     android:id="@+id/radioGroupPhase"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:layout_marginBottom="12dp">
+
+                    <RadioButton
+                        android:id="@+id/radioPhase1"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Phase1: Single Erase (5 trials, cooldown)"
+                        android:checked="true" />
+
+                    <RadioButton
+                        android:id="@+id/radioPhase2"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Phase2: Sustained Erase (10 trials)" />
+
+                    <RadioButton
+                        android:id="@+id/radioPhaseYolo"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="YOLO-seg Only (20 trials)" />
+
+                </RadioGroup>
+
+                <!-- SD Precision -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="SD Precision"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/radioGroupPrecision"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
                     android:orientation="horizontal"
                     android:layout_marginBottom="12dp">
 
                     <RadioButton
-                        android:id="@+id/radioPhaseBurst"
+                        android:id="@+id/radioPrecFp32"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="Phase1: Burst"
+                        android:text="FP32" />
+
+                    <RadioButton
+                        android:id="@+id/radioPrecFp16"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="FP16"
                         android:checked="true" />
 
                     <RadioButton
-                        android:id="@+id/radioPhaseSustained"
+                        android:id="@+id/radioPrecW8a8"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="Phase2: Sustained" />
+                        android:text="W8A8" />
 
                 </RadioGroup>
 
+                <!-- SD Backend (Execution Provider) -->
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Input Mode"
+                    android:text="SD Backend"
                     android:textSize="14sp"
                     android:textColor="@color/text_secondary"
                     android:layout_marginBottom="8dp" />
 
                 <RadioGroup
-                    android:id="@+id/radioGroupInput"
+                    android:id="@+id/radioGroupEp"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
+                    android:layout_marginBottom="12dp">
 
                     <RadioButton
-                        android:id="@+id/radioInputCameraSingle"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Cam Single"
-                        android:checked="true" />
-
-                    <RadioButton
-                        android:id="@+id/radioInputCameraLive"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Cam Live" />
-
-                    <RadioButton
-                        android:id="@+id/radioInputStatic"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Static" />
-
-                </RadioGroup>
-
-            </LinearLayout>
-
-        </com.google.android.material.card.MaterialCardView>
-
-        <!-- Model Selection Card (Single Mode) -->
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/cardSingleMode"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            app:cardElevation="2dp"
-            app:cardCornerRadius="8dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Model"
-                    android:textSize="14sp"
-                    android:textColor="@color/text_secondary"
-                    android:layout_marginBottom="8dp" />
-
-                <Spinner
-                    android:id="@+id/spinnerModel"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:background="@android:drawable/btn_dropdown"
-                    android:spinnerMode="dropdown" />
-
-            </LinearLayout>
-
-        </com.google.android.material.card.MaterialCardView>
-
-        <!-- Execution Path Card -->
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/cardExecutionPath"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            app:cardElevation="2dp"
-            app:cardCornerRadius="8dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:id="@+id/tvPathLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Execution Provider"
-                    android:textSize="14sp"
-                    android:textColor="@color/text_secondary"
-                    android:layout_marginBottom="8dp" />
-
-                <RadioGroup
-                    android:id="@+id/radioGroupPath"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-
-                    <RadioButton
-                        android:id="@+id/radioNpuGpuCpu"
+                        android:id="@+id/radioEpNpu"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
@@ -292,14 +290,14 @@
                         android:checked="true" />
 
                     <RadioButton
-                        android:id="@+id/radioGpuCpu"
+                        android:id="@+id/radioEpGpu"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:text="GPU" />
 
                     <RadioButton
-                        android:id="@+id/radioCpuOnly"
+                        android:id="@+id/radioEpCpu"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
@@ -307,26 +305,142 @@
 
                 </RadioGroup>
 
-            </LinearLayout>
+                <!-- Steps -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Steps"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="8dp" />
 
-        </com.google.android.material.card.MaterialCardView>
+                <RadioGroup
+                    android:id="@+id/radioGroupSteps"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="12dp">
 
-        <!-- Options Card -->
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/cardOptions"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            app:cardElevation="2dp"
-            app:cardCornerRadius="8dp">
+                    <RadioButton
+                        android:id="@+id/radioSteps10"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="10" />
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                    <RadioButton
+                        android:id="@+id/radioSteps20"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="20"
+                        android:checked="true" />
 
-                <!-- QNN-specific options -->
+                    <RadioButton
+                        android:id="@+id/radioSteps30"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="30" />
+
+                    <RadioButton
+                        android:id="@+id/radioSteps50"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="50" />
+
+                </RadioGroup>
+
+                <!-- Strength -->
+                <TextView
+                    android:id="@+id/tvStrengthLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Strength: 0.7"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/radioGroupStrength"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="12dp">
+
+                    <RadioButton
+                        android:id="@+id/radioStr05"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="0.5" />
+
+                    <RadioButton
+                        android:id="@+id/radioStr07"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="0.7"
+                        android:checked="true" />
+
+                    <RadioButton
+                        android:id="@+id/radioStr08"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="0.8" />
+
+                    <RadioButton
+                        android:id="@+id/radioStr10"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="1.0" />
+
+                </RadioGroup>
+
+                <!-- ROI Size -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="ROI Size"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/radioGroupRoiSize"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="12dp">
+
+                    <RadioButton
+                        android:id="@+id/radioRoiSmall"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Small" />
+
+                    <RadioButton
+                        android:id="@+id/radioRoiMedium"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Medium"
+                        android:checked="true" />
+
+                    <RadioButton
+                        android:id="@+id/radioRoiLarge"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Large" />
+
+                </RadioGroup>
+
+                <!-- QNN Options -->
                 <LinearLayout
                     android:id="@+id/layoutQnnOptions"
                     android:layout_width="match_parent"
@@ -334,68 +448,13 @@
                     android:orientation="vertical">
 
                     <CheckBox
-                        android:id="@+id/checkFp16"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="NPU FP16 precision (faster, FP32 models only)"
-                        android:checked="true"
-                        android:layout_marginBottom="8dp" />
-
-                    <CheckBox
                         android:id="@+id/checkCache"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="QNN context cache (faster reload)"
-                        android:checked="false"
-                        android:layout_marginBottom="8dp" />
+                        android:text="QNN Context Cache"
+                        android:checked="false" />
 
                 </LinearLayout>
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Duration (Phase 2)"
-                    android:textSize="14sp"
-                    android:textColor="@color/text_secondary"
-                    android:layout_marginTop="8dp"
-                    android:layout_marginBottom="8dp" />
-
-                <RadioGroup
-                    android:id="@+id/radioGroupDuration"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-
-                    <RadioButton
-                        android:id="@+id/radioDuration1"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="1 min" />
-
-                    <RadioButton
-                        android:id="@+id/radioDuration2"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="2 min" />
-
-                    <RadioButton
-                        android:id="@+id/radioDuration5"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="5 min"
-                        android:checked="true" />
-
-                    <RadioButton
-                        android:id="@+id/radioDuration10"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="10 min" />
-
-                </RadioGroup>
 
             </LinearLayout>
 
@@ -443,66 +502,26 @@
                     android:orientation="horizontal"
                     android:layout_marginBottom="4dp">
 
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Experiment"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvBatchExperiment"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="-- / --"
-                        android:textColor="@color/text_primary"
-                        android:textAlignment="textEnd" />
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Experiment" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvBatchExperiment" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="-- / --" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
 
                 </LinearLayout>
 
-                <TextView
-                    android:id="@+id/tvCurrentExperiment"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="--"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12sp"
-                    android:layout_marginBottom="8dp" />
+                <TextView android:id="@+id/tvCurrentExperiment" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:text="--" android:textColor="@color/text_secondary" android:textSize="12sp" android:layout_marginBottom="8dp" />
 
-                <LinearLayout
-                    android:id="@+id/layoutCooldown"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:visibility="gone">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Cooldown"
-                        android:textColor="@color/text_secondary" />
-
-                    <TextView
-                        android:id="@+id/tvCooldown"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="-- sec"
-                        android:textColor="@color/design_default_color_primary"
-                        android:textAlignment="textEnd" />
-
+                <LinearLayout android:id="@+id/layoutCooldown" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:visibility="gone">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Cooldown" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvCooldown" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="-- sec" android:textColor="@color/design_default_color_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <TextView
-                    android:id="@+id/tvCompletedExperiments"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text=""
-                    android:textColor="@color/text_secondary"
-                    android:textSize="11sp"
-                    android:layout_marginTop="8dp" />
+                <TextView android:id="@+id/tvCompletedExperiments" android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:text="" android:textColor="@color/text_secondary" android:textSize="11sp" android:layout_marginTop="8dp" />
 
             </LinearLayout>
 
@@ -523,11 +542,8 @@
                 android:padding="16dp">
 
                 <!-- Status -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="horizontal" android:layout_marginBottom="8dp">
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
                         android:layout_weight="1" android:text="Status" android:textColor="@color/text_secondary" />
                     <TextView android:id="@+id/tvStatus" android:layout_width="0dp" android:layout_height="wrap_content"
@@ -538,49 +554,40 @@
                     android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:max="100" android:progress="0" android:layout_marginBottom="8dp" android:visibility="gone" />
 
-                <!-- Progress -->
+                <!-- Trial Progress -->
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:layout_marginBottom="8dp">
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="Progress" android:textColor="@color/text_secondary" />
-                    <TextView android:id="@+id/tvProgress" android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="--:-- / --:--" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
+                        android:layout_weight="1" android:text="Trial" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvTrial" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="-- / --" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Inferences -->
+                <!-- UNet Step -->
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:layout_marginBottom="8dp">
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="Inferences" android:textColor="@color/text_secondary" />
-                    <TextView android:id="@+id/tvInferences" android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="0" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
+                        android:layout_weight="1" android:text="UNet Step" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvUnetStep" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="-- / --" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Throughput -->
+                <!-- Stage -->
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:layout_marginBottom="8dp">
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="Throughput" android:textColor="@color/text_secondary" />
-                    <TextView android:id="@+id/tvThroughput" android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="-- inf/s" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
+                        android:layout_weight="1" android:text="Stage" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvStage" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="--" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
-                <!-- Latency -->
+                <!-- E2E Latency -->
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:layout_marginBottom="8dp">
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="Latency" android:textColor="@color/text_secondary" />
-                    <TextView android:id="@+id/tvLatency" android:layout_width="0dp" android:layout_height="wrap_content"
+                        android:layout_weight="1" android:text="Inpaint E2E" android:textColor="@color/text_secondary" />
+                    <TextView android:id="@+id/tvE2e" android:layout_width="0dp" android:layout_height="wrap_content"
                         android:layout_weight="1" android:text="-- ms" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
-                </LinearLayout>
-
-                <!-- Frame Drop (Phase 2) -->
-                <LinearLayout android:id="@+id/layoutFrameDrop" android:layout_width="match_parent" android:layout_height="wrap_content"
-                    android:orientation="horizontal" android:layout_marginBottom="8dp" android:visibility="gone">
-                    <TextView android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="Frame Drop" android:textColor="@color/text_secondary" />
-                    <TextView android:id="@+id/tvFrameDrop" android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="0 (0.0%)" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>
 
                 <!-- Thermal -->

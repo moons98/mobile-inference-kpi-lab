@@ -9,7 +9,7 @@ import java.io.InputStreamReader
 
 /**
  * Loads experiment set configuration from multiple JSON files.
- * Supports pattern: experiment_sets_*.json (e.g., experiment_sets_yolo.json)
+ * Supports pattern: experiment_sets_*.json (e.g., experiment_sets_sd.json)
  * Priority: external storage > assets
  */
 class ExperimentSetLoader(private val context: Context) {
