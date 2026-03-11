@@ -38,13 +38,13 @@ import numpy as np
 SCRIPTS_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPTS_DIR.parent.parent
 WEIGHTS_DIR = PROJECT_ROOT / "weights" / "yolov8n_seg" / "onnx"
-OUTPUTS_DIR = PROJECT_ROOT / "outputs" / "yolo_seg_quality"
+OUTPUTS_DIR = PROJECT_ROOT / "exp_outputs" / "quantization"
 
 MODEL_NAME = "yolov8n-seg"
-FP32_PATH = WEIGHTS_DIR / f"{MODEL_NAME}.onnx"
+FP32_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_fp32.onnx"
 INT8_NOH_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_int8_qdq_noh.onnx"
 INT8_FULL_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_int8_qdq.onnx"
-INT8_QAI_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_qai_hub_int8.onnx"
+INT8_QAI_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_qai_int8.onnx"
 
 DATASETS_DIR = PROJECT_ROOT / "datasets"
 COCO_DIR = DATASETS_DIR / "coco"
@@ -859,7 +859,7 @@ def print_summary(all_agg: dict):
 def save_report_txt(all_agg: dict, coco_results: dict = None):
     """Save results as a readable txt report."""
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = OUTPUTS_DIR / "yolo_seg_quality_report.txt"
+    report_path = OUTPUTS_DIR / "yolo_quantization.txt"
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     lines = []

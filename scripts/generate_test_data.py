@@ -27,7 +27,7 @@ import onnxruntime as ort
 SCRIPTS_DIR = Path(__file__).parent
 PROJECT_DIR = SCRIPTS_DIR.parent
 ASSETS_DIR = PROJECT_DIR / "android" / "app" / "src" / "main" / "assets"
-YOLO_MODEL = PROJECT_DIR / "weights" / "yolov8n_seg" / "onnx" / "yolov8n-seg.onnx"
+YOLO_MODEL = PROJECT_DIR / "weights" / "yolov8n_seg" / "onnx" / "yolov8n-seg_fp32.onnx"
 
 INPUT_SIZE = 640
 CONF_THRESHOLD = 0.10

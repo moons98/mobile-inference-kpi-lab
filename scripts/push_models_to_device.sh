@@ -6,6 +6,7 @@
 #   ./scripts/push_models_to_device.sh --fp32     # FP32 only
 #   ./scripts/push_models_to_device.sh --int8     # INT8 only
 #   ./scripts/push_models_to_device.sh --yolo     # YOLO-seg only
+#   ./scripts/push_models_to_device.sh --deploy    # push all from weights/deploy/
 #   ./scripts/push_models_to_device.sh --status   # check what's on device
 
 set -e
@@ -86,7 +87,7 @@ if [ "$1" = "--status" ]; then
     done
     echo ""
     echo "=== YOLO-seg ==="
-    for f in yolov8n-seg.onnx yolov8n-seg_int8_qdq.onnx; do
+    for f in yolov8n-seg_fp32.onnx yolov8n-seg_int8_qdq.onnx; do
         if adb shell "test -f $DEVICE_DIR/$f" 2>/dev/null; then
             echo "  [OK] $f"
         else
@@ -129,11 +130,46 @@ push_sd_int8() {
 
 push_yolo() {
     echo "--- YOLO-seg ---"
-    for f in yolov8n-seg.onnx yolov8n-seg_int8_qdq.onnx; do
+    for f in yolov8n-seg_fp32.onnx yolov8n-seg_int8_qdq.onnx; do
         if [ -f "$YOLO_ONNX_DIR/$f" ]; then
             push_file "$YOLO_ONNX_DIR/$f"
         else
             echo "  [MISS] $f"
+        fi
+    done
+}
+
+push_yolo_compiled() {
+    echo "--- YOLO-seg Compiled (QAI Hub .bin + stub .onnx) ---"
+    # Replace original .onnx with stub, add .bin
+    local stub="$YOLO_ONNX_DIR/yolov8n-seg_compiled.onnx"
+    local bin="$YOLO_ONNX_DIR/yolov8n-seg_compiled.bin"
+    if [ -f "$stub" ] && [ -f "$bin" ]; then
+        echo "  [PUSH] yolov8n-seg.onnx (stub 428B, replacing original)..."
+        adb push "$stub" "$DEVICE_DIR/yolov8n-seg.onnx"
+        echo "  [PUSH] yolov8n-seg.bin (QNN context binary)..."
+        adb push "$bin" "$DEVICE_DIR/yolov8n-seg.bin"
+    else
+        echo "  [MISS] compiled files not found. Run QAI Hub compile first."
+    fi
+}
+
+push_deploy() {
+    local DEPLOY_DIR="$PROJECT_DIR/weights/deploy"
+    echo "--- Deploy Directory (all models) ---"
+    if [ ! -d "$DEPLOY_DIR" ]; then
+        echo "  [MISS] Deploy dir not found. Run: python scripts/prepare_deploy_models.py"
+        return
+    fi
+    for f in "$DEPLOY_DIR"/*; do
+        [ -f "$f" ] || continue
+        local filename="$(basename "$f")"
+        # Skip .onnx.data files — they are pushed alongside their .onnx
+        case "$filename" in *.onnx.data) continue ;; esac
+        push_file "$f"
+        # If companion .onnx.data exists, push it too
+        if [ -f "${f}.data" ]; then
+            push_file "${f}.data"
         fi
     done
 }
@@ -147,6 +183,12 @@ case "$1" in
         ;;
     --yolo)
         push_yolo
+        ;;
+    --yolo-compiled)
+        push_yolo_compiled
+        ;;
+    --deploy)
+        push_deploy
         ;;
     *)
         push_sd_fp32

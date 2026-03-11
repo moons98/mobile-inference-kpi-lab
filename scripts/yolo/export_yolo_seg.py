@@ -96,12 +96,30 @@ def _enable_histogram_streaming_patch(chunk_size: int = 1):
     ort_calib.HistogramCalibrater.collect_data = _collect_data_streaming
 
 
+def _fix_onnx_duplicate_value_info(model_path: Path):
+    """Remove value_info entries that duplicate model outputs.
+
+    ORT quantize_static may leave output tensors in value_info,
+    which violates the ONNX spec and causes QAI Hub compile to fail.
+    """
+    import onnx
+
+    model = onnx.load(str(model_path))
+    output_names = {o.name for o in model.graph.output}
+    dup_indices = [i for i, vi in enumerate(model.graph.value_info) if vi.name in output_names]
+    if dup_indices:
+        for i in reversed(dup_indices):
+            del model.graph.value_info[i]
+        onnx.save(model, str(model_path))
+        print(f"  Fixed {len(dup_indices)} duplicate value_info entries (ORT quantization bug)")
+
+
 def export_fp32(output_dir: Path, force: bool = False) -> Path:
     """Export YOLOv8n-seg to FP32 ONNX."""
     from ultralytics import YOLO
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    fp32_path = output_dir / f"{MODEL_NAME}.onnx"
+    fp32_path = output_dir / f"{MODEL_NAME}_fp32.onnx"
 
     if fp32_path.exists() and not force:
         size_mb = fp32_path.stat().st_size / 1024 / 1024
@@ -214,6 +232,8 @@ def quantize_int8(fp32_path: Path, output_dir: Path,
         extra_options={"num_bins": 2048, "percentile": 99.999},
     )
 
+    _fix_onnx_duplicate_value_info(int8_path)
+
     fp32_size = fp32_path.stat().st_size / 1024 / 1024
     int8_size = int8_path.stat().st_size / 1024 / 1024
     print(f"  FP32:  {fp32_size:.1f} MB")
@@ -283,6 +303,8 @@ def quantize_int8_full(fp32_path: Path, output_dir: Path,
         # No nodes_to_exclude: quantize everything
     )
 
+    _fix_onnx_duplicate_value_info(int8_full_path)
+
     fp32_size = fp32_path.stat().st_size / 1024 / 1024
     int8_size = int8_full_path.stat().st_size / 1024 / 1024
     print(f"  FP32:  {fp32_size:.1f} MB")
@@ -297,7 +319,7 @@ def check_status():
     print("=" * 60)
 
     model_files = {
-        "fp32": OUTPUT_DIR / f"{MODEL_NAME}.onnx",
+        "fp32": OUTPUT_DIR / f"{MODEL_NAME}_fp32.onnx",
         "int8_noh": OUTPUT_DIR / f"{MODEL_NAME}_int8_qdq_noh.onnx",
         "int8_full": OUTPUT_DIR / f"{MODEL_NAME}_int8_qdq.onnx",
     }

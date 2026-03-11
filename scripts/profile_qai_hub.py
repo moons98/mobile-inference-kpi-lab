@@ -103,7 +103,7 @@ ONNX_FILENAMES = {
     "text_encoder": ["text_encoder_fp32.onnx"],  # INT8 broken
     "unet":         ["unet_int8_qdq.onnx", "unet_fp32.onnx"],
     "vae_decoder":  ["vae_decoder_int8_qdq.onnx", "vae_decoder_fp32.onnx"],
-    "yolo_seg":     ["yolov8n-seg_int8_qdq_noh.onnx", "yolov8n-seg_int8_qdq.onnx", "yolov8n-seg.onnx"],
+    "yolo_seg":     ["yolov8n-seg_int8_qdq.onnx", "yolov8n-seg_fp32.onnx"],
 }
 
 SD_COMPONENTS = ["vae_encoder", "text_encoder", "unet", "vae_decoder"]
@@ -193,7 +193,7 @@ def _prepare_model_source(component: str, onnx_path: Path):
 
 def _compile_options(component: str, target_runtime: str) -> str:
     """Build compile options string."""
-    opts = f"--target_runtime {target_runtime}"
+    opts = f"--target_runtime {target_runtime} --qairt_version 2.42"
     if component in ("text_encoder", "unet"):
         opts += " --truncate_64bit_io"
     return opts
