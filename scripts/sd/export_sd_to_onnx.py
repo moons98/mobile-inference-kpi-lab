@@ -242,7 +242,7 @@ def export_vae_encoder(pipe, output_path: Path, precision: str) -> bool:
         str(output_path),
         input_names=["sample"],
         output_names=["latent_sample"],
-        opset_version=17,
+        opset_version=18,
         do_constant_folding=True,
         dynamo=False,
     )
@@ -270,7 +270,7 @@ def export_text_encoder(pipe, output_path: Path, precision: str) -> bool:
         str(output_path),
         input_names=["input_ids"],
         output_names=["last_hidden_state", "pooler_output"],
-        opset_version=17,
+        opset_version=18,
         do_constant_folding=True,
         dynamo=False,
     )
@@ -319,7 +319,7 @@ def export_unet(pipe, output_path: Path, precision: str) -> bool:
         str(output_path),
         input_names=["sample", "timestep", "encoder_hidden_states"],
         output_names=["out_sample"],
-        opset_version=17,
+        opset_version=18,
         do_constant_folding=True,
         dynamo=False,
     )
@@ -361,7 +361,7 @@ def export_vae_decoder(pipe, output_path: Path, precision: str) -> bool:
         str(output_path),
         input_names=["latent_sample"],
         output_names=["sample"],
-        opset_version=17,
+        opset_version=18,
         do_constant_folding=True,
         dynamo=False,
     )
