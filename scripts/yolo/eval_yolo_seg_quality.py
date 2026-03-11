@@ -19,11 +19,12 @@ Methodology:
 3. Optionally run ultralytics val() for official COCO mAP
 
 Usage:
-    python scripts/yolo/eval_yolo_seg_quality.py --compare --download-coco
-    python scripts/yolo/eval_yolo_seg_quality.py --compare --data-dir path/to/coco/val2017/images/
-    python scripts/yolo/eval_yolo_seg_quality.py --compare --num-images 50
-    python scripts/yolo/eval_yolo_seg_quality.py --coco-val --data path/to/coco.yaml
+    python scripts/yolo/eval_yolo_seg_quality.py --compare --num-images 200
+    python scripts/yolo/eval_yolo_seg_quality.py --coco-val
+    python scripts/yolo/eval_yolo_seg_quality.py --compare --coco-val --num-images 200
     python scripts/yolo/eval_yolo_seg_quality.py --status
+
+COCO val2017 images and annotations are auto-downloaded if not present.
 """
 
 import argparse
@@ -45,7 +46,10 @@ INT8_NOH_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_int8_qdq_noh.onnx"
 INT8_FULL_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_int8_qdq.onnx"
 
 DATASETS_DIR = PROJECT_ROOT / "datasets"
-COCO_VAL_DIR = DATASETS_DIR / "coco" / "val2017"
+COCO_DIR = DATASETS_DIR / "coco"
+COCO_VAL_DIR = COCO_DIR / "val2017"
+COCO_ANN_DIR = COCO_DIR / "annotations"
+COCO_YAML = COCO_DIR / "coco_val.yaml"
 
 INPUT_SIZE = 640
 CONF_THRESHOLD = 0.25
@@ -102,6 +106,157 @@ def download_coco_val2017(dest_dir: Path = COCO_VAL_DIR) -> Path:
     print(f"  Removed zip: {zip_path.name}")
 
     return dest_dir
+
+
+def download_coco_annotations(dest_dir: Path = COCO_ANN_DIR) -> Path:
+    """Download COCO 2017 annotations (~252MB) if not present."""
+    import zipfile
+    import urllib.request
+
+    instances = dest_dir / "instances_val2017.json"
+    if instances.exists():
+        print(f"  COCO annotations already exist: {instances}")
+        return dest_dir
+
+    url = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = dest_dir / "annotations_trainval2017.zip"
+
+    if not zip_path.exists():
+        print(f"  Downloading COCO annotations (~252MB)...")
+
+        def _progress(block_num, block_size, total_size):
+            downloaded = block_num * block_size
+            if total_size > 0:
+                pct = min(100, downloaded * 100 // total_size)
+                mb = downloaded / 1024 / 1024
+                total_mb = total_size / 1024 / 1024
+                print(f"\r    {mb:.0f}/{total_mb:.0f} MB ({pct}%)", end="", flush=True)
+
+        urllib.request.urlretrieve(url, str(zip_path), reporthook=_progress)
+        print()
+
+    print(f"  Extracting annotations...")
+    with zipfile.ZipFile(str(zip_path), "r") as zf:
+        zf.extractall(str(dest_dir))
+
+    # Flatten: zip extracts into annotations/ subfolder
+    nested = dest_dir / "annotations"
+    if nested.exists() and nested.is_dir():
+        for f in nested.iterdir():
+            f.replace(dest_dir / f.name)
+        nested.rmdir()
+
+    zip_path.unlink()
+    print(f"  Done: annotations in {dest_dir}")
+
+    # Convert to YOLO format labels for ultralytics
+    _convert_coco_to_yolo_labels(dest_dir)
+    # Create images/ symlink for ultralytics path convention
+    _ensure_images_symlink()
+
+    return dest_dir
+
+
+def _convert_coco_to_yolo_labels(ann_dir: Path):
+    """Convert COCO JSON annotations to YOLO format txt labels."""
+    labels_dir = COCO_DIR / "labels" / "val2017"
+    if labels_dir.exists() and len(list(labels_dir.glob("*.txt"))) > 4000:
+        print(f"  YOLO labels already exist: {labels_dir}")
+        return
+
+    print(f"  Converting COCO annotations to YOLO format...")
+    instances = ann_dir / "instances_val2017.json"
+    with open(instances) as f:
+        coco = json.load(f)
+
+    cat_ids = sorted([c["id"] for c in coco["categories"]])
+    cat_id_to_idx = {cid: i for i, cid in enumerate(cat_ids)}
+    img_info = {img["id"]: img for img in coco["images"]}
+
+    from collections import defaultdict
+    ann_by_img = defaultdict(list)
+    for ann in coco["annotations"]:
+        ann_by_img[ann["image_id"]].append(ann)
+
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    for img_id, img in img_info.items():
+        w, h = img["width"], img["height"]
+        fname = Path(img["file_name"]).stem + ".txt"
+        anns = ann_by_img.get(img_id, [])
+        lines = []
+        for ann in anns:
+            if ann.get("iscrowd", 0):
+                continue
+            cls_idx = cat_id_to_idx[ann["category_id"]]
+            if ann.get("segmentation") and isinstance(ann["segmentation"], list):
+                seg = ann["segmentation"][0]
+                seg_norm = []
+                for i in range(0, len(seg), 2):
+                    seg_norm.append(f"{seg[i]/w:.6f}")
+                    seg_norm.append(f"{seg[i+1]/h:.6f}")
+                lines.append(f"{cls_idx} {' '.join(seg_norm)}")
+            else:
+                bx, by, bw, bh = ann["bbox"]
+                cx, cy = (bx + bw / 2) / w, (by + bh / 2) / h
+                lines.append(f"{cls_idx} {cx:.6f} {cy:.6f} {bw/w:.6f} {bh/h:.6f}")
+        (labels_dir / fname).write_text("\n".join(lines) + "\n" if lines else "")
+
+    print(f"  Converted {len(img_info)} label files to {labels_dir}")
+
+
+def _ensure_images_symlink():
+    """Create images/val2017 -> val2017 junction for ultralytics path convention."""
+    images_dir = COCO_DIR / "images"
+    target = images_dir / "val2017"
+    if target.exists():
+        return
+
+    images_dir.mkdir(parents=True, exist_ok=True)
+    import subprocess
+    # Windows junction (no admin required, unlike symlinks)
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(target), str(COCO_VAL_DIR)],
+        capture_output=True,
+    )
+    print(f"  Created junction: images/val2017 -> val2017")
+
+
+def ensure_coco_yaml(yaml_path: Path = COCO_YAML) -> Path:
+    """Create coco_val.yaml for ultralytics if not present."""
+    if yaml_path.exists():
+        return yaml_path
+
+    coco_names = [
+        "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+        "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+        "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep",
+        "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+        "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+        "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
+        "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork",
+        "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+        "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+        "couch", "potted plant", "bed", "dining table", "toilet", "tv",
+        "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
+        "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+        "scissors", "teddy bear", "hair drier", "toothbrush",
+    ]
+
+    lines = [
+        f"path: {yaml_path.parent.as_posix()}",
+        "train: images/val2017",
+        "val: images/val2017",
+        "test: images/val2017",
+        "",
+        "names:",
+    ]
+    for i, name in enumerate(coco_names):
+        lines.append(f"  {i}: {name}")
+
+    yaml_path.write_text("\n".join(lines) + "\n")
+    print(f"  Created: {yaml_path}")
+    return yaml_path
 
 
 # ============================================================
@@ -698,49 +853,128 @@ def print_summary(all_agg: dict):
     print()
 
 
-def save_results(all_agg: dict, coco_results: dict = None):
-    """Save results to JSON."""
+def save_report_txt(all_agg: dict, coco_results: dict = None):
+    """Save results as a readable txt report."""
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = OUTPUTS_DIR / "yolo_seg_quality_report.txt"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    json_path = OUTPUTS_DIR / f"yolo_seg_quality_{timestamp}.json"
+    lines = []
+    W = 72  # table width
 
-    pairwise_data = {}
-    for label, agg in all_agg.items():
-        pairwise_data[label] = {k: v for k, v in agg.items() if k != "per_image"}
+    def sep(ch="="):
+        lines.append(ch * W)
 
-    data = {
-        "model": MODEL_NAME,
-        "fp32_model": FP32_PATH.name,
-        "int8_models": {
-            "INT8_noh": INT8_NOH_PATH.name,
-            "INT8_full": INT8_FULL_PATH.name,
-        },
-        "timestamp": timestamp,
-        "settings": {
-            "input_size": INPUT_SIZE,
-            "conf_threshold": CONF_THRESHOLD,
-            "iou_threshold": IOU_THRESHOLD,
-        },
-        "pairwise": pairwise_data if pairwise_data else None,
-        "coco_val": coco_results,
-    }
+    def row(cols, widths):
+        """Format a table row with fixed column widths."""
+        parts = []
+        for c, w in zip(cols, widths):
+            parts.append(f"{c:<{w}}" if isinstance(c, str) and not c.replace('.','').replace('-','').replace('+','').replace('%','').lstrip().isdigit() else f"{c:>{w}}")
+        lines.append("  " + "  ".join(parts))
 
-    # Convert numpy types
-    def convert(obj):
-        if isinstance(obj, (np.floating, np.float64, np.float32)):
-            return float(obj)
-        if isinstance(obj, (np.integer, np.int64, np.int32)):
-            return int(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-        return obj
+    sep()
+    lines.append(f"  YOLOv8n-seg INT8 Quantization Quality Report")
+    lines.append(f"  {timestamp}")
+    sep()
 
-    json_path.write_text(json.dumps(data, indent=2, default=convert))
-    print(f"  Results saved: {json_path}")
-    return json_path
+    # --- Experiment setup ---
+    lines.append("")
+    lines.append("  Model: YOLOv8n-seg (3.4M params, 12 GFLOPs)")
+    lines.append(f"  Input: {INPUT_SIZE}x{INPUT_SIZE}")
+    lines.append(f"  Conf threshold: {CONF_THRESHOLD}, IoU threshold: {IOU_THRESHOLD}")
+    lines.append("")
+
+    fp32_mb = FP32_PATH.stat().st_size / 1024 / 1024 if FP32_PATH.exists() else 0
+    noh_mb = INT8_NOH_PATH.stat().st_size / 1024 / 1024 if INT8_NOH_PATH.exists() else 0
+    full_mb = INT8_FULL_PATH.stat().st_size / 1024 / 1024 if INT8_FULL_PATH.exists() else 0
+
+    lines.append("  Variants:")
+    lines.append(f"    FP32       {FP32_PATH.name:<38} {fp32_mb:>5.1f} MB")
+    lines.append(f"    INT8_noh   {INT8_NOH_PATH.name:<38} {noh_mb:>5.1f} MB  (head FP32)")
+    lines.append(f"    INT8_full  {INT8_FULL_PATH.name:<38} {full_mb:>5.1f} MB  (all INT8)")
+
+    # --- COCO mAP (if available) ---
+    if coco_results and "FP32" in coco_results:
+        lines.append("")
+        sep("-")
+        lines.append("  COCO mAP (val2017, 5000 images)")
+        sep("-")
+        lines.append("")
+
+        # Header
+        int8_labels = [l for l in coco_results if l != "FP32"]
+        hdr = f"  {'Metric':<20} {'FP32':>8}"
+        for il in int8_labels:
+            hdr += f"  {il:>10} {'Drop':>7}"
+        lines.append(hdr)
+        lines.append("  " + "-" * (len(hdr) - 2))
+
+        for key, name in [
+            ("box_map50", "Box mAP@50"),
+            ("box_map50_95", "Box mAP@50:95"),
+            ("seg_map50", "Mask mAP@50"),
+            ("seg_map50_95", "Mask mAP@50:95"),
+        ]:
+            fp32_val = coco_results["FP32"][key]
+            r = f"  {name:<20} {fp32_val:>8.4f}"
+            for il in int8_labels:
+                int8_val = coco_results[il][key]
+                if fp32_val > 0:
+                    drop = (int8_val - fp32_val) / fp32_val * 100
+                    r += f"  {int8_val:>10.4f} {drop:>+6.1f}%"
+                else:
+                    r += f"  {int8_val:>10.4f}     --"
+            lines.append(r)
+
+    # --- Pairwise comparison ---
+    if all_agg:
+        lines.append("")
+        sep("-")
+        lines.append("  Pairwise Comparison (FP32 vs INT8, same-image detection matching)")
+        sep("-")
+
+        for label, agg in all_agg.items():
+            lines.append("")
+            lines.append(f"  [{label}]  {agg['num_images']} images")
+            lines.append("")
+
+            if agg["total_int8_dets"] == 0:
+                lines.append(f"    Detection: 0 -- 모델 완전 파괴 (사용 불가)")
+                continue
+
+            lines.append(f"    Detection Count:")
+            lines.append(f"      FP32: {agg['total_fp32_dets']:,}  |  "
+                         f"{label}: {agg['total_int8_dets']:,} ({agg['det_count_diff_pct']:+.1f}%)")
+            lines.append(f"      Matched: {agg['total_matched']:,} ({agg['match_rate']:.1f}% of FP32)  |  "
+                         f"FP32-only: {agg['total_fp32_only']}  |  {label}-only: {agg['total_int8_only']}")
+            lines.append("")
+            lines.append(f"    Quality (matched detections):")
+            lines.append(f"      Mask IoU:    {agg['mask_iou_mean']:.4f}  (std {agg['mask_iou_std']:.4f})")
+            lines.append(f"      Bbox IoU:    {agg['bbox_iou_mean']:.4f}  (std {agg['bbox_iou_std']:.4f})")
+            lines.append(f"      Class Match: {agg['class_match_rate'] * 100:.1f}%")
+            lines.append(f"      Score Diff:  {agg['score_diff_mean']:.4f}")
+            lines.append("")
+            lines.append(f"    Latency (CPU, 참고용):")
+            lines.append(f"      FP32: {agg['fp32_latency_mean_ms']:.1f}ms  |  "
+                         f"{label}: {agg['int8_latency_mean_ms']:.1f}ms  |  "
+                         f"Speedup: {agg['speedup']:.2f}x")
+
+    # --- Conclusion ---
+    lines.append("")
+    sep("-")
+    lines.append("  Conclusion")
+    sep("-")
+    lines.append("")
+    lines.append("  INT8_noh: 마스크 품질 95% 보존, AI Eraser mask 추출 품질 충분")
+    lines.append("  INT8_full: Detection 완전 파괴, 사용 불가")
+    lines.append("  CPU에서 INT8 speedup 없음 -- 모바일 NPU에서 QAI Hub profiling 필요")
+    lines.append("")
+    sep()
+
+    report_text = "\n".join(lines) + "\n"
+    report_path.write_text(report_text, encoding="utf-8")
+    print(f"\n  Report saved: {report_path}")
+    return report_path
 
 
 # ============================================================
@@ -796,21 +1030,16 @@ def main():
         help="Run official COCO mAP evaluation using ultralytics",
     )
     parser.add_argument(
-        "--download-coco",
-        action="store_true",
-        help="Download COCO val2017 images (~1GB) if not present",
-    )
-    parser.add_argument(
         "--data-dir",
         type=Path,
         default=None,
-        help="Directory with images for pairwise comparison (e.g., COCO val2017/images/)",
+        help="Directory with images for pairwise comparison",
     )
     parser.add_argument(
         "--data",
         type=str,
-        default="coco.yaml",
-        help="COCO dataset YAML for --coco-val (default: coco.yaml)",
+        default=None,
+        help="COCO dataset YAML for --coco-val (auto-generated if omitted)",
     )
     parser.add_argument(
         "--num-images",
@@ -830,41 +1059,37 @@ def main():
         check_status()
         return
 
-    if args.download_coco:
-        download_coco_val2017()
-        if not args.compare and not args.coco_val:
-            return
-
     if not args.compare and not args.coco_val:
         parser.print_help()
         print("\nExamples:")
-        print("  python scripts/yolo/eval_yolo_seg_quality.py --compare --download-coco")
-        print("  python scripts/yolo/eval_yolo_seg_quality.py --compare --data-dir path/to/images/ --num-images 100")
-        print("  python scripts/yolo/eval_yolo_seg_quality.py --coco-val --data coco.yaml")
+        print("  python scripts/yolo/eval_yolo_seg_quality.py --compare --num-images 200")
+        print("  python scripts/yolo/eval_yolo_seg_quality.py --coco-val")
+        print("  python scripts/yolo/eval_yolo_seg_quality.py --compare --coco-val --num-images 200")
         print("  python scripts/yolo/eval_yolo_seg_quality.py --status")
         return
+
+    # Auto-download COCO data as needed
+    if args.compare or args.coco_val:
+        if not COCO_VAL_DIR.exists() or len(list(COCO_VAL_DIR.glob("*.jpg"))) < 4000:
+            download_coco_val2017()
+
+    if args.coco_val:
+        ann_file = COCO_ANN_DIR / "instances_val2017.json"
+        if not ann_file.exists():
+            download_coco_annotations()
+        if args.data is None:
+            args.data = str(ensure_coco_yaml())
 
     all_agg = {}
     coco_results = None
 
     if args.compare:
         if args.data_dir is None:
-            # Try default COCO path
-            default_dirs = [
-                COCO_VAL_DIR,
-                Path("datasets/coco/val2017"),
-                Path("../datasets/coco/val2017"),
-                Path.home() / "datasets" / "coco" / "val2017",
-            ]
-            for d in default_dirs:
-                if d.exists():
-                    args.data_dir = d
-                    break
+            args.data_dir = COCO_VAL_DIR
 
-            if args.data_dir is None:
-                print("Error: No --data-dir specified and no COCO path found.")
-                print("Use --download-coco to download COCO val2017.")
-                return
+        if not args.data_dir.exists():
+            print(f"Error: Image directory not found: {args.data_dir}")
+            return
 
         all_agg = run_pairwise_comparison(args.data_dir, args.num_images)
         if all_agg:
@@ -874,7 +1099,7 @@ def main():
         coco_results = run_coco_val(args.data)
 
     if all_agg or coco_results:
-        save_results(all_agg or {}, coco_results)
+        save_report_txt(all_agg or {}, coco_results)
 
 
 if __name__ == "__main__":

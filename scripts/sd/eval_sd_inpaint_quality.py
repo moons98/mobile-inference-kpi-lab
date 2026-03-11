@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import gc
 import sys
 import time
 from pathlib import Path
@@ -79,80 +80,107 @@ def evaluate_component(component: str, num_samples: int) -> dict:
             print(f"  SKIP: {p.name} not found")
             return {}
 
-    # Load test inputs from NPZ
-    npz = np.load(npz_path)
-    keys = list(npz.keys())
-    total = len(npz[keys[0]])
+    # Load test inputs from NPZ once, then slice in-memory arrays.
+    with np.load(npz_path, allow_pickle=False) as npz:
+        keys = list(npz.keys())
+        arrays = {k: np.asarray(npz[k]) for k in keys}
+    total = len(arrays[keys[0]])
     n = min(num_samples, total)
     print(f"  Inputs: {n}/{total} samples from {npz_path.name}, keys={keys}")
 
-    # Load sessions (CPU only to avoid GPU memory issues)
+    # Sessions: CPU only. Run FP32 and INT8 in separate passes to reduce peak memory.
     sess_opts = ort.SessionOptions()
     sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     sess_opts.intra_op_num_threads = 4
 
-    print(f"  Loading FP32 session...")
+    print("  Loading FP32 session...")
     fp32_sess = ort.InferenceSession(str(fp32_path), sess_opts, providers=["CPUExecutionProvider"])
-    print(f"  Loading INT8 session...")
-    int8_sess = ort.InferenceSession(str(int8_path), sess_opts, providers=["CPUExecutionProvider"])
-
-    # Get output names
     fp32_outputs = [o.name for o in fp32_sess.get_outputs()]
-    int8_outputs = [o.name for o in int8_sess.get_outputs()]
     print(f"  Outputs: {fp32_outputs}")
 
-    all_metrics = []
-    fp32_times = []
-    int8_times = []
-
+    # Pass 1: run FP32 only, cache outputs per sample.
+    fp32_cache = []
+    fp32_time_sum = 0.0
     for i in range(n):
-        feed = {k: npz[k][i:i+1] for k in keys}
-
+        feed = {k: arrays[k][i:i + 1] for k in keys}
         t0 = time.perf_counter()
         fp32_result = fp32_sess.run(None, feed)
-        fp32_times.append(time.perf_counter() - t0)
+        fp32_time_sum += (time.perf_counter() - t0)
+        fp32_cache.append([np.asarray(o) for o in fp32_result])
+    del fp32_sess
+    gc.collect()
 
+    print("  Loading INT8 session...")
+    int8_sess = ort.InferenceSession(str(int8_path), sess_opts, providers=["CPUExecutionProvider"])
+    int8_outputs = [o.name for o in int8_sess.get_outputs()]
+    if len(int8_outputs) != len(fp32_outputs):
+        print(f"  WARN: output count mismatch FP32={len(fp32_outputs)} INT8={len(int8_outputs)}")
+
+    # Pass 2: run INT8 and aggregate metrics online (no per-sample metric retention).
+    metrics_acc = {}
+    int8_time_sum = 0.0
+    for i in range(n):
+        feed = {k: arrays[k][i:i + 1] for k in keys}
         t0 = time.perf_counter()
         int8_result = int8_sess.run(None, feed)
-        int8_times.append(time.perf_counter() - t0)
+        int8_time_sum += (time.perf_counter() - t0)
 
-        # Compare each output
-        sample_metrics = {}
-        for j, (fp32_o, int8_o) in enumerate(zip(fp32_result, int8_result)):
+        sample_first = None
+        for j, (fp32_o, int8_o) in enumerate(zip(fp32_cache[i], int8_result)):
             out_name = fp32_outputs[j] if j < len(fp32_outputs) else f"output_{j}"
             m = compute_metrics(fp32_o, int8_o)
-            sample_metrics[out_name] = m
+            if sample_first is None:
+                sample_first = m
 
-        all_metrics.append(sample_metrics)
+            if out_name not in metrics_acc:
+                metrics_acc[out_name] = {
+                    "count": 0,
+                    "cosine_sum": 0.0,
+                    "cosine_min": float("inf"),
+                    "mse_sum": 0.0,
+                    "rmse_sum": 0.0,
+                    "max_abs_max": 0.0,
+                    "psnr_sum": 0.0,
+                    "psnr_min": float("inf"),
+                }
+            acc = metrics_acc[out_name]
+            acc["count"] += 1
+            acc["cosine_sum"] += m["cosine_sim"]
+            acc["cosine_min"] = min(acc["cosine_min"], m["cosine_sim"])
+            acc["mse_sum"] += m["mse"]
+            acc["rmse_sum"] += m["rmse"]
+            acc["max_abs_max"] = max(acc["max_abs_max"], m["max_abs_error"])
+            acc["psnr_sum"] += m["psnr_db"]
+            acc["psnr_min"] = min(acc["psnr_min"], m["psnr_db"])
 
-        if (i + 1) % max(1, n // 4) == 0 or i == 0:
-            # Show progress for first output
-            first_key = list(sample_metrics.keys())[0]
-            m = sample_metrics[first_key]
-            print(f"    [{i+1}/{n}] cos={m['cosine_sim']:.6f} rmse={m['rmse']:.6f} "
-                  f"psnr={m['psnr_db']:.1f}dB max_err={m['max_abs_error']:.6f}")
+        if sample_first is not None and ((i + 1) % max(1, n // 4) == 0 or i == 0):
+            print(f"    [{i+1}/{n}] cos={sample_first['cosine_sim']:.6f} rmse={sample_first['rmse']:.6f} "
+                  f"psnr={sample_first['psnr_db']:.1f}dB max_err={sample_first['max_abs_error']:.6f}")
 
-    # Aggregate
+    del int8_sess
+    del fp32_cache
+    gc.collect()
+
+    # Finalize aggregate
     agg = {}
-    output_names = list(all_metrics[0].keys())
-    for out_name in output_names:
-        metrics_list = [m[out_name] for m in all_metrics]
+    for out_name, acc in metrics_acc.items():
+        cnt = max(1, acc["count"])
         agg[out_name] = {
-            "cosine_sim_mean": np.mean([m["cosine_sim"] for m in metrics_list]),
-            "cosine_sim_min": np.min([m["cosine_sim"] for m in metrics_list]),
-            "mse_mean": np.mean([m["mse"] for m in metrics_list]),
-            "rmse_mean": np.mean([m["rmse"] for m in metrics_list]),
-            "max_abs_error_max": np.max([m["max_abs_error"] for m in metrics_list]),
-            "psnr_mean": np.mean([m["psnr_db"] for m in metrics_list]),
-            "psnr_min": np.min([m["psnr_db"] for m in metrics_list]),
+            "cosine_sim_mean": acc["cosine_sum"] / cnt,
+            "cosine_sim_min": acc["cosine_min"],
+            "mse_mean": acc["mse_sum"] / cnt,
+            "rmse_mean": acc["rmse_sum"] / cnt,
+            "max_abs_error_max": acc["max_abs_max"],
+            "psnr_mean": acc["psnr_sum"] / cnt,
+            "psnr_min": acc["psnr_min"],
         }
 
     return {
         "component": component,
         "num_samples": n,
         "outputs": agg,
-        "fp32_time_mean_ms": np.mean(fp32_times) * 1000,
-        "int8_time_mean_ms": np.mean(int8_times) * 1000,
+        "fp32_time_mean_ms": (fp32_time_sum / max(1, n)) * 1000,
+        "int8_time_mean_ms": (int8_time_sum / max(1, n)) * 1000,
         "fp32_size_mb": sum(f.stat().st_size for f in MODEL_DIR.glob(f"{component}_fp32.onnx*")) / 1024 / 1024,
         "int8_size_mb": sum(f.stat().st_size for f in MODEL_DIR.glob(f"{component}_int8_qdq.onnx*")) / 1024 / 1024,
     }

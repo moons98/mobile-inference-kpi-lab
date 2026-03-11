@@ -77,6 +77,7 @@ def _enable_histogram_streaming_patch(chunk_size: int = 1):
 def quantize_component(
     component: str,
     work_dir: Path,
+    calibration_samples: int = 8,
     calibration_method: str = "minmax",
     calibration_streaming_chunk: int = 1,
 ):
@@ -106,9 +107,10 @@ def quantize_component(
     print(f"Loading calibration data from {npz_path.name}...")
     with np.load(npz_path) as meta:
         keys = list(meta.keys())
-        n = len(meta[keys[0]])
+        total = len(meta[keys[0]])
+        n = min(max(1, int(calibration_samples)), total)
         arrays = {k: meta[k] for k in keys}
-    print(f"  Loaded {n} samples, keys: {keys} (cached arrays)")
+    print(f"  Loaded {n}/{total} samples, keys: {keys} (cached arrays)")
 
     class NpzCalibReader(CalibrationDataReader):
         def __init__(self, arrays_dict: dict[str, np.ndarray], num_samples: int):
@@ -213,8 +215,10 @@ if __name__ == "__main__":
                         help="Directory with FP32 ONNX + calib NPZ files")
     parser.add_argument("--calibration-method", choices=["minmax", "percentile"], default="minmax",
                         help="Calibration method (default: minmax)")
-    parser.add_argument("--calibration-streaming-chunk", type=int, default=1,
-                        help="Histogram calibration streaming chunk size for percentile (default: 1)")
+    parser.add_argument("--calibration-samples", type=int, default=8,
+                        help="Number of calibration samples to use (default: 8)")
+    parser.add_argument("--calibration-streaming-chunk", type=int, default=2,
+                        help="Histogram calibration streaming chunk size for percentile (default: 2)")
     args = parser.parse_args()
 
     work_dir = Path(args.dir)
@@ -226,6 +230,7 @@ if __name__ == "__main__":
     quantize_component(
         args.component,
         work_dir,
+        calibration_samples=args.calibration_samples,
         calibration_method=args.calibration_method,
         calibration_streaming_chunk=args.calibration_streaming_chunk,
     )

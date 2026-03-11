@@ -162,10 +162,10 @@ EXPECTED_SIZES_MB = {
 }
 
 # Calibration settings
-CALIBRATION_SAMPLES = 64   # default for vae/text_encoder
-CALIBRATION_SAMPLES_UNET = 64  # UNet (heavier, can reduce if OOM)
+CALIBRATION_SAMPLES = 8   # default for vae/text_encoder
+CALIBRATION_SAMPLES_UNET = 8  # default for UNet as well
 CALIBRATION_METHOD = "percentile"  # "minmax" or "percentile"
-CALIBRATION_STREAMING_CHUNK = 1
+CALIBRATION_STREAMING_CHUNK = 2
 
 
 def _update_output_dir(new_dir):
@@ -989,7 +989,7 @@ def main():
         "--calibration-streaming-chunk",
         type=int,
         default=CALIBRATION_STREAMING_CHUNK,
-        help="Histogram calibration streaming chunk size (default: 1, lower peak RAM)"
+        help=f"Histogram calibration streaming chunk size (default: {CALIBRATION_STREAMING_CHUNK}, lower peak RAM)"
     )
     parser.add_argument(
         "--generate-calib-data",
@@ -1015,6 +1015,7 @@ def main():
         _update_output_dir(args.output)
 
     CALIBRATION_SAMPLES = args.calibration_samples
+    CALIBRATION_SAMPLES_UNET = args.calibration_samples
     CALIBRATION_METHOD = args.calibration_method
     CALIBRATION_STREAMING_CHUNK = max(1, args.calibration_streaming_chunk)
 
