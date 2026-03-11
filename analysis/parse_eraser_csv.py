@@ -148,22 +148,48 @@ def format_report(bench: ParsedBenchmark) -> str:
         lines.append(f"  Backend:   {df['backend'].iloc[0]}  |  Precision: {df['precision'].iloc[0]}  |  Image: {df['test_image'].iloc[0]}")
         lines.append("")
 
-        _append_stat_table(lines, df, {
-            "inference_ms": "ORT Inference",
-            "input_create_ms": "Input Create",
-            "nms_ms": "NMS",
-            "mask_decode_ms": "Mask Decode",
-            "output_process_ms": "Output Process",
-        })
+        # Build phase list in chronological order (timeline)
+        has_new_format = "preprocess_ms" in df.columns
+        has_e2e = "e2e_ms" in df.columns
 
-        # Total E2E
-        if all(c in df.columns for c in ["inference_ms", "input_create_ms", "output_process_ms"]):
-            total = df["inference_ms"] + df["input_create_ms"] + df["output_process_ms"]
-            lines.append(f"  {'='*25} {'='*10} {'='*10} {'='*10} {'='*10} {'='*10} {'='*10}")
-            lines.append(f"  {'Total E2E':<25} {total.mean():>10.2f} {total.median():>10.2f} "
-                         f"{total.quantile(0.95):>10.2f} {total.min():>10.2f} {total.max():>10.2f} {total.std():>10.2f}")
-            fps = 1000.0 / total.mean()
-            lines.append(f"\n  Throughput: {fps:.1f} FPS (1000 / mean E2E)")
+        if has_new_format:
+            # New format: 7 phases in chronological order, then E2E total
+            phases = [
+                ("preprocess_ms", "Preprocess"),
+                ("tensor_create_ms", "Tensor Create"),
+                ("inference_ms", "ORT Inference"),
+                ("output_copy_ms", "Output Copy"),
+                ("det_parse_ms", "Det Parse"),
+                ("nms_ms", "NMS"),
+                ("mask_decode_ms", "Mask Decode"),
+            ]
+            if has_e2e:
+                phases.append(("e2e_ms", "E2E Total"))
+        else:
+            # Legacy format
+            phases = [
+                ("input_create_ms", "Input Create"),
+                ("inference_ms", "ORT Inference"),
+                ("output_process_ms", "Output Process"),
+            ]
+            if has_e2e:
+                phases.append(("e2e_ms", "E2E Total"))
+
+        # Transposed table: rows = stats, columns = phases (timeline →)
+        available = [(col, label) for col, label in phases if col in df.columns]
+        _append_phase_table(lines, df, available)
+
+        # Sum check
+        if has_new_format and has_e2e:
+            sum_cols = [col for col, _ in phases if col != "e2e_ms" and col in df.columns]
+            component_sum = df[sum_cols].sum(axis=1)
+            gap = df["e2e_ms"] - component_sum
+            lines.append(f"  Sum check:  E2E={df['e2e_ms'].mean():.2f}  Components={component_sum.mean():.2f}  "
+                         f"Gap={gap.mean():.2f}ms ({gap.mean()/df['e2e_ms'].mean()*100:.1f}%)")
+
+        e2e_series = df["e2e_ms"] if has_e2e else (df.get("inference_ms", 0) + df.get("input_create_ms", 0) + df.get("output_process_ms", 0))
+        fps = 1000.0 / e2e_series.mean()
+        lines.append(f"  Throughput: {fps:.1f} FPS (1000 / mean E2E)")
 
         if "mask_count" in df.columns:
             lines.append(f"  Avg masks detected:  {df['mask_count'].mean():.1f}")
@@ -171,9 +197,22 @@ def format_report(bench: ParsedBenchmark) -> str:
             lines.append(f"  Selected mask area:  {df['selected_mask_area_pct'].mean():.2f}%")
 
         lines.append("")
-        lines.append("    ORT Inference: session.run() only (model forward pass)")
-        lines.append("    Input Create:  Bitmap -> FloatBuffer -> OnnxTensor")
-        lines.append("    Output Process: OnnxTensor copy + NMS + mask decode + post-processing")
+        if has_new_format:
+            lines.append("    Timeline:  Preprocess -> Tensor -> Inference -> Copy -> Parse -> NMS -> Mask Decode")
+            lines.append("    Preprocess:    Bitmap.createScaledBitmap + getPixels + CHW normalize")
+            lines.append("    Tensor Create: FloatBuffer -> OnnxTensor")
+            lines.append("    ORT Inference: session.run() (model forward pass)")
+            lines.append("    Output Copy:   OnnxTensor floatBuffer -> FloatArray")
+            lines.append("    Det Parse:     output 해석 + confidence 필터링 + candidate 생성")
+            lines.append("    NMS:           Non-Maximum Suppression")
+            lines.append("    Mask Decode:   prototype mask coefficient -> binary mask area")
+        else:
+            lines.append("    Timeline:  Input Create -> Inference -> Output Process")
+            if has_e2e:
+                lines.append("    E2E:            전체 wall-clock")
+            lines.append("    Input Create:   Bitmap resize + normalize + CHW + OnnxTensor")
+            lines.append("    ORT Inference:  session.run() only")
+            lines.append("    Output Process: OnnxTensor copy + NMS + mask decode")
 
     # --- [4] Inpainting Summary ---
     if bench.erase_summary is not None and not bench.erase_summary.empty:
@@ -255,6 +294,7 @@ def format_report(bench: ParsedBenchmark) -> str:
         lines.append("    Scheduler Step: PNDM/DDIM noise scheduling")
 
     # --- [6] System Resources ---
+    # From ERASE_SUMMARY (inpainting benchmarks)
     if bench.erase_summary is not None and not bench.erase_summary.empty:
         df = bench.erase_summary
         has_thermal = "start_temp_c" in df.columns and df["start_temp_c"].mean() > 0
@@ -278,13 +318,71 @@ def format_report(bench: ParsedBenchmark) -> str:
             if has_memory:
                 lines.append(f"  Peak memory:      {df['peak_memory_mb'].max()} MB")
 
+    # From YOLO_SEG_DETAIL (yolo-only benchmarks)
+    elif bench.yolo_seg_detail is not None and not bench.yolo_seg_detail.empty:
+        df = bench.yolo_seg_detail
+        has_thermal = "thermal_c" in df.columns and df["thermal_c"].mean() > 0
+        has_power = "power_mw" in df.columns and df["power_mw"].mean() > 0
+        has_memory = "memory_mb" in df.columns and df["memory_mb"].mean() > 0
+
+        if has_thermal or has_power or has_memory:
+            lines.append("")
+            lines.append("[6] System Resources")
+            lines.append(sep2)
+
+            if has_thermal:
+                lines.append(f"  Thermal start:    {df['thermal_c'].iloc[0]:.1f} C")
+                lines.append(f"  Thermal end:      {df['thermal_c'].iloc[-1]:.1f} C")
+                delta = df['thermal_c'].iloc[-1] - df['thermal_c'].iloc[0]
+                lines.append(f"  Thermal delta:    {delta:+.1f} C")
+
+            if has_power:
+                lines.append(f"  Avg power:        {df['power_mw'].mean():.0f} mW")
+
+            if has_memory:
+                lines.append(f"  Peak memory:      {df['memory_mb'].max()} MB")
+
+            lines.append("")
+            lines.append("    Thermal/Power/Memory: 벤치마크 중 시스템 메트릭 (1초 간격 샘플링)")
+
+    # --- [7] Graph Partitioning ---
+    ort_total = int(m.get('ort_total_nodes', 0))
+    ort_qnn = int(m.get('ort_qnn_nodes', 0))
+    ort_cpu = int(m.get('ort_cpu_nodes', 0))
+    ort_fallback = m.get('ort_fallback_ops', '')
+
+    lines.append("")
+    lines.append("[7] Graph Partitioning & Coverage")
+    lines.append(sep2)
+    if ort_total > 0:
+        coverage = (ort_qnn / ort_total * 100) if ort_total > 0 else 0
+        lines.append(f"  Total nodes:     {ort_total}")
+        lines.append(f"  QNN nodes:       {ort_qnn}")
+        lines.append(f"  CPU fallback:    {ort_cpu}")
+        lines.append(f"  Coverage:        {coverage:.1f}%")
+        if ort_fallback:
+            lines.append(f"  Fallback ops:    {ort_fallback.replace(';', ', ')}")
+        else:
+            lines.append(f"  Fallback ops:    None (100% QNN offload)")
+    else:
+        lines.append(f"  No ORT graph partitioning data captured.")
+        lines.append(f"  Possible causes:")
+        lines.append(f"    - ORT verbose logging not enabled")
+        lines.append(f"    - Logcat buffer overflow (로그가 너무 빠르게 흘러감)")
+        lines.append(f"    - QNN EP가 GetCapability 로그를 출력하지 않음")
+
+    lines.append("")
+    lines.append("    QNN nodes:   QNN EP (NPU/GPU)에서 실행되는 노드 수")
+    lines.append("    CPU fallback: CPU에서 실행되는 노드 수")
+    lines.append("    Coverage:    QNN offload 비율 (QNN/Total x 100)")
+
     lines.append("")
     lines.append(sep)
     return "\n".join(lines)
 
 
 def _append_stat_table(lines, df, col_map):
-    """Append a statistics table (Mean/P50/P95/Min/Max/Std)."""
+    """Append a statistics table (Mean/P50/P95/Min/Max/Std). Rows=metrics, Cols=stats."""
     lines.append(f"  {'Metric':<25} {'Mean':>10} {'P50':>10} {'P95':>10} {'Min':>10} {'Max':>10} {'Std':>10}")
     lines.append(f"  {'-'*25} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
     for col, label in col_map.items():
@@ -292,6 +390,43 @@ def _append_stat_table(lines, df, col_map):
             s = df[col]
             lines.append(f"  {label:<25} {s.mean():>10.2f} {s.median():>10.2f} "
                          f"{s.quantile(0.95):>10.2f} {s.min():>10.2f} {s.max():>10.2f} {s.std():>10.2f}")
+
+
+def _append_phase_table(lines, df, phases):
+    """Transposed table: rows=stats, columns=phases (chronological timeline →).
+
+    Args:
+        phases: list of (col_name, label) in chronological order
+    """
+    if not phases:
+        return
+
+    # Column widths: label width based on longest label
+    cw = max(10, max(len(label) for _, label in phases) + 1)
+    stat_w = 8
+
+    # Header: stat label + phase columns
+    header = f"  {'':>{stat_w}}"
+    for _, label in phases:
+        header += f" {label:>{cw}}"
+    lines.append(header)
+    lines.append(f"  {'-'*stat_w}" + f" {'-'*cw}" * len(phases))
+
+    # Stats rows
+    stat_funcs = [
+        ("Mean", lambda s: s.mean()),
+        ("P50",  lambda s: s.median()),
+        ("P95",  lambda s: s.quantile(0.95)),
+        ("Min",  lambda s: s.min()),
+        ("Max",  lambda s: s.max()),
+        ("Std",  lambda s: s.std()),
+    ]
+    for stat_name, func in stat_funcs:
+        row = f"  {stat_name:>{stat_w}}"
+        for col, _ in phases:
+            val = func(df[col])
+            row += f" {val:>{cw}.2f}"
+        lines.append(row)
 
 
 # ---------------------------------------------------------------------------
@@ -327,34 +462,50 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("")
         lines.append("[2] YOLO-seg Latency (mean, ms)")
         lines.append(sep2)
-        lines.append(f"  {'#':<4} {'File':<45} {'Backend':<12} {'Prec':<6} "
-                     f"{'Infer':>8} {'InpCr':>8} {'NMS':>8} {'MaskDec':>8} {'OutProc':>8} {'Total':>8} {'FPS':>6}")
-        lines.append(f"  {'-'*4} {'-'*45} {'-'*12} {'-'*6} "
-                     f"{'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*6}")
+        has_new = any("preprocess_ms" in b.yolo_seg_detail.columns for b in yolo_benchmarks)
+        if has_new:
+            lines.append(f"  {'#':<4} {'File':<35} {'EP':<10} {'Prec':<5} "
+                         f"{'E2E':>7} {'Prep':>7} {'Tensor':>7} {'Infer':>7} {'Copy':>7} {'Parse':>7} {'NMS':>5} {'FPS':>5}")
+            lines.append(f"  {'-'*4} {'-'*35} {'-'*10} {'-'*5} "
+                         f"{'-'*7} {'-'*7} {'-'*7} {'-'*7} {'-'*7} {'-'*7} {'-'*5} {'-'*5}")
+        else:
+            lines.append(f"  {'#':<4} {'File':<40} {'Backend':<12} {'Prec':<6} "
+                         f"{'E2E':>8} {'Infer':>8} {'InpCr':>8} {'OutProc':>8} {'FPS':>6}")
+            lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*6} "
+                         f"{'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*6}")
 
         for i, b in enumerate(yolo_benchmarks, 1):
             df = b.yolo_seg_detail
-            name = Path(b.filepath).stem[:44]
+            name = Path(b.filepath).stem[:34]
             backend = df["backend"].iloc[0]
             prec = df["precision"].iloc[0]
             infer = df["inference_ms"].mean()
-            inp = df["input_create_ms"].mean()
-            nms = df["nms_ms"].mean()
-            mask = df["mask_decode_ms"].mean()
-            outp = df["output_process_ms"].mean()
-            total = infer + inp + outp
-            fps = 1000.0 / total
-            lines.append(f"  {i:<4} {name:<45} {backend:<12} {prec:<6} "
-                         f"{infer:>8.2f} {inp:>8.2f} {nms:>8.2f} {mask:>8.2f} {outp:>8.2f} {total:>8.2f} {fps:>6.1f}")
+            e2e = df["e2e_ms"].mean() if "e2e_ms" in df.columns else infer
+
+            if has_new and "preprocess_ms" in df.columns:
+                prep = df["preprocess_ms"].mean()
+                tensor = df["tensor_create_ms"].mean() if "tensor_create_ms" in df.columns else 0
+                copy = df["output_copy_ms"].mean() if "output_copy_ms" in df.columns else 0
+                parse = df["det_parse_ms"].mean() if "det_parse_ms" in df.columns else 0
+                nms_v = df["nms_ms"].mean() if "nms_ms" in df.columns else 0
+                fps = 1000.0 / e2e
+                lines.append(f"  {i:<4} {name:<35} {backend:<10} {prec:<5} "
+                             f"{e2e:>7.1f} {prep:>7.1f} {tensor:>7.1f} {infer:>7.1f} {copy:>7.1f} {parse:>7.1f} {nms_v:>5.1f} {fps:>5.1f}")
+            else:
+                inp = df["input_create_ms"].mean() if "input_create_ms" in df.columns else 0
+                outp = df["output_process_ms"].mean() if "output_process_ms" in df.columns else 0
+                fps = 1000.0 / e2e
+                lines.append(f"  {i:<4} {name:<40} {backend:<12} {prec:<6} "
+                             f"{e2e:>8.2f} {infer:>8.2f} {inp:>8.2f} {outp:>8.2f} {fps:>6.1f}")
 
         lines.append("")
-        lines.append("    Infer:    session.run() only")
-        lines.append("    InpCr:    Bitmap -> OnnxTensor")
-        lines.append("    NMS:      Non-maximum suppression")
-        lines.append("    MaskDec:  Instance mask decoding")
-        lines.append("    OutProc:  Total output processing (NMS + MaskDec + copy)")
-        lines.append("    Total:    Infer + InpCr + OutProc")
-        lines.append("    FPS:      1000 / Total")
+        lines.append("    E2E:    Wall-clock (preprocess ~ mask decode)")
+        lines.append("    Prep:   Bitmap resize + CHW normalize")
+        lines.append("    Tensor: FloatBuffer -> OnnxTensor")
+        lines.append("    Infer:  session.run()")
+        lines.append("    Copy:   OnnxTensor -> FloatArray")
+        lines.append("    Parse:  output 해석 + candidate 생성")
+        lines.append("    FPS:    1000 / E2E")
 
     # --- [3] Inpainting Comparison ---
     erase_benchmarks = [b for b in benchmarks if b.erase_summary is not None and not b.erase_summary.empty]
@@ -451,6 +602,11 @@ def format_comparison(benchmarks: list) -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    # Force UTF-8 stdout on Windows to avoid cp949 encoding errors
+    import io, os
+    if os.name == "nt":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="Parse AI Eraser benchmark CSV files")
     parser.add_argument("paths", nargs="+", help="CSV files or directories to analyze")
     parser.add_argument("--compare", "-c", action="store_true", help="Show comparison table")
@@ -495,7 +651,7 @@ if __name__ == "__main__":
             out_path = Path(args.output)
         else:
             # Default: project root outputs/ directory
-            out_dir = Path(args.output_dir) if args.output_dir else Path(__file__).resolve().parent.parent.parent / "outputs"
+            out_dir = Path(args.output_dir) if args.output_dir else Path(__file__).resolve().parent.parent / "outputs"
             out_dir.mkdir(parents=True, exist_ok=True)
 
             from datetime import datetime

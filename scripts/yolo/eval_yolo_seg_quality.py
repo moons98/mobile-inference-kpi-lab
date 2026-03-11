@@ -44,6 +44,7 @@ MODEL_NAME = "yolov8n-seg"
 FP32_PATH = WEIGHTS_DIR / f"{MODEL_NAME}.onnx"
 INT8_NOH_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_int8_qdq_noh.onnx"
 INT8_FULL_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_int8_qdq.onnx"
+INT8_QAI_PATH = WEIGHTS_DIR / f"{MODEL_NAME}_qai_hub_int8.onnx"
 
 DATASETS_DIR = PROJECT_ROOT / "datasets"
 COCO_DIR = DATASETS_DIR / "coco"
@@ -558,6 +559,8 @@ def run_pairwise_comparison(image_dir: Path, num_images: int = 50,
             variants.append(("INT8_noh", INT8_NOH_PATH))
         if INT8_FULL_PATH.exists():
             variants.append(("INT8_full", INT8_FULL_PATH))
+        if INT8_QAI_PATH.exists():
+            variants.append(("INT8_qai_hub", INT8_QAI_PATH))
 
     if not FP32_PATH.exists():
         print(f"  Error: FP32 model not found: {FP32_PATH}")
@@ -720,7 +723,7 @@ def run_coco_val(data_yaml: str):
 
     results = {}
 
-    model_list = [("FP32", FP32_PATH), ("INT8_noh", INT8_NOH_PATH), ("INT8_full", INT8_FULL_PATH)]
+    model_list = [("FP32", FP32_PATH), ("INT8_noh", INT8_NOH_PATH), ("INT8_full", INT8_FULL_PATH), ("INT8_qai", INT8_QAI_PATH)]
     for label, model_path in model_list:
         if not model_path.exists():
             print(f"\n  {label}: Model not found ??{model_path}")
@@ -884,14 +887,26 @@ def save_report_txt(all_agg: dict, coco_results: dict = None):
     lines.append(f"  Conf threshold: {CONF_THRESHOLD}, IoU threshold: {IOU_THRESHOLD}")
     lines.append("")
 
-    fp32_mb = FP32_PATH.stat().st_size / 1024 / 1024 if FP32_PATH.exists() else 0
-    noh_mb = INT8_NOH_PATH.stat().st_size / 1024 / 1024 if INT8_NOH_PATH.exists() else 0
-    full_mb = INT8_FULL_PATH.stat().st_size / 1024 / 1024 if INT8_FULL_PATH.exists() else 0
+    def _model_size_mb(p):
+        """Get total model size including external data files."""
+        if not p.exists():
+            return 0
+        total = p.stat().st_size
+        data_file = Path(str(p) + ".data")
+        if data_file.exists():
+            total += data_file.stat().st_size
+        return total / 1024 / 1024
+
+    fp32_mb = _model_size_mb(FP32_PATH)
+    noh_mb = _model_size_mb(INT8_NOH_PATH)
+    full_mb = _model_size_mb(INT8_FULL_PATH)
+    qai_mb = _model_size_mb(INT8_QAI_PATH)
 
     lines.append("  Variants:")
     lines.append(f"    FP32       {FP32_PATH.name:<38} {fp32_mb:>5.1f} MB")
     lines.append(f"    INT8_noh   {INT8_NOH_PATH.name:<38} {noh_mb:>5.1f} MB  (head FP32)")
     lines.append(f"    INT8_full  {INT8_FULL_PATH.name:<38} {full_mb:>5.1f} MB  (all INT8)")
+    lines.append(f"    INT8_qai   {INT8_QAI_PATH.name:<38} {qai_mb:>5.1f} MB  (QAI Hub W8A8)")
 
     # --- COCO mAP (if available) ---
     if coco_results and "FP32" in coco_results:
@@ -965,8 +980,9 @@ def save_report_txt(all_agg: dict, coco_results: dict = None):
     lines.append("  Conclusion")
     sep("-")
     lines.append("")
-    lines.append("  INT8_noh: 마스크 품질 95% 보존, AI Eraser mask 추출 품질 충분")
+    lines.append("  INT8_noh:  마스크 품질 95% 보존, AI Eraser mask 추출 품질 충분")
     lines.append("  INT8_full: Detection 완전 파괴, 사용 불가")
+    lines.append("  INT8_qai:  QAI Hub W8A8 양자화, COCO calibration 기반")
     lines.append("  CPU에서 INT8 speedup 없음 -- 모바일 NPU에서 QAI Hub profiling 필요")
     lines.append("")
     sep()
@@ -989,7 +1005,7 @@ def check_status():
 
     print(f"\n  Model directory: {WEIGHTS_DIR}")
     for label, path in [("FP32", FP32_PATH), ("INT8 QDQ (noh)", INT8_NOH_PATH),
-                         ("INT8 QDQ (full)", INT8_FULL_PATH)]:
+                         ("INT8 QDQ (full)", INT8_FULL_PATH), ("INT8 QAI Hub", INT8_QAI_PATH)]:
         if path.exists():
             size_mb = path.stat().st_size / 1024 / 1024
             print(f"    [OK] {path.name} ({size_mb:.1f} MB)")

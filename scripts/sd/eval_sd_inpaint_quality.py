@@ -29,6 +29,7 @@ import numpy as np
 SCRIPTS_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPTS_DIR.parent.parent
 MODEL_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "onnx"
+CALIB_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "calib_data"
 
 ALL_COMPONENTS = ["vae_encoder", "text_encoder", "vae_decoder", "unet"]
 
@@ -73,7 +74,7 @@ def evaluate_component(component: str, num_samples: int) -> dict:
 
     fp32_path = MODEL_DIR / f"{component}_fp32.onnx"
     int8_path = MODEL_DIR / f"{component}_int8_qdq.onnx"
-    npz_path = MODEL_DIR / f"calib_{component}.npz"
+    npz_path = CALIB_DIR / f"calib_{component}.npz"
 
     for p in [fp32_path, int8_path, npz_path]:
         if not p.exists():
@@ -186,55 +187,109 @@ def evaluate_component(component: str, num_samples: int) -> dict:
     }
 
 
-def print_summary(results: list):
-    print(f"\n{'=' * 100}")
-    print(f"SD v1.5 Inpainting - INT8 QDQ Quantization Quality Summary")
-    print(f"{'=' * 100}")
+def build_report(results: list, num_samples: int) -> str:
+    from datetime import datetime
+    lines = []
+    w = 90
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    header = (f"{'Component':<16} {'Output':<30} {'CosSim':>8} {'RMSE':>10} "
-              f"{'PSNR(dB)':>10} {'MaxErr':>10} {'FP32 MB':>8} {'INT8 MB':>8} {'Ratio':>6}")
-    print(header)
-    print("-" * 100)
+    lines.append("=" * w)
+    lines.append("  SD v1.5 Inpainting INT8 QDQ Quantization Quality Report")
+    lines.append(f"  {now}")
+    lines.append("=" * w)
+    lines.append("")
+    lines.append("  Model: runwayml/stable-diffusion-inpainting (SD v1.5)")
+    lines.append("  Resolution: 512x512, Latent: 64x64")
+    lines.append(f"  Calibration: Percentile, per_channel=False, {num_samples} samples")
+    lines.append("")
+
+    # Model sizes
+    lines.append("  Components:")
+    for r in results:
+        if not r:
+            continue
+        ratio = r['int8_size_mb'] / r['fp32_size_mb'] * 100 if r['fp32_size_mb'] > 0 else 0
+        lines.append(f"    {r['component']:<16}  FP32: {r['fp32_size_mb']:>7.1f} MB  "
+                      f"INT8: {r['int8_size_mb']:>7.1f} MB  ({ratio:.0f}%)")
+    lines.append("")
+
+    # Quality metrics table
+    lines.append("-" * w)
+    lines.append("  Component-level Quality (FP32 vs INT8 QDQ)")
+    lines.append("-" * w)
+    lines.append("")
 
     for r in results:
         if not r:
             continue
-        first = True
+        lines.append(f"  [{r['component']}]  {r['num_samples']} samples")
+        lines.append("")
         for out_name, m in r["outputs"].items():
-            comp_str = r["component"] if first else ""
-            fp32_str = f"{r['fp32_size_mb']:.0f}" if first else ""
-            int8_str = f"{r['int8_size_mb']:.0f}" if first else ""
-            ratio_str = f"{r['int8_size_mb']/r['fp32_size_mb']*100:.0f}%" if first else ""
-
-            # Truncate output name
-            out_short = out_name[:28] if len(out_name) > 28 else out_name
-
-            print(f"{comp_str:<16} {out_short:<30} "
-                  f"{m['cosine_sim_mean']:>8.6f} {m['rmse_mean']:>10.6f} "
-                  f"{m['psnr_mean']:>10.1f} {m['max_abs_error_max']:>10.4f} "
-                  f"{fp32_str:>8} {int8_str:>8} {ratio_str:>6}")
-            first = False
-
-    print("-" * 100)
-    print("\nInterpretation:")
-    print("  CosSim > 0.999  : Excellent (nearly identical direction)")
-    print("  CosSim > 0.99   : Good (minor quantization noise)")
-    print("  CosSim < 0.99   : Significant deviation")
-    print("  PSNR > 40 dB    : Excellent fidelity")
-    print("  PSNR > 30 dB    : Good fidelity")
-    print("  PSNR < 20 dB    : Significant degradation")
-    print()
+            out_short = out_name[:40] if len(out_name) > 40 else out_name
+            lines.append(f"    Output: {out_short}")
+            cos_val = m['cosine_sim_mean']
+            if cos_val > 0.999:
+                grade = "Excellent"
+            elif cos_val > 0.99:
+                grade = "Good"
+            elif cos_val > 0.95:
+                grade = "Marginal"
+            else:
+                grade = "Poor"
+            lines.append(f"      CosSim:    {cos_val:.6f}  (min {m['cosine_sim_min']:.6f})  [{grade}]")
+            lines.append(f"      RMSE:      {m['rmse_mean']:.6f}")
+            lines.append(f"      PSNR:      {m['psnr_mean']:.1f} dB")
+            lines.append(f"      MaxErr:    {m['max_abs_error_max']:.4f}")
+        lines.append("")
 
     # Inference time comparison
-    print(f"{'Component':<16} {'FP32 (ms)':>12} {'INT8 (ms)':>12} {'Speedup':>8}")
-    print("-" * 50)
+    lines.append("-" * w)
+    lines.append("  Inference Latency (CPU, 참고용)")
+    lines.append("-" * w)
+    lines.append("")
+    lines.append(f"  {'Component':<16} {'FP32 (ms)':>12} {'INT8 (ms)':>12} {'Speedup':>8}")
+    lines.append(f"  {'-' * 50}")
     for r in results:
         if not r:
             continue
         speedup = r['fp32_time_mean_ms'] / r['int8_time_mean_ms'] if r['int8_time_mean_ms'] > 0 else 0
-        print(f"{r['component']:<16} {r['fp32_time_mean_ms']:>12.1f} "
-              f"{r['int8_time_mean_ms']:>12.1f} {speedup:>7.2f}x")
-    print()
+        lines.append(f"  {r['component']:<16} {r['fp32_time_mean_ms']:>12.1f} "
+                      f"{r['int8_time_mean_ms']:>12.1f} {speedup:>7.2f}x")
+    lines.append("")
+
+    # Conclusion
+    lines.append("-" * w)
+    lines.append("  Conclusion")
+    lines.append("-" * w)
+    lines.append("")
+    for r in results:
+        if not r:
+            continue
+        for out_name, m in r["outputs"].items():
+            cos_val = m['cosine_sim_mean']
+            if cos_val > 0.999:
+                verdict = "품질 우수, INT8 사용 가능"
+            elif cos_val > 0.99:
+                verdict = "품질 양호, INT8 사용 가능"
+            elif cos_val > 0.95:
+                verdict = "품질 보통, FP16 권장"
+            else:
+                verdict = "품질 불량, FP32/FP16 필수"
+            lines.append(f"  {r['component']:<16} CosSim {cos_val:.4f} -- {verdict}")
+            break  # first output only
+    lines.append("")
+    lines.append("  text_encoder: INT8 완전 파괴 (CosSim -0.05), FP32 유지 필수")
+    lines.append("  CPU에서 INT8 speedup 미미 -- 모바일 NPU에서 QAI Hub profiling 필요")
+    lines.append("")
+    lines.append("=" * w)
+
+    return "\n".join(lines)
+
+
+def print_summary(results: list, num_samples: int = 8):
+    report = build_report(results, num_samples)
+    print(report)
+    return report
 
 
 def main():
@@ -263,7 +318,14 @@ def main():
         r = evaluate_component(component, args.num_samples)
         results.append(r)
 
-    print_summary(results)
+    report = print_summary(results, args.num_samples)
+
+    # Save report to txt
+    out_dir = PROJECT_ROOT / "outputs" / "sd_inpaint_quality"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "sd_inpaint_quality_report.txt"
+    out_path.write_text(report, encoding="utf-8")
+    print(f"Report saved: {out_path}")
 
 
 if __name__ == "__main__":
