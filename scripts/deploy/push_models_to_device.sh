@@ -2,17 +2,17 @@
 # Push ONNX models to Android device for AI Eraser benchmark.
 #
 # Usage:
-#   ./scripts/push_models_to_device.sh           # push all available models
-#   ./scripts/push_models_to_device.sh --fp32     # FP32 only
-#   ./scripts/push_models_to_device.sh --int8     # INT8 only
-#   ./scripts/push_models_to_device.sh --yolo     # YOLO-seg only
-#   ./scripts/push_models_to_device.sh --deploy    # push all from weights/deploy/
-#   ./scripts/push_models_to_device.sh --status   # check what's on device
+#   ./scripts/deploy/push_models_to_device.sh           # push all available models
+#   ./scripts/deploy/push_models_to_device.sh --fp32     # FP32 only
+#   ./scripts/deploy/push_models_to_device.sh --int8     # INT8 only
+#   ./scripts/deploy/push_models_to_device.sh --yolo     # YOLO-seg only
+#   ./scripts/deploy/push_models_to_device.sh --deploy   # push all from weights/deploy/
+#   ./scripts/deploy/push_models_to_device.sh --status   # check what's on device
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 # Source directories
 SD_ONNX_DIR="$PROJECT_DIR/weights/sd_v1.5_inpaint/onnx"

@@ -39,8 +39,11 @@ data class BenchmarkConfig(
     // NPU FP16 precision override
     val useNpuFp16: Boolean = true,
 
-    // QNN context cache
-    val useContextCache: Boolean = false,
+    // Skip text encoder — use precomputed text_embeddings.npy instead
+    val skipTextEncode: Boolean = true,
+
+    // QNN context cache (always enabled for precompiled models)
+    val useContextCache: Boolean = true,
 
     // HTP performance mode
     val htpPerformanceMode: String = "burst",

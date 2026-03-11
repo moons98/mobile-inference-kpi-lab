@@ -21,9 +21,7 @@ import com.example.kpilab.batch.BatchProgress
 import com.example.kpilab.batch.ExperimentSet
 import com.example.kpilab.batch.ExperimentSetLoader
 import com.example.kpilab.databinding.ActivityMainBinding
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.io.File
@@ -121,25 +119,17 @@ class MainActivity : AppCompatActivity() {
             showBuiltinImagePicker()
         }
 
-        binding.btnPrepareCache.setOnClickListener {
-            prepareQnnCache()
+        binding.btnManageModels.setOnClickListener {
+            showDeviceModelManager()
         }
-        binding.btnManageCache.setOnClickListener {
-            showCacheManageDialog()
-        }
-
-        // Update cache status on launch
-        updateCacheStatus()
 
         // Strength label update
         binding.radioGroupStrength.setOnCheckedChangeListener { _, _ -> updateStrengthLabel() }
         binding.radioGroupSteps.setOnCheckedChangeListener { _, _ -> updateStrengthLabel() }
 
-        // QNN options visibility + precision filter
+        // Precision filter: NPU disables FP32 (auto-converted to FP16)
         binding.radioGroupEp.setOnCheckedChangeListener { _, checkedId ->
             val isNpu = checkedId == R.id.radioEpNpu
-            val isCpu = checkedId == R.id.radioEpCpu
-            binding.layoutQnnOptions.visibility = if (isCpu) View.GONE else View.VISIBLE
             updatePrecisionOptions(allowFp32 = !isNpu)
         }
 
@@ -405,8 +395,8 @@ class MainActivity : AppCompatActivity() {
         binding.radioRoiSmall.isEnabled = enabled
         binding.radioRoiMedium.isEnabled = enabled
         binding.radioRoiLarge.isEnabled = enabled
-        binding.checkCache.isEnabled = enabled
-        binding.btnPrepareCache.isEnabled = enabled
+        binding.checkSkipTextEncode.isEnabled = enabled
+        binding.btnManageModels.isEnabled = enabled
     }
 
     private fun buildConfig(): BenchmarkConfig {
@@ -460,7 +450,8 @@ class MainActivity : AppCompatActivity() {
                 BenchmarkPhase.YOLO_SEG_ONLY -> 20
                 BenchmarkPhase.SINGLE_ERASE -> 5
             },
-            useContextCache = binding.checkCache.isChecked,
+            skipTextEncode = binding.checkSkipTextEncode.isChecked,
+            useContextCache = true,
             htpPerformanceMode = when (phase) {
                 BenchmarkPhase.SUSTAINED_ERASE -> "sustained_high"
                 else -> "burst"
@@ -642,86 +633,6 @@ class MainActivity : AppCompatActivity() {
         selectedMaskBitmap = null
     }
 
-    private fun prepareQnnCache() {
-        val ep = when (binding.radioGroupEp.checkedRadioButtonId) {
-            R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
-            R.id.radioEpCpu -> {
-                Toast.makeText(this, "CPU does not need QNN cache", Toast.LENGTH_SHORT).show()
-                return
-            }
-            else -> ExecutionProvider.QNN_NPU
-        }
-        val precMap = buildPrecisionMap()
-
-        val config = BenchmarkConfig(
-            sdBackend = ep,
-            sdPrecisionMap = precMap,
-            useContextCache = true,
-            useNpuFp16 = precMap.values.any { it != SdPrecision.FP32 }
-        )
-
-        binding.btnPrepareCache.isEnabled = false
-        binding.btnStartStop.isEnabled = false
-        binding.tvCacheStatus.text = "Preparing QNN cache..."
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            val pipeline = InpaintPipeline(this@MainActivity, config)
-            val results = try {
-                pipeline.buildContextCache { name, index, total, status ->
-                    runOnUiThread {
-                        binding.tvCacheStatus.text = "[$index/$total] $name: $status"
-                    }
-                }
-            } finally {
-                pipeline.release()
-            }
-
-            runOnUiThread {
-                val summary = results.entries.joinToString("\n") { "${it.key}: ${it.value}" }
-                binding.tvCacheStatus.text = summary
-                binding.btnPrepareCache.isEnabled = true
-                binding.btnStartStop.isEnabled = true
-                binding.checkCache.isChecked = true
-
-                val allOk = results.values.all { it.startsWith("OK") }
-                Toast.makeText(this@MainActivity,
-                    if (allOk) "QNN cache ready!" else "Some models failed",
-                    Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun updateCacheStatus() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            // Check for both FP16 and W8A8 caches
-            val fp16Config = BenchmarkConfig(sdPrecisionMap = BenchmarkConfig.uniformPrecision(SdPrecision.FP16), useNpuFp16 = true)
-            val fp16Cache = InpaintPipeline(this@MainActivity, fp16Config).checkContextCache()
-
-            runOnUiThread {
-                val cached = fp16Cache.count { it.value }
-                val total = fp16Cache.size
-                if (cached > 0) {
-                    val status = fp16Cache.entries.joinToString(" | ") { (name, ok) ->
-                        if (ok) "$name:OK" else "$name:--"
-                    }
-                    binding.tvCacheStatus.text = "Cache (FP16): $cached/$total | $status"
-                }
-            }
-        }
-    }
-
-    /** Represents one ONNX model and its associated cache/partition state. */
-    private data class ModelEntry(
-        val name: String,           // e.g., "yolov8n-seg", "vae_encoder_fp32"
-        val modelFile: File,
-        val dataFile: File?,        // .onnx.data companion (UNet external data)
-        val cacheFile: File?,       // qnn_{name}_{prec}.bin
-        val partitionFile: File?,   // ort_partition_{name}.json
-        val partitionInfo: OrtLogInfo?,
-        val modelSize: Long,
-        val cacheSize: Long
-    )
-
     private fun formatSize(bytes: Long): String = when {
         bytes >= 1024L * 1024 * 1024 -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
         bytes >= 1024L * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
@@ -729,270 +640,112 @@ class MainActivity : AppCompatActivity() {
         else -> "$bytes B"
     }
 
-    private fun showCacheManageDialog() {
+    /** Represents a deployed model file pair (stub .onnx + .bin) on device. */
+    private data class DeviceModel(
+        val name: String,
+        val onnxFile: File,
+        val binFile: File?,
+        val onnxSize: Long,
+        val binSize: Long
+    ) {
+        val totalSize: Long get() = onnxSize + binSize
+        val isPrecompiled: Boolean get() = binFile != null
+    }
+
+    private fun showDeviceModelManager() {
         lifecycleScope.launch(Dispatchers.IO) {
-            val appCacheDir = cacheDir
             val modelDir = File(BenchmarkConfig().modelDir)
 
-            // Scan .onnx files (skip .onnx.data — they are companions)
-            val onnxFiles = if (modelDir.exists()) {
-                (modelDir.listFiles() ?: emptyArray())
-                    .filter { it.isFile && it.name.endsWith(".onnx") && !it.name.endsWith(".onnx.data") }
+            val models = if (modelDir.exists()) {
+                val onnxFiles = (modelDir.listFiles() ?: emptyArray())
+                    .filter { it.isFile && it.name.endsWith(".onnx") }
                     .sortedBy { it.name }
+
+                onnxFiles.map { onnx ->
+                    val stem = onnx.nameWithoutExtension
+                    val binFile = File(modelDir, "$stem.bin").takeIf { it.exists() }
+                    DeviceModel(stem, onnx, binFile, onnx.length(), binFile?.length() ?: 0L)
+                }
             } else emptyList()
 
-            // Index cache and partition files by model stem
-            val cacheMap = (appCacheDir.listFiles() ?: emptyArray())
-                .filter { it.name.startsWith("qnn_") && it.name.endsWith(".bin") }
-                .associateBy { it.nameWithoutExtension }  // qnn_modelname_fp16
-
-            val partMap = (appCacheDir.listFiles() ?: emptyArray())
-                .filter { it.name.startsWith("ort_partition_") && it.name.endsWith(".json") }
-                .associateBy { it.nameWithoutExtension.removePrefix("ort_partition_") }
-
-            // Build model entries
-            val entries = onnxFiles.map { onnx ->
-                val stem = onnx.nameWithoutExtension  // e.g., "yolov8n-seg", "vae_encoder_fp32"
-                val dataFile = File(onnx.absolutePath + ".data").takeIf { it.exists() }
-                // Find cache: try fp16 first, then fp32
-                val cache = cacheMap["qnn_${stem}_fp16"] ?: cacheMap["qnn_${stem}_fp32"]
-                val part = partMap[stem]
-                val partInfo = part?.let { OrtLogInfo.loadFromFile(it) }
-                val totalModelSize = onnx.length() + (dataFile?.length() ?: 0L)
-                ModelEntry(stem, onnx, dataFile, cache, part, partInfo, totalModelSize, cache?.length() ?: 0L)
-            }
-
-            // ORT profiling files (separate)
-            val profileFiles = (filesDir.listFiles() ?: emptyArray())
-                .filter { it.name.startsWith("ort_profile") && it.name.endsWith(".json") }
-
             runOnUiThread {
-                showModelListDialog(entries, profileFiles)
+                showDeviceModelList(models, modelDir)
             }
         }
     }
 
-    private fun showModelListDialog(entries: List<ModelEntry>, profileFiles: List<File>) {
-        val report = buildString {
-            for (e in entries) {
-                appendLine("${e.name}  (${formatSize(e.modelSize)})")
-                val cacheTag = if (e.cacheFile != null) "OK ${formatSize(e.cacheSize)}" else "--"
-                val partTag = if (e.partitionInfo != null)
-                    "QNN:${e.partitionInfo.qnnNodes} CPU:${e.partitionInfo.cpuNodes}"
-                else "--"
-                appendLine("  Cache: $cacheTag  |  Partition: $partTag")
-            }
-            if (entries.isEmpty()) appendLine("(no models found)")
-
-            if (profileFiles.isNotEmpty()) {
-                appendLine()
-                appendLine("ORT Profiles: ${profileFiles.size} file(s)")
-            }
-        }
-
-        val builder = AlertDialog.Builder(this)
-            .setTitle("Model & Cache Manager")
-            .setMessage(report)
-            .setNegativeButton("Close", null)
-
-        val hasCache = entries.any { it.cacheFile != null }
-        if (hasCache || profileFiles.isNotEmpty()) {
-            builder.setPositiveButton("Clean Up...") { _, _ ->
-                showCleanUpDialog(entries, profileFiles)
-            }
-        }
-
-        if (entries.isNotEmpty()) {
-            builder.setNeutralButton("Actions...") { _, _ ->
-                showModelActionDialog(entries)
-            }
-        }
-
-        builder.show()
-    }
-
-    private fun showModelActionDialog(entries: List<ModelEntry>) {
-        val items = entries.map { e ->
-            val status = buildString {
-                append(e.name)
-                append("  (${formatSize(e.modelSize)})")
-                if (e.cacheFile != null) append("  [C]")
-                if (e.partitionInfo != null) append("[P]")
-            }
-            status
-        }.toTypedArray()
-
-        AlertDialog.Builder(this)
-            .setTitle("Select Model")
-            .setItems(items) { _, which ->
-                showSingleModelDialog(entries[which])
-            }
-            .setNegativeButton("Back", null)
-            .show()
-    }
-
-    private fun showSingleModelDialog(entry: ModelEntry) {
-        val info = buildString {
-            appendLine("Model: ${entry.modelFile.name}")
-            appendLine("Size: ${formatSize(entry.modelSize)}")
-            if (entry.dataFile != null) {
-                appendLine("External data: ${entry.dataFile.name} (${formatSize(entry.dataFile.length())})")
-            }
-            appendLine()
-            if (entry.cacheFile != null) {
-                appendLine("QNN Cache: ${entry.cacheFile.name}")
-                appendLine("Cache size: ${formatSize(entry.cacheSize)}")
-            } else {
-                appendLine("QNN Cache: not built")
-            }
-            appendLine()
-            if (entry.partitionInfo != null) {
-                val p = entry.partitionInfo
-                appendLine("Graph Partitioning:")
-                appendLine("  Total nodes: ${p.totalNodes}")
-                appendLine("  QNN nodes: ${p.qnnNodes}")
-                appendLine("  CPU fallback: ${p.cpuNodes}")
-                if (p.fallbackOps.isNotEmpty()) {
-                    appendLine("  Fallback ops: ${p.fallbackOps.joinToString(", ")}")
-                }
-                val coverage = if (p.totalNodes > 0) "%.1f%%".format(p.qnnNodes * 100.0 / p.totalNodes) else "N/A"
-                appendLine("  QNN coverage: $coverage")
-            } else {
-                appendLine("Partition info: not available")
-            }
-        }
-
-        val builder = AlertDialog.Builder(this)
-            .setTitle(entry.name)
-            .setMessage(info)
-            .setNegativeButton("Back", null)
-
-        if (entry.cacheFile != null) {
-            builder.setPositiveButton("Delete Cache") { _, _ ->
-                entry.cacheFile.delete()
-                entry.partitionFile?.delete()
-                Toast.makeText(this, "Cache deleted. Will be rebuilt on next run.", Toast.LENGTH_SHORT).show()
-                updateCacheStatus()
-            }
-        } else {
-            builder.setPositiveButton("Build Cache") { _, _ ->
-                buildCacheForModel(entry)
-            }
-        }
-
-        builder.setNeutralButton("Delete Model") { _, _ ->
+    private fun showDeviceModelList(models: List<DeviceModel>, modelDir: File) {
+        if (models.isEmpty()) {
             AlertDialog.Builder(this)
-                .setTitle("Delete ${entry.name}?")
-                .setMessage("Model file + cache + partition will be deleted.")
-                .setPositiveButton("Delete") { _, _ ->
-                    entry.modelFile.delete()
-                    entry.dataFile?.delete()
-                    entry.cacheFile?.delete()
-                    entry.partitionFile?.delete()
-                    Toast.makeText(this, "${entry.name} deleted", Toast.LENGTH_SHORT).show()
-                    updateCacheStatus()
-                }
-                .setNegativeButton("Cancel", null)
+                .setTitle("Models on Device")
+                .setMessage("No models found in\n${modelDir.absolutePath}")
+                .setNegativeButton("Close", null)
                 .show()
-        }
-
-        builder.show()
-    }
-
-    private fun buildCacheForModel(entry: ModelEntry) {
-        val ep = when (binding.radioGroupEp.checkedRadioButtonId) {
-            R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
-            R.id.radioEpCpu -> {
-                Toast.makeText(this, "CPU does not need QNN cache", Toast.LENGTH_SHORT).show()
-                return
-            }
-            else -> ExecutionProvider.QNN_NPU
-        }
-        val useFp16 = buildPrecisionMap().values.any { it != SdPrecision.FP32 }
-
-        binding.tvCacheStatus.text = "Building cache: ${entry.name}..."
-        binding.btnManageCache.isEnabled = false
-        binding.btnPrepareCache.isEnabled = false
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            val logcatCapture = LogcatCapture()
-            val captureScope = CoroutineScope(currentCoroutineContext())
-            logcatCapture.startCapture(listOf("onnxruntime", "OrtRunner", "QNN"), captureScope)
-
-            val runner = OrtRunner(this@MainActivity)
-            val success = runner.initialize(
-                modelPath = entry.modelFile.absolutePath,
-                executionProvider = ep,
-                useNpuFp16 = useFp16,
-                useContextCache = true,
-                htpPerformanceMode = "burst"
-            )
-
-            logcatCapture.stopCapture()
-            val ortInfo = logcatCapture.parseOrtInfo()
-
-            // Save partition info if captured
-            if (ortInfo.hasData()) {
-                OrtLogInfo.saveForModel(this@MainActivity, entry.name, ortInfo)
-            }
-
-            val resultMsg = if (success) {
-                "Cache built: ${entry.name} (${runner.sessionCreateMs}ms)"
-            } else {
-                "Cache build failed: ${runner.lastError}"
-            }
-
-            runner.release()
-
-            runOnUiThread {
-                binding.tvCacheStatus.text = resultMsg
-                binding.btnManageCache.isEnabled = true
-                binding.btnPrepareCache.isEnabled = true
-                Toast.makeText(this@MainActivity, resultMsg, Toast.LENGTH_LONG).show()
-                updateCacheStatus()
-            }
-        }
-    }
-
-    private fun showCleanUpDialog(entries: List<ModelEntry>, profileFiles: List<File>) {
-        data class CleanItem(val label: String, val files: List<File>)
-        val items = mutableListOf<CleanItem>()
-
-        val cacheFiles = entries.mapNotNull { it.cacheFile }
-        if (cacheFiles.isNotEmpty()) {
-            val size = formatSize(cacheFiles.sumOf { it.length() })
-            items.add(CleanItem("QNN Cache (${cacheFiles.size}, $size)", cacheFiles))
-        }
-        val partFiles = entries.mapNotNull { it.partitionFile }
-        if (partFiles.isNotEmpty()) {
-            items.add(CleanItem("Partition Info (${partFiles.size})", partFiles))
-        }
-        if (profileFiles.isNotEmpty()) {
-            val size = formatSize(profileFiles.sumOf { it.length() })
-            items.add(CleanItem("ORT Profiles (${profileFiles.size}, $size)", profileFiles))
-        }
-
-        if (items.isEmpty()) {
-            Toast.makeText(this, "Nothing to clean", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val labels = items.map { it.label }.toTypedArray()
-        val checked = BooleanArray(items.size) { true }
+        val totalSize = models.sumOf { it.totalSize }
+        val title = "${models.size} models (${formatSize(totalSize)})"
+
+        // List items: "model_name\n  stub+bin  236.7 MB"
+        val items = models.map { m ->
+            if (m.isPrecompiled) {
+                "${m.name}\n   stub+bin  ${formatSize(m.binSize)}"
+            } else {
+                "${m.name}\n   onnx  ${formatSize(m.onnxSize)}"
+            }
+        }.toTypedArray()
 
         AlertDialog.Builder(this)
-            .setTitle("Clean Up")
-            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
-                checked[which] = isChecked
+            .setTitle(title)
+            .setItems(items) { _, which ->
+                showModelDetail(models[which])
             }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showModelDetail(model: DeviceModel) {
+        val info = buildString {
+            appendLine(model.name)
+            appendLine()
+            if (model.isPrecompiled) {
+                appendLine("Type:  Precompiled (EpContext)")
+                appendLine("Stub:  ${model.onnxFile.name}  (${formatSize(model.onnxSize)})")
+                appendLine("Binary: ${model.binFile!!.name}  (${formatSize(model.binSize)})")
+            } else {
+                appendLine("Type:  ONNX model")
+                appendLine("File:  ${model.onnxFile.name}  (${formatSize(model.onnxSize)})")
+            }
+            appendLine()
+            appendLine("Total: ${formatSize(model.totalSize)}")
+            appendLine("Path:  ${model.onnxFile.parent}")
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(model.name)
+            .setMessage(info)
+            .setNegativeButton("Back") { _, _ -> showDeviceModelManager() }
             .setPositiveButton("Delete") { _, _ ->
-                var deleted = 0
-                for ((i, item) in items.withIndex()) {
-                    if (!checked[i]) continue
-                    for (f in item.files) { if (f.delete()) deleted++ }
-                }
-                Toast.makeText(this, "Deleted $deleted file(s)", Toast.LENGTH_SHORT).show()
-                updateCacheStatus()
+                confirmDeleteModel(model)
+            }
+            .show()
+    }
+
+    private fun confirmDeleteModel(model: DeviceModel) {
+        val files = buildString {
+            appendLine(model.onnxFile.name)
+            if (model.binFile != null) appendLine(model.binFile.name)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Delete ${model.name}?")
+            .setMessage("Files to delete:\n$files\nTotal: ${formatSize(model.totalSize)}")
+            .setPositiveButton("Delete") { _, _ ->
+                model.onnxFile.delete()
+                model.binFile?.delete()
+                Toast.makeText(this, "${model.name} deleted", Toast.LENGTH_SHORT).show()
+                // Refresh list
+                showDeviceModelManager()
             }
             .setNegativeButton("Cancel", null)
             .show()

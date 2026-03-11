@@ -16,11 +16,10 @@ import java.io.FileOutputStream
 object QnnLibraryManager {
     private const val TAG = "QnnLibraryManager"
 
-    // QNN SDK version bundled in assets
-    // WARNING: ORT 1.23.2 was built with QNN SDK 2.37.1
-    // Using 2.42.0 may cause API compatibility issues
+    // QNN SDK version
+    // ORT 1.24.3 bundles QNN SDK 2.42.0 in the AAR
     const val QNN_SDK_VERSION = "2.42.0"
-    const val ORT_EXPECTED_QNN_VERSION = "2.37.1"
+    const val ORT_EXPECTED_QNN_VERSION = "2.42.0"
 
     // Hexagon architecture for different SoCs
     private val SOC_TO_HEXAGON = mapOf(

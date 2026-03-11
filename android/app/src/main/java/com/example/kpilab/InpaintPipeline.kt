@@ -7,6 +7,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Debug
 import android.util.Log
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 /**
@@ -38,6 +41,9 @@ class InpaintPipeline(
 
     private var tokenizer: Tokenizer? = null
     private var scheduler: Scheduler? = null
+
+    // Precomputed text embeddings (when skipTextEncode = true)
+    private var cachedTextEmbeddings: FloatArray? = null
 
     /** Cold start timing per SD component */
     data class ColdStartTiming(
@@ -131,13 +137,32 @@ class InpaintPipeline(
             }
         }
 
-        // Text Encoder
-        textEncoder = OrtRunner(context).also {
-            val prec = config.sdPrecisionFor(SdComponent.TEXT_ENCODER)
-            val path = "$modelDir/${SdComponent.TEXT_ENCODER.filename(prec)}"
-            if (!it.initialize(path, ep, fp16, cache, perf, false, env)) {
-                Log.e(TAG, "Text Encoder init failed: ${it.lastError}")
-                return false
+        // Text Encoder — skip if precomputed embeddings exist
+        if (config.skipTextEncode) {
+            val npyPath = "$modelDir/text_embeddings.npy"
+            val loaded = loadNpyFloatArray(npyPath)
+            if (loaded != null) {
+                cachedTextEmbeddings = loaded
+                Log.i(TAG, "Loaded cached text embeddings from $npyPath (${loaded.size} floats)")
+            } else {
+                Log.w(TAG, "skipTextEncode=true but $npyPath not found, falling back to model")
+                textEncoder = OrtRunner(context).also {
+                    val prec = config.sdPrecisionFor(SdComponent.TEXT_ENCODER)
+                    val path = "$modelDir/${SdComponent.TEXT_ENCODER.filename(prec)}"
+                    if (!it.initialize(path, ep, fp16, cache, perf, false, env)) {
+                        Log.e(TAG, "Text Encoder init failed: ${it.lastError}")
+                        return false
+                    }
+                }
+            }
+        } else {
+            textEncoder = OrtRunner(context).also {
+                val prec = config.sdPrecisionFor(SdComponent.TEXT_ENCODER)
+                val path = "$modelDir/${SdComponent.TEXT_ENCODER.filename(prec)}"
+                if (!it.initialize(path, ep, fp16, cache, perf, false, env)) {
+                    Log.e(TAG, "Text Encoder init failed: ${it.lastError}")
+                    return false
+                }
             }
         }
 
@@ -161,9 +186,12 @@ class InpaintPipeline(
             }
         }
 
+        val textEncTiming = if (textEncoder != null) {
+            textEncoder!!.modelLoadMs + textEncoder!!.sessionCreateMs
+        } else 0L
         coldStartTiming = ColdStartTiming(
             vaeEncLoadMs = vaeEncoder!!.modelLoadMs + vaeEncoder!!.sessionCreateMs,
-            textEncLoadMs = textEncoder!!.modelLoadMs + textEncoder!!.sessionCreateMs,
+            textEncLoadMs = textEncTiming,
             unetLoadMs = unet!!.modelLoadMs + unet!!.sessionCreateMs,
             vaeDecLoadMs = vaeDecoder!!.modelLoadMs + vaeDecoder!!.sessionCreateMs
         )
@@ -185,31 +213,45 @@ class InpaintPipeline(
         listener: ProgressListener? = null
     ): InpaintResult? {
         val vaeEnc = vaeEncoder ?: return null
-        val textEnc = textEncoder ?: return null
         val unetRunner = unet ?: return null
         val vaeDec = vaeDecoder ?: return null
-        val tok = tokenizer ?: return null
         val sched = scheduler ?: return null
 
         val resolution = config.resolution
         val latentSize = config.latentSize
         val stepDetails = mutableListOf<StepDetail>()
 
-        // === Stage: Tokenize (怨좎젙 prompt) ===
-        listener?.onStageStart("tokenize")
-        val tokStart = System.nanoTime()
-        val (tokenIds, tokenShape) = tok.tokenize(config.prompt)
-        val tokenizeMs = nsToMs(System.nanoTime() - tokStart)
+        // === Stage: Text Encode (cached or live) ===
+        val textEmbeddings: FloatArray
+        val tokenizeMs: Float
+        val textEncMs: Float
 
-        // === Stage: Text Encode ===
-        listener?.onStageStart("text_encode")
-        val textEncStart = System.nanoTime()
-        val textEncInputName = textEnc.inputNames.firstOrNull() ?: "input_ids"
-        val textEncResult = textEnc.runMixed(
-            mapOf(textEncInputName to Pair(tokenIds as Any, tokenShape))
-        ) ?: return null
-        val textEmbeddings = textEncResult.outputs.values.first() as FloatArray
-        val textEncMs = nsToMs(System.nanoTime() - textEncStart)
+        if (cachedTextEmbeddings != null) {
+            // Use precomputed embeddings — skip tokenize + text encoder
+            listener?.onStageStart("text_encode (cached)")
+            val t0 = System.nanoTime()
+            textEmbeddings = cachedTextEmbeddings!!
+            tokenizeMs = 0f
+            textEncMs = nsToMs(System.nanoTime() - t0)
+            Log.i(TAG, "Using cached text embeddings (${textEmbeddings.size} floats)")
+        } else {
+            val textEnc = textEncoder ?: return null
+            val tok = tokenizer ?: return null
+
+            listener?.onStageStart("tokenize")
+            val tokStart = System.nanoTime()
+            val (tokenIds, tokenShape) = tok.tokenize(config.prompt)
+            tokenizeMs = nsToMs(System.nanoTime() - tokStart)
+
+            listener?.onStageStart("text_encode")
+            val textEncStart = System.nanoTime()
+            val textEncInputName = textEnc.inputNames.firstOrNull() ?: "input_ids"
+            val textEncResult = textEnc.runMixed(
+                mapOf(textEncInputName to Pair(tokenIds as Any, tokenShape))
+            ) ?: return null
+            textEmbeddings = textEncResult.outputs.values.first() as FloatArray
+            textEncMs = nsToMs(System.nanoTime() - textEncStart)
+        }
 
         // === Stage: VAE Encode (image_latent) ===
         listener?.onStageStart("vae_encode")
@@ -502,7 +544,66 @@ class InpaintPipeline(
         ortEnv = null
         tokenizer = null
         scheduler = null
+        cachedTextEmbeddings = null
         Log.i(TAG, "Pipeline released")
+    }
+
+    /**
+     * Load a NumPy .npy file containing a float32 array.
+     * Supports simple dense arrays (not structured/object arrays).
+     */
+    private fun loadNpyFloatArray(path: String): FloatArray? {
+        val file = File(path)
+        if (!file.exists()) return null
+
+        return try {
+            val bytes = file.readBytes()
+            val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+
+            // NPY magic: \x93NUMPY
+            val magic = ByteArray(6)
+            buf.get(magic)
+            if (magic[0] != 0x93.toByte() || String(magic, 1, 5) != "NUMPY") {
+                Log.e(TAG, "Invalid .npy magic: $path")
+                return null
+            }
+
+            val major = buf.get().toInt()
+            val minor = buf.get().toInt()
+
+            // Header length
+            val headerLen = if (major >= 2) {
+                buf.int
+            } else {
+                buf.short.toInt() and 0xFFFF
+            }
+
+            // Parse header (e.g. "{'descr': '<f4', 'fortran_order': False, 'shape': (1, 77, 768), }")
+            val headerBytes = ByteArray(headerLen)
+            buf.get(headerBytes)
+            val header = String(headerBytes).trim()
+            Log.i(TAG, "NPY header: $header")
+
+            // Verify float32
+            if (!header.contains("<f4") && !header.contains("float32")) {
+                Log.e(TAG, "Expected float32 .npy, got: $header")
+                return null
+            }
+
+            // Read remaining data as float32
+            val dataStart = 6 + 2 + (if (major >= 2) 4 else 2) + headerLen
+            val floatCount = (bytes.size - dataStart) / 4
+            val result = FloatArray(floatCount)
+            val dataBuf = ByteBuffer.wrap(bytes, dataStart, bytes.size - dataStart)
+                .order(ByteOrder.LITTLE_ENDIAN)
+            dataBuf.asFloatBuffer().get(result)
+
+            Log.i(TAG, "Loaded .npy: $floatCount floats from $path")
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load .npy: ${e.message}", e)
+            null
+        }
     }
 
     private fun nsToMs(ns: Long): Float = (ns / 1_000_000.0).toFloat()

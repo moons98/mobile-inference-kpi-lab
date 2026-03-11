@@ -20,6 +20,14 @@ class OrtRunner(private val context: Context) {
 
         /** Initialize QNN libraries. Call once at app startup. */
         fun initializeQnnLibraries(context: Context): Boolean {
+            // ORT 1.24.3+ bundles QNN libraries in the AAR's native libs
+            val nativeLibDir = context.applicationInfo.nativeLibraryDir
+            val ortBundledQnn = File("$nativeLibDir/libQnnHtp.so")
+            if (ortBundledQnn.exists()) {
+                Log.i(TAG, "ORT-bundled QNN libraries found at: $nativeLibDir, skipping asset extraction")
+                return true
+            }
+            // Fallback: extract from assets/qnn_libs/ (legacy path)
             val path = QnnLibraryManager.initialize(context)
             return path != null
         }

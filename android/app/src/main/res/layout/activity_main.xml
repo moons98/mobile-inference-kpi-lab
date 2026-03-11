@@ -433,6 +433,15 @@
 
                 </GridLayout>
 
+                <CheckBox
+                    android:id="@+id/checkSkipTextEncode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Skip Text Encoder (use cached embeddings)"
+                    android:textSize="12sp"
+                    android:checked="true"
+                    android:layout_marginBottom="8dp" />
+
                 <!-- SD Backend (Execution Provider) -->
                 <TextView
                     android:layout_width="wrap_content"
@@ -611,56 +620,19 @@
                 </LinearLayout>
                 <!-- end sectionSdOptions -->
 
-                <!-- QNN Options -->
-                <LinearLayout
-                    android:id="@+id/layoutQnnOptions"
+                <!-- Device Model Manager -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnManageModels"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical">
-
-                    <CheckBox
-                        android:id="@+id/checkCache"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="QNN Context Cache"
-                        android:checked="false" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btnPrepareCache"
-                        android:layout_width="match_parent"
-                        android:layout_height="40dp"
-                        android:text="Prepare QNN Cache"
-                        android:textSize="12sp"
-                        android:layout_marginTop="8dp"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        app:cornerRadius="8dp"
-                        app:icon="@android:drawable/ic_popup_sync"
-                        app:iconGravity="textStart" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btnManageCache"
-                        android:layout_width="match_parent"
-                        android:layout_height="36dp"
-                        android:text="Manage Cache"
-                        android:textSize="11sp"
-                        android:layout_marginTop="4dp"
-                        style="@style/Widget.Material3.Button.OutlinedButton"
-                        app:cornerRadius="8dp"
-                        app:icon="@android:drawable/ic_menu_manage"
-                        app:iconGravity="textStart"
-                        app:iconSize="16dp" />
-
-                    <TextView
-                        android:id="@+id/tvCacheStatus"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text=""
-                        android:textSize="11sp"
-                        android:textColor="@color/text_secondary"
-                        android:fontFamily="monospace"
-                        android:layout_marginTop="4dp" />
-
-                </LinearLayout>
+                    android:layout_height="40dp"
+                    android:text="Manage Models on Device"
+                    android:textSize="12sp"
+                    android:layout_marginTop="8dp"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    app:cornerRadius="8dp"
+                    app:icon="@android:drawable/ic_menu_manage"
+                    app:iconGravity="textStart"
+                    app:iconSize="18dp" />
 
             </LinearLayout>
 
