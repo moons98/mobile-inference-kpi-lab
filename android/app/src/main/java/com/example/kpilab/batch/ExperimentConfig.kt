@@ -23,7 +23,6 @@ data class ExperimentConfig(
     val roiPaddingRatio: Float? = null,
     val trials: Int? = null,
     val useNpuFp16: Boolean? = null,
-    val useContextCache: Boolean? = null,
     val htpPerformanceMode: String? = null,
     val modelDir: String? = null,
     // YOLO-seg settings (독립)
@@ -62,7 +61,6 @@ data class ExperimentConfig(
             trials = trials ?: defaults.trials,
             warmupTrials = defaults.warmupTrials,
             useNpuFp16 = useNpuFp16 ?: defaults.useNpuFp16,
-            useContextCache = useContextCache ?: defaults.useContextCache,
             htpPerformanceMode = htpPerformanceMode ?: defaults.htpPerformanceMode,
             modelDir = modelDir ?: defaults.modelDir
         )

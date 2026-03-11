@@ -10,7 +10,6 @@ import com.example.kpilab.batch.BatchProgress
 import com.example.kpilab.batch.ExperimentDefaults
 import com.example.kpilab.batch.ExperimentSet
 import kotlinx.coroutines.*
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -251,7 +250,10 @@ class BenchmarkRunner(
             }
 
             // Ensure child metrics loop is stopped so benchmark coroutine can complete.
-            systemMetricsJob?.cancelAndJoin()
+            systemMetricsJob?.let { job ->
+                job.cancel()
+                withTimeoutOrNull(3000) { job.join() }
+            }
             systemMetricsJob = null
 
             Log.i(TAG, "Benchmark complete: erase=${eraseSummaries.size}, yolo=${yoloSegDetails.size}")
@@ -355,6 +357,10 @@ class BenchmarkRunner(
                     // Recycle previous generated image before replacing
                     _lastGeneratedImage.value?.recycle()
                     _lastGeneratedImage.value = trial.compositedImage
+                } else {
+                    Log.e(TAG, "Trial $trialId failed (inpaint returned null)")
+                    _progress.value = _progress.value.copy(
+                        currentStage = "trial_failed")
                 }
 
                 // Cooldown only in Phase 1
@@ -759,13 +765,19 @@ class BenchmarkRunner(
             lastSystemThermal = metrics.thermalC
             lastSystemPower = metrics.powerMw
             lastSystemMemory = metrics.memoryMb
-            // Only update progress if still running (avoid overwriting IDLE after cleanup)
-            val current = _progress.value
-            if (current.state == BenchmarkState.RUNNING || current.state == BenchmarkState.WARMING_UP) {
-                _progress.value = current.copy(
-                    lastThermalC = metrics.thermalC,
-                    lastPowerMw = metrics.powerMw,
-                    lastMemoryMb = metrics.memoryMb)
+            // Atomically update only metric fields without overwriting state.
+            // Using updateAndGet pattern to avoid race with stop() setting STOPPING.
+            _progress.value.let { current ->
+                if (current.state == BenchmarkState.RUNNING || current.state == BenchmarkState.WARMING_UP) {
+                    // Re-read state to avoid overwriting a concurrent STOPPING transition
+                    val latest = _progress.value
+                    if (latest.state == BenchmarkState.RUNNING || latest.state == BenchmarkState.WARMING_UP) {
+                        _progress.value = latest.copy(
+                            lastThermalC = metrics.thermalC,
+                            lastPowerMw = metrics.powerMw,
+                            lastMemoryMb = metrics.memoryMb)
+                    }
+                }
             }
             delay(SYSTEM_METRICS_INTERVAL_MS)
         }
@@ -985,8 +997,17 @@ class BenchmarkRunner(
     // --- Cleanup ---
 
     private suspend fun cleanup() {
-        systemMetricsJob?.cancelAndJoin()
-        if (logcatCapture.isCapturing()) logcatCapture.stopCapture()
+        // Cancel metrics with timeout to avoid hanging on blocking I/O
+        systemMetricsJob?.let { job ->
+            job.cancel()
+            withTimeoutOrNull(3000) { job.join() }
+        }
+        systemMetricsJob = null
+        try {
+            if (logcatCapture.isCapturing()) logcatCapture.stopCapture()
+        } catch (e: Exception) {
+            Log.w(TAG, "logcatCapture.stopCapture failed: ${e.message}")
+        }
         yoloRunner?.release()
         yoloRunner = null
         pipeline?.release()
@@ -995,6 +1016,7 @@ class BenchmarkRunner(
             _progress.value = BenchmarkProgress(state = BenchmarkState.IDLE)
         }
         config = null
+        Log.i(TAG, "Cleanup complete, state=${_progress.value.state}")
     }
 
     fun release() {

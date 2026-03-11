@@ -42,9 +42,6 @@ data class BenchmarkConfig(
     // Skip text encoder — use precomputed text_embeddings.npy instead
     val skipTextEncode: Boolean = true,
 
-    // QNN context cache (always enabled for precompiled models)
-    val useContextCache: Boolean = true,
-
     // HTP performance mode
     val htpPerformanceMode: String = "burst",
 

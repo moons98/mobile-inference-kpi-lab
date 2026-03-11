@@ -1,12 +1,14 @@
 package com.example.kpilab
 
 import ai.onnxruntime.*
+import ai.onnxruntime.OnnxJavaType
 import android.content.Context
 import android.util.JsonReader
 import android.util.Log
 import java.io.File
 import java.io.FileReader
 import java.nio.FloatBuffer
+import java.nio.IntBuffer
 import java.nio.LongBuffer
 
 /**
@@ -45,6 +47,8 @@ class OrtRunner(private val context: Context) {
     var inputShapes: Map<String, LongArray> = emptyMap()
         private set
     var outputShapes: Map<String, LongArray> = emptyMap()
+        private set
+    var inputTypes: Map<String, OnnxJavaType> = emptyMap()
         private set
 
     // Cold start timing
@@ -163,8 +167,8 @@ class OrtRunner(private val context: Context) {
 
     /**
      * Run inference with mixed-type named inputs.
-     * Supports FloatBuffer and LongBuffer (for INT64 tensors like token IDs).
-     * @param inputs Map of input name -> (FloatBuffer|LongBuffer, shape)
+     * Supports FloatBuffer, IntBuffer, and LongBuffer.
+     * @param inputs Map of input name -> (FloatBuffer|IntBuffer|LongBuffer, shape)
      */
     fun runMixed(inputs: Map<String, Pair<Any, LongArray>>): RunResult? {
         val env = ortEnv ?: return null
@@ -179,6 +183,7 @@ class OrtRunner(private val context: Context) {
                 val (buffer, shape) = pair
                 val tensor = when (buffer) {
                     is FloatBuffer -> OnnxTensor.createTensor(env, buffer, shape)
+                    is IntBuffer -> OnnxTensor.createTensor(env, buffer, shape)
                     is LongBuffer -> OnnxTensor.createTensor(env, buffer, shape)
                     else -> throw IllegalArgumentException("Unsupported buffer type: ${buffer::class}")
                 }
@@ -411,8 +416,11 @@ class OrtRunner(private val context: Context) {
         outputShapes = session.outputInfo.mapValues { (_, info) ->
             (info.info as? TensorInfo)?.shape ?: longArrayOf()
         }
+        inputTypes = session.inputInfo.mapValues { (_, info) ->
+            (info.info as? TensorInfo)?.type ?: OnnxJavaType.FLOAT
+        }
 
-        Log.i(TAG, "Inputs: ${inputNames.zip(inputShapes.values.map { it.contentToString() })}")
+        Log.i(TAG, "Inputs: ${inputNames.zip(inputShapes.values.map { it.contentToString() }).zip(inputTypes.values.toList()).map { (ns, t) -> "${ns.first}:${ns.second}:$t" }}")
         Log.i(TAG, "Outputs: ${outputNames.zip(outputShapes.values.map { it.contentToString() })}")
     }
 }

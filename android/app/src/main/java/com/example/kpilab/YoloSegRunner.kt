@@ -54,7 +54,6 @@ class YoloSegRunner(
     fun initialize(): Boolean {
         val ep = config.yoloBackend
         val useFp16 = config.useNpuFp16 && config.yoloPrecision == YoloPrecision.FP32
-        val cache = config.useContextCache
         val perf = config.htpPerformanceMode
         val path = "${config.modelDir}/${config.yoloModelFilename}"
 
@@ -63,7 +62,7 @@ class YoloSegRunner(
             modelPath = path,
             executionProvider = ep,
             useNpuFp16 = useFp16,
-            useContextCache = cache,
+            useContextCache = true,
             htpPerformanceMode = perf,
             enableProfiling = false
         )

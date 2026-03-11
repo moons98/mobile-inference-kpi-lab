@@ -142,6 +142,18 @@ class MainActivity : AppCompatActivity() {
 
         // Per-component precision spinners
         setupPrecisionSpinners()
+
+        // Skip Text Encode toggle → hide/show Text Enc precision row
+        binding.checkSkipTextEncode.setOnCheckedChangeListener { _, isChecked ->
+            updateTextEncVisibility(!isChecked)
+        }
+        updateTextEncVisibility(!binding.checkSkipTextEncode.isChecked)
+    }
+
+    private fun updateTextEncVisibility(visible: Boolean) {
+        val vis = if (visible) View.VISIBLE else View.GONE
+        binding.tvLabelTextEnc.visibility = vis
+        binding.spinnerPrecTextEnc.visibility = vis
     }
 
     private val precisionSpinners by lazy {
@@ -451,7 +463,6 @@ class MainActivity : AppCompatActivity() {
                 BenchmarkPhase.SINGLE_ERASE -> 5
             },
             skipTextEncode = binding.checkSkipTextEncode.isChecked,
-            useContextCache = true,
             htpPerformanceMode = when (phase) {
                 BenchmarkPhase.SUSTAINED_ERASE -> "sustained_high"
                 else -> "burst"

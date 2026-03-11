@@ -1,16 +1,16 @@
 package com.example.kpilab
 
+import ai.onnxruntime.OnnxJavaType
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtLoggingLevel
-import android.app.ActivityManager
 import android.content.Context
 import android.graphics.Bitmap
-import android.os.Debug
 import android.util.Log
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.nio.IntBuffer
 
 /**
  * SD v1.5 Inpainting pipeline with 9ch UNet.
@@ -118,7 +118,6 @@ class InpaintPipeline(
 
         val ep = config.sdBackend
         val fp16 = config.useNpuFp16
-        val cache = config.useContextCache
         val perf = config.htpPerformanceMode
         val modelDir = config.modelDir
 
@@ -131,7 +130,7 @@ class InpaintPipeline(
         vaeEncoder = OrtRunner(context).also {
             val prec = config.sdPrecisionFor(SdComponent.VAE_ENCODER)
             val path = "$modelDir/${SdComponent.VAE_ENCODER.filename(prec)}"
-            if (!it.initialize(path, ep, fp16, cache, perf, false, env)) {
+            if (!it.initialize(path, ep, fp16, true, perf, false, env)) {
                 Log.e(TAG, "VAE Encoder init failed: ${it.lastError}")
                 return false
             }
@@ -149,7 +148,7 @@ class InpaintPipeline(
                 textEncoder = OrtRunner(context).also {
                     val prec = config.sdPrecisionFor(SdComponent.TEXT_ENCODER)
                     val path = "$modelDir/${SdComponent.TEXT_ENCODER.filename(prec)}"
-                    if (!it.initialize(path, ep, fp16, cache, perf, false, env)) {
+                    if (!it.initialize(path, ep, fp16, true, perf, false, env)) {
                         Log.e(TAG, "Text Encoder init failed: ${it.lastError}")
                         return false
                     }
@@ -159,7 +158,7 @@ class InpaintPipeline(
             textEncoder = OrtRunner(context).also {
                 val prec = config.sdPrecisionFor(SdComponent.TEXT_ENCODER)
                 val path = "$modelDir/${SdComponent.TEXT_ENCODER.filename(prec)}"
-                if (!it.initialize(path, ep, fp16, cache, perf, false, env)) {
+                if (!it.initialize(path, ep, fp16, true, perf, false, env)) {
                     Log.e(TAG, "Text Encoder init failed: ${it.lastError}")
                     return false
                 }
@@ -170,7 +169,7 @@ class InpaintPipeline(
         unet = OrtRunner(context).also {
             val prec = config.sdPrecisionFor(SdComponent.INPAINT_UNET)
             val path = "$modelDir/${SdComponent.INPAINT_UNET.filename(prec)}"
-            if (!it.initialize(path, ep, fp16, cache, perf, enableProfiling, env)) {
+            if (!it.initialize(path, ep, fp16, true, perf, enableProfiling, env)) {
                 Log.e(TAG, "Inpainting UNet init failed: ${it.lastError}")
                 return false
             }
@@ -180,7 +179,7 @@ class InpaintPipeline(
         vaeDecoder = OrtRunner(context).also {
             val prec = config.sdPrecisionFor(SdComponent.VAE_DECODER)
             val path = "$modelDir/${SdComponent.VAE_DECODER.filename(prec)}"
-            if (!it.initialize(path, ep, fp16, cache, perf, false, env)) {
+            if (!it.initialize(path, ep, fp16, true, perf, false, env)) {
                 Log.e(TAG, "VAE Decoder init failed: ${it.lastError}")
                 return false
             }
@@ -212,10 +211,10 @@ class InpaintPipeline(
         roiMask: Bitmap,
         listener: ProgressListener? = null
     ): InpaintResult? {
-        val vaeEnc = vaeEncoder ?: return null
-        val unetRunner = unet ?: return null
-        val vaeDec = vaeDecoder ?: return null
-        val sched = scheduler ?: return null
+        val vaeEnc = vaeEncoder ?: run { Log.e(TAG, "inpaint: vaeEncoder is null"); return null }
+        val unetRunner = unet ?: run { Log.e(TAG, "inpaint: unet is null"); return null }
+        val vaeDec = vaeDecoder ?: run { Log.e(TAG, "inpaint: vaeDecoder is null"); return null }
+        val sched = scheduler ?: run { Log.e(TAG, "inpaint: scheduler is null"); return null }
 
         val resolution = config.resolution
         val latentSize = config.latentSize
@@ -248,7 +247,7 @@ class InpaintPipeline(
             val textEncInputName = textEnc.inputNames.firstOrNull() ?: "input_ids"
             val textEncResult = textEnc.runMixed(
                 mapOf(textEncInputName to Pair(tokenIds as Any, tokenShape))
-            ) ?: return null
+            ) ?: run { Log.e(TAG, "inpaint: textEncoder.run returned null"); return null }
             textEmbeddings = textEncResult.outputs.values.first() as FloatArray
             textEncMs = nsToMs(System.nanoTime() - textEncStart)
         }
@@ -257,7 +256,7 @@ class InpaintPipeline(
         listener?.onStageStart("vae_encode")
         val vaeEncStart = System.nanoTime()
         val (imageInput, imageShape) = ImagePreprocessor.preprocess(roiBitmap, resolution)
-        val vaeEncResult = vaeEnc.run(imageInput, imageShape) ?: return null
+        val vaeEncResult = vaeEnc.run(imageInput, imageShape) ?: run { Log.e(TAG, "inpaint: vaeEncoder.run returned null"); return null }
         // Note: VAE Encoder ONNX wrapper already includes * scaling_factor internally.
         val imageLatent = vaeEncResult.outputs.values.first() as FloatArray
         val vaeEncMs = nsToMs(System.nanoTime() - vaeEncStart)
@@ -274,7 +273,7 @@ class InpaintPipeline(
         // VAE Encode the masked image (session 3 ?ъ궗??
         val (maskedInput, maskedShape) = ImagePreprocessor.preprocess(maskedImage, resolution)
         maskedImage.recycle()
-        val maskedEncResult = vaeEnc.run(maskedInput, maskedShape) ?: return null
+        val maskedEncResult = vaeEnc.run(maskedInput, maskedShape) ?: run { Log.e(TAG, "inpaint: maskedImage vaeEncoder.run returned null"); return null }
         val maskedImageLatent = maskedEncResult.outputs.values.first() as FloatArray
         val maskedImgPrepMs = nsToMs(System.nanoTime() - maskedPrepStart)
 
@@ -302,8 +301,19 @@ class InpaintPipeline(
         val concat9ch = FloatArray(9 * planeSize)
         val latentBuffer = FloatBuffer.wrap(concat9ch)
         val latentShape = longArrayOf(1, 9, latentSize.toLong(), latentSize.toLong())
-        val timestepBuffer = FloatBuffer.allocate(1)
         val timestepShape = longArrayOf(1)
+
+        // Detect timestep input type (precompiled models may use int32 instead of float)
+        val unetNames = unetRunner.inputNames
+        val sampleName = unetNames.getOrElse(0) { "sample" }
+        val timestepName = unetNames.getOrElse(1) { "timestep" }
+        val condName = unetNames.getOrElse(2) { "encoder_hidden_states" }
+        val timestepType = unetRunner.inputTypes[timestepName] ?: OnnxJavaType.FLOAT
+        Log.i(TAG, "UNet timestep input type: $timestepType")
+
+        // Allocate typed timestep buffer
+        val timestepFloatBuf = if (timestepType == OnnxJavaType.FLOAT) FloatBuffer.allocate(1) else null
+        val timestepIntBuf = if (timestepType == OnnxJavaType.INT32) IntBuffer.allocate(1) else null
 
         for (step in 0 until actualSteps) {
             listener?.onUnetStep(step, actualSteps)
@@ -320,22 +330,28 @@ class InpaintPipeline(
             maskLatentBuffer.get(concat9ch, 8 * planeSize, planeSize)
 
             latentBuffer.rewind()
-            timestepBuffer.put(0, sched.getCurrentTimestep().toFloat())
             textEmbBuffer.rewind()
 
-            // UNet input names
-            val unetNames = unetRunner.inputNames
-            val sampleName = unetNames.getOrElse(0) { "sample" }
-            val timestepName = unetNames.getOrElse(1) { "timestep" }
-            val condName = unetNames.getOrElse(2) { "encoder_hidden_states" }
+            // Set timestep in the correct type
+            val timestepValue = sched.getCurrentTimestep()
+            val timestepPair: Pair<Any, LongArray> = when {
+                timestepIntBuf != null -> {
+                    timestepIntBuf.put(0, timestepValue.toInt())
+                    Pair(timestepIntBuf, timestepShape)
+                }
+                else -> {
+                    timestepFloatBuf!!.put(0, timestepValue.toFloat())
+                    Pair(timestepFloatBuf, timestepShape)
+                }
+            }
 
             val unetInputs = mapOf(
-                sampleName to Pair(latentBuffer, latentShape),
-                timestepName to Pair(timestepBuffer, timestepShape),
-                condName to Pair(textEmbBuffer, textEmbShape)
+                sampleName to Pair(latentBuffer as Any, latentShape),
+                timestepName to timestepPair,
+                condName to Pair(textEmbBuffer as Any, textEmbShape)
             )
 
-            val unetResult = unetRunner.run(unetInputs) ?: return null
+            val unetResult = unetRunner.runMixed(unetInputs) ?: run { Log.e(TAG, "inpaint: unet.run returned null at step $step"); return null }
             val modelOutput = unetResult.outputs.values.first() as FloatArray
 
             // Scheduler step
@@ -365,7 +381,7 @@ class InpaintPipeline(
         val decResult = vaeDec.run(
             FloatBuffer.wrap(finalLatent),
             longArrayOf(1, LATENT_CHANNELS.toLong(), latentSize.toLong(), latentSize.toLong())
-        ) ?: return null
+        ) ?: run { Log.e(TAG, "inpaint: vaeDecoder.run returned null"); return null }
         val outputImage = ImagePreprocessor.postprocess(
             decResult.outputs.values.first() as FloatArray,
             resolution, resolution
@@ -409,126 +425,6 @@ class InpaintPipeline(
 
     fun getUnetProfilingSummary(): OrtRunner.ProfilingSummary? {
         return unet?.analyzeProfilingData()
-    }
-
-    /**
-     * Build QNN context cache for all 4 SD models sequentially.
-     * Loads one model at a time → compiles → saves .bin cache → releases → next.
-     * This avoids LMK kill from simultaneous compilation memory pressure.
-     *
-     * @param onProgress callback with (componentName, index, total, status)
-     * @return map of component name → cache file path (or error message)
-     */
-    fun buildContextCache(
-        onProgress: (String, Int, Int, String) -> Unit = { _, _, _, _ -> }
-    ): Map<String, String> {
-        val ep = config.sdBackend
-        val fp16 = config.useNpuFp16
-        val perf = config.htpPerformanceMode
-        val modelDir = config.modelDir
-        // Build smallest models first to maximize chance of success
-        val components = SdComponent.values().sortedBy { component ->
-            val prec = config.sdPrecisionFor(component)
-            val file = java.io.File("$modelDir/${component.filename(prec)}")
-            if (file.exists()) file.length() else Long.MAX_VALUE
-        }
-        val results = mutableMapOf<String, String>()
-
-        for ((index, component) in components.withIndex()) {
-            val name = component.displayName
-            val prec = config.sdPrecisionFor(component)
-            val cacheFile = getCacheFile(component, prec, fp16)
-            if (cacheFile.exists() && cacheFile.length() > 0L) {
-                results[name] = "OK (cached)"
-                onProgress(name, index + 1, components.size, "skip")
-                Log.i(TAG, "=== Cache skip [${index + 1}/${components.size}]: $name (${cacheFile.name}) ===")
-                continue
-            }
-
-            // Log memory state before compilation
-            val modelFile = java.io.File("$modelDir/${component.filename(prec)}")
-            val modelSizeMb = if (modelFile.exists()) modelFile.length() / (1024 * 1024) else -1
-            logMemoryState("BEFORE $name (model=${modelSizeMb}MB)")
-
-            onProgress(name, index + 1, components.size, "compiling")
-            Log.i(TAG, "=== Cache build [${index + 1}/${components.size}]: $name (${modelSizeMb}MB) ===")
-
-            // Each component gets its own OrtEnvironment to fully release native memory
-            val env = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE)
-            val runner = OrtRunner(context)
-            val path = "$modelDir/${component.filename(prec)}"
-            val success = runner.initialize(
-                modelPath = path,
-                executionProvider = ep,
-                useNpuFp16 = fp16,
-                useContextCache = true,
-                htpPerformanceMode = perf,
-                enableProfiling = false,
-                sharedEnv = env
-            )
-
-            if (success) {
-                results[name] = "OK (${runner.sessionCreateMs}ms)"
-                Log.i(TAG, "$name cache built in ${runner.sessionCreateMs}ms")
-            } else {
-                results[name] = "FAILED: ${runner.lastError}"
-                Log.e(TAG, "$name cache build failed: ${runner.lastError}")
-            }
-
-            // Aggressively release native memory before next model
-            runner.release()
-            env.close()
-            System.gc()
-            Runtime.getRuntime().gc()
-            // Give OS time to reclaim native memory pages
-            Thread.sleep(2000)
-
-            logMemoryState("AFTER $name")
-            onProgress(name, index + 1, components.size, if (success) "done" else "failed")
-        }
-
-        Log.i(TAG, "=== Context cache build complete ===")
-        return results
-    }
-
-    private fun logMemoryState(label: String) {
-        val runtime = Runtime.getRuntime()
-        val javaUsedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
-        val javaMaxMb = runtime.maxMemory() / (1024 * 1024)
-        val nativeMb = Debug.getNativeHeapAllocatedSize() / (1024 * 1024)
-        val nativeTotalMb = Debug.getNativeHeapSize() / (1024 * 1024)
-
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val memInfo = ActivityManager.MemoryInfo()
-        am.getMemoryInfo(memInfo)
-        val availMb = memInfo.availMem / (1024 * 1024)
-        val totalMb = memInfo.totalMem / (1024 * 1024)
-        val lowMemory = memInfo.lowMemory
-
-        Log.w(TAG, "=== MEM [$label] Java=${javaUsedMb}/${javaMaxMb}MB | " +
-                "Native=${nativeMb}/${nativeTotalMb}MB | " +
-                "System=${availMb}/${totalMb}MB avail | lowMem=$lowMemory ===")
-    }
-
-    /**
-     * Check which QNN context cache files exist.
-     * @return map of component name → cached (true/false)
-     */
-    fun checkContextCache(): Map<String, Boolean> {
-        val fp16 = config.useNpuFp16
-
-        return SdComponent.values().associate { component ->
-            val prec = config.sdPrecisionFor(component)
-            val cacheFile = getCacheFile(component, prec, fp16)
-            component.displayName to (cacheFile.exists() && cacheFile.length() > 0L)
-        }
-    }
-
-    private fun getCacheFile(component: SdComponent, precision: SdPrecision, fp16: Boolean): java.io.File {
-        val precStr = if (fp16) "fp16" else "fp32"
-        val modelName = java.io.File(component.filename(precision)).nameWithoutExtension
-        val cachePath = "${context.cacheDir.absolutePath}/qnn_${modelName}_${precStr}.bin"
-        return java.io.File(cachePath)
     }
 
     fun release() {
