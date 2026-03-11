@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "defaults": {
     "phase": "SINGLE_ERASE",
     "steps": 20,
@@ -9,7 +9,7 @@
     "trials": 5,
     "warmupTrials": 2,
     "useNpuFp16": true,
-    "useContextCache": false,
+    "skipTextEncode": true,
     "htpPerformanceMode": "burst",
     "modelDir": "/sdcard/sd_models",
     "yoloBackend": "QNN_NPU",
@@ -18,17 +18,27 @@
   "experimentSets": [
     {
       "id": "exp1_inpaint_backend_precision",
-      "name": "[Exp1] Inpainting Backend × Precision",
+      "name": "[Exp1] SD Backend × Precision",
       "experiments": [
-        { "sdBackend": "CPU", "sdPrecision": "FP32", "useNpuFp16": false, "trials": 1 },
-        { "sdBackend": "QNN_GPU", "sdPrecision": "FP16" },
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16" },
-        { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8" }
+        { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8" },
+        { "sdBackend": "QNN_GPU", "sdPrecision": "FP16" },
+        { "sdBackend": "CPU", "sdPrecision": "FP32", "useNpuFp16": false, "skipTextEncode": false, "trials": 1 }
       ]
     },
     {
-      "id": "exp2_yolo_backend_precision",
-      "name": "[Exp2] YOLO-seg Backend × Precision",
+      "id": "exp2_mixed_precision",
+      "name": "[Exp2] Mixed Precision (UNet W8A8 + VAE FP16)",
+      "experiments": [
+        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16" },
+        { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8" },
+        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "precUnet": "W8A8" },
+        { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8", "precVaeEnc": "FP16", "precVaeDec": "FP16" }
+      ]
+    },
+    {
+      "id": "exp3_yolo_backend_precision",
+      "name": "[Exp3] YOLO-seg Backend × Precision",
       "experiments": [
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "phase": "YOLO_SEG_ONLY", "yoloBackend": "CPU", "yoloPrecision": "FP32" },
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "phase": "YOLO_SEG_ONLY", "yoloBackend": "QNN_GPU", "yoloPrecision": "FP32" },
@@ -37,8 +47,8 @@
       ]
     },
     {
-      "id": "exp3_steps_strength",
-      "name": "[Exp3] Step × Strength",
+      "id": "exp4_steps_strength",
+      "name": "[Exp4] Step × Strength",
       "experiments": [
         { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8", "strength": 0.5 },
         { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8", "strength": 0.7 },
@@ -48,8 +58,8 @@
       ]
     },
     {
-      "id": "exp4_roi_size",
-      "name": "[Exp4] ROI Size",
+      "id": "exp5_roi_size",
+      "name": "[Exp5] ROI Size",
       "experiments": [
         { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8", "roiSize": "SMALL" },
         { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8", "roiSize": "MEDIUM" },

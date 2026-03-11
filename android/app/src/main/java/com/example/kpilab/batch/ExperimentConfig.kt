@@ -11,11 +11,14 @@ import com.example.kpilab.YoloPrecision
 /**
  * Individual AI Eraser experiment configuration.
  * Null values inherit from ExperimentDefaults.
+ *
+ * Per-component precision: sdPrecision sets the baseline for all components.
+ * Optional precVaeEnc/precTextEnc/precUnet/precVaeDec override individual components.
  */
 data class ExperimentConfig(
     // SD Inpainting settings
     val sdBackend: String,              // ExecutionProvider enum name
-    val sdPrecision: String,            // SdPrecision enum name
+    val sdPrecision: String,            // SdPrecision enum name (baseline for all components)
     val phase: String? = null,
     val steps: Int? = null,
     val strength: Float? = null,
@@ -23,9 +26,15 @@ data class ExperimentConfig(
     val roiPaddingRatio: Float? = null,
     val trials: Int? = null,
     val useNpuFp16: Boolean? = null,
+    val skipTextEncode: Boolean? = null,
     val htpPerformanceMode: String? = null,
     val modelDir: String? = null,
-    // YOLO-seg settings (독립)
+    // Per-component precision overrides (optional)
+    val precVaeEnc: String? = null,
+    val precTextEnc: String? = null,
+    val precUnet: String? = null,
+    val precVaeDec: String? = null,
+    // YOLO-seg settings
     val yoloBackend: String? = null,
     val yoloPrecision: String? = null
 ) {
@@ -33,8 +42,25 @@ data class ExperimentConfig(
         val sdEp = try { ExecutionProvider.valueOf(sdBackend) }
         catch (e: IllegalArgumentException) { ExecutionProvider.QNN_NPU }
 
-        val sdPrec = try { SdPrecision.valueOf(sdPrecision) }
+        val basePrec = try { SdPrecision.valueOf(sdPrecision) }
         catch (e: IllegalArgumentException) { SdPrecision.FP16 }
+
+        // Build per-component precision map
+        val precMap = mutableMapOf<SdComponent, SdPrecision>()
+        for (comp in SdComponent.values()) {
+            val overrideStr = when (comp) {
+                SdComponent.VAE_ENCODER -> precVaeEnc
+                SdComponent.TEXT_ENCODER -> precTextEnc
+                SdComponent.INPAINT_UNET -> precUnet
+                SdComponent.VAE_DECODER -> precVaeDec
+            }
+            precMap[comp] = if (overrideStr != null) {
+                try { SdPrecision.valueOf(overrideStr) }
+                catch (e: IllegalArgumentException) { basePrec }
+            } else {
+                basePrec
+            }
+        }
 
         val benchPhase = try { BenchmarkPhase.valueOf(phase ?: defaults.phase) }
         catch (e: IllegalArgumentException) { BenchmarkPhase.SINGLE_ERASE }
@@ -50,7 +76,7 @@ data class ExperimentConfig(
 
         return BenchmarkConfig(
             sdBackend = sdEp,
-            sdPrecisionMap = SdComponent.values().associateWith { sdPrec },
+            sdPrecisionMap = precMap,
             yoloBackend = yoloEp,
             yoloPrecision = yoloPrec,
             phase = benchPhase,
@@ -61,6 +87,7 @@ data class ExperimentConfig(
             trials = trials ?: defaults.trials,
             warmupTrials = defaults.warmupTrials,
             useNpuFp16 = useNpuFp16 ?: defaults.useNpuFp16,
+            skipTextEncode = skipTextEncode ?: defaults.skipTextEncode,
             htpPerformanceMode = htpPerformanceMode ?: defaults.htpPerformanceMode,
             modelDir = modelDir ?: defaults.modelDir
         )
@@ -71,12 +98,27 @@ data class ExperimentConfig(
         catch (e: IllegalArgumentException) { sdBackend }
         val precName = try { SdPrecision.valueOf(sdPrecision).displayName }
         catch (e: IllegalArgumentException) { sdPrecision }
+
+        // Show per-component overrides if any
+        val overrides = listOfNotNull(
+            precVaeEnc?.let { "vae_enc=$it" },
+            precTextEnc?.let { "txt_enc=$it" },
+            precUnet?.let { "unet=$it" },
+            precVaeDec?.let { "vae_dec=$it" }
+        )
+        val precDisplay = if (overrides.isNotEmpty()) {
+            "$precName (${overrides.joinToString(", ")})"
+        } else {
+            precName
+        }
+
         val extras = mutableListOf<String>()
         if (steps != null) extras.add("${steps}steps")
         if (strength != null) extras.add("str=$strength")
         if (roiSize != null) extras.add("roi=$roiSize")
+        if (skipTextEncode == true) extras.add("skipTxtEnc")
         if (yoloPrecision != null) extras.add("yolo=$yoloPrecision")
         val suffix = if (extras.isNotEmpty()) " [${extras.joinToString(", ")}]" else ""
-        return "$precName / $epName$suffix"
+        return "$precDisplay / $epName$suffix"
     }
 }

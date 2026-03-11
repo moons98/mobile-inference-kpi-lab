@@ -12,6 +12,7 @@ data class ExperimentDefaults(
     val trials: Int = 5,
     val warmupTrials: Int = 2,
     val useNpuFp16: Boolean = true,
+    val skipTextEncode: Boolean = true,
     val htpPerformanceMode: String = "burst",
     val modelDir: String = "/sdcard/sd_models",
     // YOLO defaults

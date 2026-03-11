@@ -23,6 +23,7 @@ captures/
 
 # Native
 *.so
+!android/app/src/main/jniLibs/**/*.so
 *.a
 *.o
 *.obj

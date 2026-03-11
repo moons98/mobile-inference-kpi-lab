@@ -381,11 +381,19 @@ class OrtRunner(private val context: Context) {
             ExecutionProvider.QNN_GPU -> {
                 try {
                     val qnnOptions = mutableMapOf<String, String>()
-                    val qnnLibPath = QnnLibraryManager.getLibraryPath()
-                    if (qnnLibPath != null) {
-                        qnnOptions["backend_path"] = "$qnnLibPath/libQnnGpu.so"
+                    // Use ORT-bundled or jniLibs path first, then fallback
+                    val nativeLibDir = context.applicationInfo.nativeLibraryDir
+                    val bundledGpu = "$nativeLibDir/libQnnGpu.so"
+                    if (File(bundledGpu).exists()) {
+                        qnnOptions["backend_path"] = bundledGpu
+                        Log.i(TAG, "Using bundled QNN GPU from: $nativeLibDir")
                     } else {
-                        qnnOptions["backend_path"] = "libQnnGpu.so"
+                        val qnnLibPath = QnnLibraryManager.getLibraryPath()
+                        if (qnnLibPath != null) {
+                            qnnOptions["backend_path"] = "$qnnLibPath/libQnnGpu.so"
+                        } else {
+                            qnnOptions["backend_path"] = "libQnnGpu.so"
+                        }
                     }
                     qnnOptionsStr = "backend=GPU"
                     options.addQnn(qnnOptions)

@@ -10,6 +10,8 @@ import android.os.Environment
 import android.provider.Settings
 import android.util.Log
 import android.view.View
+import android.view.WindowManager
+import android.widget.ImageView
 import android.widget.ArrayAdapter
 import android.widget.AdapterView
 import android.widget.Toast
@@ -148,6 +150,10 @@ class MainActivity : AppCompatActivity() {
             updateTextEncVisibility(!isChecked)
         }
         updateTextEncVisibility(!binding.checkSkipTextEncode.isChecked)
+
+        // Image tap → full-screen viewer
+        binding.imgBefore.setOnClickListener { showImageFullscreen(binding.imgBefore, "Before") }
+        binding.imgAfter.setOnClickListener { showImageFullscreen(binding.imgAfter, "After (Inpainted)") }
     }
 
     private fun updateTextEncVisibility(visible: Boolean) {
@@ -293,9 +299,10 @@ class MainActivity : AppCompatActivity() {
             benchmarkRunner.lastGeneratedImage.collectLatest { bitmap ->
                 if (bitmap != null) {
                     binding.cardImagePreview.visibility = View.VISIBLE
-                    // Show original in imgBefore if not already set
-                    if (selectedImageBitmap != null) {
-                        binding.imgBefore.setImageBitmap(selectedImageBitmap)
+                    // Show original: user-selected or benchmark source image
+                    val beforeImage = selectedImageBitmap ?: benchmarkRunner.getSourceImage()
+                    if (beforeImage != null) {
+                        binding.imgBefore.setImageBitmap(beforeImage)
                     }
                     binding.imgAfter.setImageBitmap(bitmap)
                 }
@@ -572,6 +579,27 @@ class MainActivity : AppCompatActivity() {
         } else {
             Toast.makeText(this, "Export failed", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun showImageFullscreen(imageView: ImageView, title: String) {
+        val drawable = imageView.drawable ?: return
+
+        val dialogView = ImageView(this).apply {
+            setImageDrawable(drawable)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(0xFF000000.toInt())
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(dialogView)
+            .setNegativeButton("닫기", null)
+            .create()
+
+        dialog.window?.apply {
+            setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+        }
+        dialog.show()
     }
 
     private fun showBuiltinImagePicker() {

@@ -13,6 +13,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.io.File
 import java.io.FileWriter
 import java.text.SimpleDateFormat
@@ -79,6 +80,9 @@ class BenchmarkRunner(
     private var sourceImage: Bitmap? = null
     private var sourceMask: Bitmap? = null
     private var sourceImageLabel: String? = null
+
+    /** Expose source image for UI preview (original before inpainting) */
+    fun getSourceImage(): Bitmap? = sourceImage
 
     // Collected data for CSV export
     private val eraseSummaries = mutableListOf<EraseSummaryRecord>()
@@ -206,7 +210,7 @@ class BenchmarkRunner(
     }
 
     fun stop() {
-        _progress.value = _progress.value.copy(state = BenchmarkState.STOPPING)
+        _progress.update { it.copy(state = BenchmarkState.STOPPING) }
         benchmarkJob?.cancel()
         systemMetricsJob?.cancel()
     }
@@ -319,7 +323,7 @@ class BenchmarkRunner(
         val img = sourceImage ?: return
         val mask = sourceMask ?: return
 
-        // ROI crop (measure once ??same crop reused across all trials with pre-defined mask)
+        // ROI crop (measure once — same crop reused across all trials with pre-defined mask)
         val roiCropStart = System.nanoTime()
         val roiResult = ImagePreprocessor.cropRoiWithPadding(img, mask, config.roiPaddingRatio)
         val roiCropMs = nsToMs(System.nanoTime() - roiCropStart)
@@ -333,7 +337,7 @@ class BenchmarkRunner(
         Log.i(TAG, "ROI crop: ${roiCropMs}ms (${roiResult.cropRect})")
 
         // Warmup
-        _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
+        _progress.update { it.copy(state = BenchmarkState.WARMING_UP) }
         withContext(Dispatchers.IO) {
             pipe.warmup(roiResult.roiBitmap, roiResult.roiMask, config.warmupTrials)
         }
@@ -343,24 +347,22 @@ class BenchmarkRunner(
         val metricsScope = CoroutineScope(currentCoroutineContext())
         systemMetricsJob = metricsScope.launch { collectSystemMetrics() }
 
-        _progress.value = _progress.value.copy(state = BenchmarkState.RUNNING)
+        _progress.update { it.copy(state = BenchmarkState.RUNNING) }
         try {
             for (i in 0 until config.trials) {
                 if (!currentCoroutineContext().isActive) break
                 val trialId = i + 1
-                _progress.value = _progress.value.copy(
-                    currentTrial = trialId, totalTrials = config.trials)
+                _progress.update { it.copy(currentTrial = trialId, totalTrials = config.trials) }
 
                 val trial = runEraseTrial(pipe, img, roiResult, roiCropMs)
                 if (trial != null) {
                     recordEraseResult(trialId, config, trial)
-                    // Recycle previous generated image before replacing
-                    _lastGeneratedImage.value?.recycle()
+                    // Don't recycle previous image here — UI may still be rendering it.
+                    // Old bitmap will be GC'd when ImageView releases its reference.
                     _lastGeneratedImage.value = trial.compositedImage
                 } else {
                     Log.e(TAG, "Trial $trialId failed (inpaint returned null)")
-                    _progress.value = _progress.value.copy(
-                        currentStage = "trial_failed")
+                    _progress.update { it.copy(currentStage = "trial_failed") }
                 }
 
                 // Cooldown only in Phase 1
@@ -373,6 +375,8 @@ class BenchmarkRunner(
             roiResult.roiBitmap.recycle()
             roiResult.roiMask.recycle()
         }
+
+        _progress.update { it.copy(currentStage = "done") }
 
         // Collect UNet profiling summary (SINGLE_ERASE phase only)
         if (config.phase == BenchmarkPhase.SINGLE_ERASE) {
@@ -409,15 +413,14 @@ class BenchmarkRunner(
 
         val listener = object : InpaintPipeline.ProgressListener {
             override fun onStageStart(stage: String) {
-                _progress.value = _progress.value.copy(currentStage = stage)
+                _progress.update { it.copy(currentStage = stage) }
                 val power = lastSystemPower
                 if (power > 0) powerSamples.add(power)
                 val mem = lastSystemMemory
                 if (mem > peakMemory) peakMemory = mem
             }
             override fun onUnetStep(step: Int, totalSteps: Int) {
-                _progress.value = _progress.value.copy(
-                    currentStep = step + 1, totalSteps = totalSteps)
+                _progress.update { it.copy(currentStep = step + 1, totalSteps = totalSteps) }
                 val power = lastSystemPower
                 if (power > 0) powerSamples.add(power)
                 val mem = lastSystemMemory
@@ -431,7 +434,7 @@ class BenchmarkRunner(
         } ?: return null
 
         // Composite
-        _progress.value = _progress.value.copy(currentStage = "composite")
+        _progress.update { it.copy(currentStage = "composite") }
         val compositeStart = System.nanoTime()
         val compositedImage = ImagePreprocessor.composite(
             originalImage, inpaintResult.outputImage,
@@ -516,7 +519,7 @@ class BenchmarkRunner(
             ))
         }
 
-        _progress.value = _progress.value.copy(lastE2eMs = inpaintE2eMs)
+        _progress.update { it.copy(lastE2eMs = inpaintE2eMs) }
     }
 
     private suspend fun runYoloBenchmark(config: BenchmarkConfig) {
@@ -553,7 +556,7 @@ class BenchmarkRunner(
             peakMemoryAfterLoadMb = memAfterLoad
         )
 
-        _progress.value = _progress.value.copy(state = BenchmarkState.WARMING_UP)
+        _progress.update { it.copy(state = BenchmarkState.WARMING_UP) }
         withContext(Dispatchers.IO) {
             runner.warmup(image, config.warmupTrials)
         }
@@ -561,19 +564,21 @@ class BenchmarkRunner(
         systemMetricsJob?.cancel()
         val metricsScope = CoroutineScope(currentCoroutineContext())
         systemMetricsJob = metricsScope.launch { collectSystemMetrics() }
-        _progress.value = _progress.value.copy(state = BenchmarkState.RUNNING)
+        _progress.update { it.copy(state = BenchmarkState.RUNNING) }
 
         val total = config.totalTrials
         for (i in 0 until total) {
             if (!currentCoroutineContext().isActive) break
             val trialId = i + 1
-            _progress.value = _progress.value.copy(
-                currentTrial = trialId,
-                totalTrials = total,
-                currentStage = "yolo_infer",
-                currentStep = 0,
-                totalSteps = 0
-            )
+            _progress.update {
+                it.copy(
+                    currentTrial = trialId,
+                    totalTrials = total,
+                    currentStage = "yolo_infer",
+                    currentStep = 0,
+                    totalSteps = 0
+                )
+            }
 
             val result = withContext(Dispatchers.IO) {
                 runner.runOnce(image)
@@ -600,11 +605,11 @@ class BenchmarkRunner(
                     memoryMb = lastSystemMemory
                 )
             )
-            _progress.value = _progress.value.copy(lastE2eMs = result.inferenceMs)
+            _progress.update { it.copy(lastE2eMs = result.inferenceMs) }
         }
 
         // Generate overlay AFTER all benchmark trials complete (not timed)
-        _progress.value = _progress.value.copy(currentStage = "overlay")
+        _progress.update { it.copy(currentStage = "overlay") }
         try {
             val overlay = withContext(Dispatchers.IO) {
                 runner.runOnce(image, generateOverlay = true)
@@ -737,6 +742,7 @@ class BenchmarkRunner(
         Log.i(TAG, "Cooldown: min ${COOLDOWN_MIN_SECONDS}s...")
         for (remaining in COOLDOWN_MIN_SECONDS downTo 1) {
             if (!currentCoroutineContext().isActive) return
+            _progress.update { it.copy(currentStage = "cooldown (${remaining}s)") }
             _batchProgress.value = _batchProgress.value.copy(
                 isCoolingDown = true, cooldownRemainingSeconds = remaining)
             delay(1000)
@@ -746,12 +752,17 @@ class BenchmarkRunner(
             val extraMax = COOLDOWN_MAX_SECONDS - COOLDOWN_MIN_SECONDS
             for (elapsed in 1..extraMax) {
                 if (!currentCoroutineContext().isActive) return
+                val remaining = extraMax - elapsed
+                _progress.update {
+                    it.copy(currentStage = "cooldown (${remaining}s, ${String.format("%.1f", kpiCollector.readThermal())}°C)")
+                }
                 _batchProgress.value = _batchProgress.value.copy(
-                    isCoolingDown = true, cooldownRemainingSeconds = extraMax - elapsed)
+                    isCoolingDown = true, cooldownRemainingSeconds = remaining)
                 delay(1000)
                 if (kpiCollector.readThermal() <= COOLDOWN_TARGET_TEMP_C) break
             }
         }
+        _progress.update { it.copy(currentStage = "ready") }
         _batchProgress.value = _batchProgress.value.copy(
             isCoolingDown = false, cooldownRemainingSeconds = 0)
         Log.i(TAG, "Cooldown complete: ${kpiCollector.readThermal()}°C")
@@ -765,18 +776,15 @@ class BenchmarkRunner(
             lastSystemThermal = metrics.thermalC
             lastSystemPower = metrics.powerMw
             lastSystemMemory = metrics.memoryMb
-            // Atomically update only metric fields without overwriting state.
-            // Using updateAndGet pattern to avoid race with stop() setting STOPPING.
-            _progress.value.let { current ->
+            // Atomic update to avoid race with other coroutines modifying progress
+            _progress.update { current ->
                 if (current.state == BenchmarkState.RUNNING || current.state == BenchmarkState.WARMING_UP) {
-                    // Re-read state to avoid overwriting a concurrent STOPPING transition
-                    val latest = _progress.value
-                    if (latest.state == BenchmarkState.RUNNING || latest.state == BenchmarkState.WARMING_UP) {
-                        _progress.value = latest.copy(
-                            lastThermalC = metrics.thermalC,
-                            lastPowerMw = metrics.powerMw,
-                            lastMemoryMb = metrics.memoryMb)
-                    }
+                    current.copy(
+                        lastThermalC = metrics.thermalC,
+                        lastPowerMw = metrics.powerMw,
+                        lastMemoryMb = metrics.memoryMb)
+                } else {
+                    current  // Don't overwrite STOPPING/IDLE/ERROR states
                 }
             }
             delay(SYSTEM_METRICS_INTERVAL_MS)
@@ -1008,15 +1016,21 @@ class BenchmarkRunner(
         } catch (e: Exception) {
             Log.w(TAG, "logcatCapture.stopCapture failed: ${e.message}")
         }
+
+        // Set IDLE immediately so UI unblocks (Export CSV enabled) before slow model release.
+        // Use update{} to preserve display values (lastE2eMs, thermal, power) after completion.
+        if (_progress.value.state != BenchmarkState.ERROR) {
+            _progress.update { it.copy(state = BenchmarkState.IDLE) }
+        }
+        config = null
+        Log.i(TAG, "Cleanup: IDLE set, releasing models...")
+
+        // Model release may take several seconds (large QNN model unload)
         yoloRunner?.release()
         yoloRunner = null
         pipeline?.release()
         pipeline = null
-        if (_progress.value.state != BenchmarkState.ERROR) {
-            _progress.value = BenchmarkProgress(state = BenchmarkState.IDLE)
-        }
-        config = null
-        Log.i(TAG, "Cleanup complete, state=${_progress.value.state}")
+        Log.i(TAG, "Cleanup complete")
     }
 
     fun release() {
@@ -1038,6 +1052,3 @@ class BenchmarkRunner(
 
     private fun nsToMs(ns: Long): Float = (ns / 1_000_000.0).toFloat()
 }
-
-
-

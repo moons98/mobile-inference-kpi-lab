@@ -72,23 +72,59 @@
                 android:orientation="horizontal"
                 android:padding="8dp">
 
-                <ImageView
-                    android:id="@+id/imgBefore"
+                <LinearLayout
                     android:layout_width="0dp"
-                    android:layout_height="160dp"
+                    android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:scaleType="centerCrop"
-                    android:layout_marginEnd="4dp"
-                    android:contentDescription="Before" />
+                    android:orientation="vertical"
+                    android:layout_marginEnd="4dp">
 
-                <ImageView
-                    android:id="@+id/imgAfter"
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Before"
+                        android:textSize="11sp"
+                        android:textColor="@android:color/darker_gray"
+                        android:layout_marginBottom="2dp" />
+
+                    <ImageView
+                        android:id="@+id/imgBefore"
+                        android:layout_width="match_parent"
+                        android:layout_height="160dp"
+                        android:scaleType="centerCrop"
+                        android:background="#1A000000"
+                        android:foreground="?attr/selectableItemBackground"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:contentDescription="Before (tap to expand)" />
+                </LinearLayout>
+
+                <LinearLayout
                     android:layout_width="0dp"
-                    android:layout_height="160dp"
+                    android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:scaleType="centerCrop"
-                    android:layout_marginStart="4dp"
-                    android:contentDescription="After" />
+                    android:orientation="vertical"
+                    android:layout_marginStart="4dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="After (Inpainted)"
+                        android:textSize="11sp"
+                        android:textColor="@android:color/darker_gray"
+                        android:layout_marginBottom="2dp" />
+
+                    <ImageView
+                        android:id="@+id/imgAfter"
+                        android:layout_width="match_parent"
+                        android:layout_height="160dp"
+                        android:scaleType="centerCrop"
+                        android:background="#1A000000"
+                        android:foreground="?attr/selectableItemBackground"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:contentDescription="After (tap to expand)" />
+                </LinearLayout>
 
             </LinearLayout>
 
