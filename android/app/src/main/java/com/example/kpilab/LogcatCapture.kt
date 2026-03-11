@@ -1,9 +1,13 @@
 package com.example.kpilab
 
+import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.CompletableDeferred
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 
 /**
@@ -19,6 +23,8 @@ class LogcatCapture {
     private var captureJob: Job? = null
     private val capturedLogs = StringBuilder()
     private var isCapturing = false
+    @Volatile private var captureProcess: Process? = null
+    @Volatile private var captureReader: BufferedReader? = null
 
     /**
      * Start capturing logcat for specified tags.
@@ -54,8 +60,10 @@ class LogcatCapture {
                 val process = Runtime.getRuntime().exec(
                     arrayOf("logcat", "-v", "time") + filterArgs.toTypedArray()
                 )
+                captureProcess = process
 
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
+                captureReader = reader
 
                 Log.i(TAG, "Started capturing logcat for tags: $tags")
                 // Signal that logcat process is ready
@@ -68,12 +76,24 @@ class LogcatCapture {
                     }
                 }
 
+                reader.close()
                 process.destroy()
                 Log.i(TAG, "Logcat capture stopped")
 
             } catch (e: Exception) {
                 Log.e(TAG, "Logcat capture error: ${e.message}", e)
                 ready.complete(Unit) // Don't block caller on failure
+            } finally {
+                try {
+                    captureReader?.close()
+                } catch (_: Throwable) {
+                }
+                try {
+                    captureProcess?.destroy()
+                } catch (_: Throwable) {
+                }
+                captureReader = null
+                captureProcess = null
             }
         }
 
@@ -88,6 +108,14 @@ class LogcatCapture {
      */
     fun stopCapture(): String {
         isCapturing = false
+        try {
+            captureReader?.close()
+        } catch (_: Throwable) {
+        }
+        try {
+            captureProcess?.destroy()
+        } catch (_: Throwable) {
+        }
         captureJob?.cancel()
         captureJob = null
 
@@ -257,6 +285,64 @@ data class OrtLogInfo(
             appendLine("# ort_qnn_nodes,$qnnNodes")
             appendLine("# ort_cpu_nodes,$cpuNodes")
             appendLine("# ort_fallback_ops,${fallbackOps.joinToString(";")}")
+        }
+    }
+
+    /** True if any partition data was captured. */
+    fun hasData(): Boolean = totalNodes > 0 || qnnNodes > 0 || cpuNodes > 0 || fallbackOps.isNotEmpty()
+
+    /** Save to JSON file for later retrieval (survives cache-hit runs). */
+    fun saveToFile(file: File) {
+        val json = JSONObject().apply {
+            put("totalNodes", totalNodes)
+            put("qnnNodes", qnnNodes)
+            put("cpuNodes", cpuNodes)
+            put("fallbackOps", JSONArray(fallbackOps))
+            put("partitionInfo", JSONArray(partitionInfo))
+        }
+        file.writeText(json.toString(2))
+        Log.i("OrtLogInfo", "Saved partition info to ${file.name}: QNN=$qnnNodes CPU=$cpuNodes total=$totalNodes")
+    }
+
+    companion object {
+        /** Cache filename for a given model. */
+        fun cacheFileName(modelName: String): String = "ort_partition_${modelName}.json"
+
+        /** Load from previously saved JSON file, or null if not found. */
+        fun loadFromFile(file: File): OrtLogInfo? {
+            if (!file.exists()) return null
+            return try {
+                val json = JSONObject(file.readText())
+                val fallback = mutableListOf<String>()
+                val fbArr = json.optJSONArray("fallbackOps")
+                if (fbArr != null) for (i in 0 until fbArr.length()) fallback.add(fbArr.getString(i))
+                val pInfo = mutableListOf<String>()
+                val piArr = json.optJSONArray("partitionInfo")
+                if (piArr != null) for (i in 0 until piArr.length()) pInfo.add(piArr.getString(i))
+                OrtLogInfo(
+                    totalNodes = json.optInt("totalNodes", 0),
+                    qnnNodes = json.optInt("qnnNodes", 0),
+                    cpuNodes = json.optInt("cpuNodes", 0),
+                    fallbackOps = fallback,
+                    partitionInfo = pInfo,
+                    rawLogs = "(loaded from cache)"
+                )
+            } catch (e: Exception) {
+                Log.w("OrtLogInfo", "Failed to load partition cache: ${e.message}")
+                null
+            }
+        }
+
+        /** Load partition info for a model, looking in the app's cache directory. */
+        fun loadForModel(context: Context, modelName: String): OrtLogInfo? {
+            val file = File(context.cacheDir, cacheFileName(modelName))
+            return loadFromFile(file)
+        }
+
+        /** Save partition info for a model to the app's cache directory. */
+        fun saveForModel(context: Context, modelName: String, info: OrtLogInfo) {
+            val file = File(context.cacheDir, cacheFileName(modelName))
+            info.saveToFile(file)
         }
     }
 }

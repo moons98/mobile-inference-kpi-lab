@@ -4,6 +4,7 @@ import com.example.kpilab.BenchmarkConfig
 import com.example.kpilab.BenchmarkPhase
 import com.example.kpilab.ExecutionProvider
 import com.example.kpilab.RoiSize
+import com.example.kpilab.SdComponent
 import com.example.kpilab.SdPrecision
 import com.example.kpilab.YoloPrecision
 
@@ -50,7 +51,7 @@ data class ExperimentConfig(
 
         return BenchmarkConfig(
             sdBackend = sdEp,
-            sdPrecision = sdPrec,
+            sdPrecisionMap = SdComponent.values().associateWith { sdPrec },
             yoloBackend = yoloEp,
             yoloPrecision = yoloPrec,
             phase = benchPhase,

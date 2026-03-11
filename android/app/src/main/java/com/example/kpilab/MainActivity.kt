@@ -1,9 +1,13 @@
 package com.example.kpilab
 
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.widget.ArrayAdapter
@@ -17,6 +21,9 @@ import com.example.kpilab.batch.BatchProgress
 import com.example.kpilab.batch.ExperimentSet
 import com.example.kpilab.batch.ExperimentSetLoader
 import com.example.kpilab.databinding.ActivityMainBinding
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.io.File
@@ -61,12 +68,25 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        checkStoragePermission()
         initializeComponents()
         setupUI()
         setupBatchMode()
         observeProgress()
         observeBatchProgress()
         observeGeneratedImage()
+    }
+
+    private fun checkStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+                Toast.makeText(this, "모델 파일 접근을 위해 파일 권한을 허용해주세요", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun initializeComponents() {
@@ -101,6 +121,16 @@ class MainActivity : AppCompatActivity() {
             showBuiltinImagePicker()
         }
 
+        binding.btnPrepareCache.setOnClickListener {
+            prepareQnnCache()
+        }
+        binding.btnManageCache.setOnClickListener {
+            showCacheManageDialog()
+        }
+
+        // Update cache status on launch
+        updateCacheStatus()
+
         // Strength label update
         binding.radioGroupStrength.setOnCheckedChangeListener { _, _ -> updateStrengthLabel() }
         binding.radioGroupSteps.setOnCheckedChangeListener { _, _ -> updateStrengthLabel() }
@@ -112,6 +142,50 @@ class MainActivity : AppCompatActivity() {
                 else -> View.VISIBLE
             }
         }
+
+        // Per-component precision spinners
+        setupPrecisionSpinners()
+    }
+
+    private val precisionSpinners by lazy {
+        listOf(
+            binding.spinnerPrecVaeEnc,
+            binding.spinnerPrecTextEnc,
+            binding.spinnerPrecUnet,
+            binding.spinnerPrecVaeDec
+        )
+    }
+
+    private fun setupPrecisionSpinners() {
+        val precOptions = SdPrecision.values().map { it.displayName }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, precOptions)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+
+        for (spinner in precisionSpinners) {
+            spinner.adapter = adapter
+            spinner.setSelection(1) // Default: FP16
+        }
+
+        // Bulk preset buttons
+        binding.btnPrecAllFp32.setOnClickListener { setAllPrecision(0) }
+        binding.btnPrecAllFp16.setOnClickListener { setAllPrecision(1) }
+        binding.btnPrecAllW8a8.setOnClickListener { setAllPrecision(2) }
+    }
+
+    private fun setAllPrecision(index: Int) {
+        for (spinner in precisionSpinners) {
+            spinner.setSelection(index)
+        }
+    }
+
+    private fun buildPrecisionMap(): Map<SdComponent, SdPrecision> {
+        val precValues = SdPrecision.values()
+        return mapOf(
+            SdComponent.VAE_ENCODER to precValues[binding.spinnerPrecVaeEnc.selectedItemPosition],
+            SdComponent.TEXT_ENCODER to precValues[binding.spinnerPrecTextEnc.selectedItemPosition],
+            SdComponent.INPAINT_UNET to precValues[binding.spinnerPrecUnet.selectedItemPosition],
+            SdComponent.VAE_DECODER to precValues[binding.spinnerPrecVaeDec.selectedItemPosition]
+        )
     }
 
     private fun setupBatchMode() {
@@ -186,6 +260,10 @@ class MainActivity : AppCompatActivity() {
             benchmarkRunner.lastGeneratedImage.collectLatest { bitmap ->
                 if (bitmap != null) {
                     binding.cardImagePreview.visibility = View.VISIBLE
+                    // Show original in imgBefore if not already set
+                    if (selectedImageBitmap != null) {
+                        binding.imgBefore.setImageBitmap(selectedImageBitmap)
+                    }
                     binding.imgAfter.setImageBitmap(bitmap)
                 }
             }
@@ -278,9 +356,10 @@ class MainActivity : AppCompatActivity() {
         binding.radioPhase1.isEnabled = enabled
         binding.radioPhase2.isEnabled = enabled
         binding.radioPhaseYolo.isEnabled = enabled
-        binding.radioPrecFp32.isEnabled = enabled
-        binding.radioPrecFp16.isEnabled = enabled
-        binding.radioPrecW8a8.isEnabled = enabled
+        for (s in precisionSpinners) { s.isEnabled = enabled }
+        binding.btnPrecAllFp32.isEnabled = enabled
+        binding.btnPrecAllFp16.isEnabled = enabled
+        binding.btnPrecAllW8a8.isEnabled = enabled
         binding.radioEpNpu.isEnabled = enabled
         binding.radioEpGpu.isEnabled = enabled
         binding.radioEpCpu.isEnabled = enabled
@@ -296,6 +375,7 @@ class MainActivity : AppCompatActivity() {
         binding.radioRoiMedium.isEnabled = enabled
         binding.radioRoiLarge.isEnabled = enabled
         binding.checkCache.isEnabled = enabled
+        binding.btnPrepareCache.isEnabled = enabled
     }
 
     private fun buildConfig(): BenchmarkConfig {
@@ -311,11 +391,14 @@ class MainActivity : AppCompatActivity() {
                 R.id.radioEpCpu -> ExecutionProvider.CPU
                 else -> ExecutionProvider.QNN_NPU
             },
-            sdPrecision = when (binding.radioGroupPrecision.checkedRadioButtonId) {
-                R.id.radioPrecFp32 -> SdPrecision.FP32
-                R.id.radioPrecW8a8 -> SdPrecision.W8A8
-                else -> SdPrecision.FP16
+            sdPrecisionMap = buildPrecisionMap(),
+            yoloBackend = when (binding.radioGroupEp.checkedRadioButtonId) {
+                R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
+                R.id.radioEpCpu -> ExecutionProvider.CPU
+                else -> ExecutionProvider.QNN_NPU
             },
+            yoloPrecision = if (buildPrecisionMap().values.any { it == SdPrecision.W8A8 })
+                YoloPrecision.INT8 else YoloPrecision.FP32,
             phase = phase,
             steps = getSelectedSteps(),
             strength = getSelectedStrength(),
@@ -323,6 +406,11 @@ class MainActivity : AppCompatActivity() {
                 R.id.radioRoiSmall -> RoiSize.SMALL
                 R.id.radioRoiLarge -> RoiSize.LARGE
                 else -> RoiSize.MEDIUM
+            },
+            trials = when (phase) {
+                BenchmarkPhase.SUSTAINED_ERASE -> 10
+                BenchmarkPhase.YOLO_SEG_ONLY -> 20
+                BenchmarkPhase.SINGLE_ERASE -> 5
             },
             useContextCache = binding.checkCache.isChecked,
             htpPerformanceMode = when (phase) {
@@ -359,7 +447,27 @@ class MainActivity : AppCompatActivity() {
         } else {
             val config = buildConfig()
             Log.i(TAG, "Starting: $config")
-            selectedImageBitmap?.let { benchmarkRunner.setSourceImage(it) }
+            if (config.phase == BenchmarkPhase.YOLO_SEG_ONLY) {
+                val image = selectedImageBitmap
+                if (image != null) {
+                    benchmarkRunner.clearSourceInputs()
+                    benchmarkRunner.setSourceImage(image)
+                } else {
+                    benchmarkRunner.clearSourceInputs()
+                }
+            } else {
+                val image = selectedImageBitmap
+                val mask = selectedMaskBitmap
+                if (image != null && mask != null) {
+                    benchmarkRunner.setSourceImage(image)
+                    benchmarkRunner.setSourceMask(mask)
+                } else {
+                    if (image != null || mask != null) {
+                        Toast.makeText(this, "Custom input requires both image and mask. Using fixed test data.", Toast.LENGTH_SHORT).show()
+                    }
+                    benchmarkRunner.clearSourceInputs()
+                }
+            }
             benchmarkRunner.start(config, lifecycleScope)
             Toast.makeText(this, "Benchmark started", Toast.LENGTH_SHORT).show()
         }
@@ -376,7 +484,8 @@ class MainActivity : AppCompatActivity() {
         val set = experimentSets[idx]
         val defaults = experimentSetLoader.getDefaults()
 
-        selectedImageBitmap?.let { benchmarkRunner.setSourceImage(it) }
+        // Batch mode enforces fixed datasets from assets for reproducibility.
+        benchmarkRunner.clearSourceInputs()
         benchmarkRunner.startBatch(
             experimentSet = set,
             defaults = defaults,
@@ -428,17 +537,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadBuiltinImage(builtin: BuiltinImage) {
         try {
+            clearSelectedInputs()
             val bitmap = assets.open(builtin.imagePath).use { BitmapFactory.decodeStream(it) }
             if (bitmap != null) {
                 selectedImageBitmap = bitmap
-                benchmarkRunner.setSourceImage(bitmap)
 
                 // Load paired mask if available
                 if (builtin.maskPath.isNotEmpty()) {
                     val mask = assets.open(builtin.maskPath).use { BitmapFactory.decodeStream(it) }
                     if (mask != null) {
                         selectedMaskBitmap = mask
-                        benchmarkRunner.setSourceMask(mask)
                     }
                 } else {
                     selectedMaskBitmap = null
@@ -461,11 +569,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadGalleryImage(uri: Uri) {
         try {
-            val inputStream = contentResolver.openInputStream(uri)
-            val bitmap = BitmapFactory.decodeStream(inputStream)
-            inputStream?.close()
+            clearSelectedInputs()
+            val bitmap = contentResolver.openInputStream(uri).use { inputStream ->
+                BitmapFactory.decodeStream(inputStream)
+            }
             if (bitmap != null) {
                 selectedImageBitmap = bitmap
+                selectedMaskBitmap = null
                 binding.cardImagePreview.visibility = View.VISIBLE
                 binding.imgBefore.setImageBitmap(bitmap)
                 binding.imgAfter.setImageBitmap(null)
@@ -477,8 +587,372 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun clearSelectedInputs() {
+        selectedImageBitmap?.recycle()
+        selectedImageBitmap = null
+        selectedMaskBitmap?.recycle()
+        selectedMaskBitmap = null
+    }
+
+    private fun prepareQnnCache() {
+        val ep = when (binding.radioGroupEp.checkedRadioButtonId) {
+            R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
+            R.id.radioEpCpu -> {
+                Toast.makeText(this, "CPU does not need QNN cache", Toast.LENGTH_SHORT).show()
+                return
+            }
+            else -> ExecutionProvider.QNN_NPU
+        }
+        val precMap = buildPrecisionMap()
+
+        val config = BenchmarkConfig(
+            sdBackend = ep,
+            sdPrecisionMap = precMap,
+            useContextCache = true,
+            useNpuFp16 = precMap.values.any { it != SdPrecision.FP32 }
+        )
+
+        binding.btnPrepareCache.isEnabled = false
+        binding.btnStartStop.isEnabled = false
+        binding.tvCacheStatus.text = "Preparing QNN cache..."
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val pipeline = InpaintPipeline(this@MainActivity, config)
+            val results = try {
+                pipeline.buildContextCache { name, index, total, status ->
+                    runOnUiThread {
+                        binding.tvCacheStatus.text = "[$index/$total] $name: $status"
+                    }
+                }
+            } finally {
+                pipeline.release()
+            }
+
+            runOnUiThread {
+                val summary = results.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+                binding.tvCacheStatus.text = summary
+                binding.btnPrepareCache.isEnabled = true
+                binding.btnStartStop.isEnabled = true
+                binding.checkCache.isChecked = true
+
+                val allOk = results.values.all { it.startsWith("OK") }
+                Toast.makeText(this@MainActivity,
+                    if (allOk) "QNN cache ready!" else "Some models failed",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun updateCacheStatus() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            // Check for both FP16 and W8A8 caches
+            val fp16Config = BenchmarkConfig(sdPrecisionMap = BenchmarkConfig.uniformPrecision(SdPrecision.FP16), useNpuFp16 = true)
+            val fp16Cache = InpaintPipeline(this@MainActivity, fp16Config).checkContextCache()
+
+            runOnUiThread {
+                val cached = fp16Cache.count { it.value }
+                val total = fp16Cache.size
+                if (cached > 0) {
+                    val status = fp16Cache.entries.joinToString(" | ") { (name, ok) ->
+                        if (ok) "$name:OK" else "$name:--"
+                    }
+                    binding.tvCacheStatus.text = "Cache (FP16): $cached/$total | $status"
+                }
+            }
+        }
+    }
+
+    /** Represents one ONNX model and its associated cache/partition state. */
+    private data class ModelEntry(
+        val name: String,           // e.g., "yolov8n-seg", "vae_encoder_fp32"
+        val modelFile: File,
+        val dataFile: File?,        // .onnx.data companion (UNet external data)
+        val cacheFile: File?,       // qnn_{name}_{prec}.bin
+        val partitionFile: File?,   // ort_partition_{name}.json
+        val partitionInfo: OrtLogInfo?,
+        val modelSize: Long,
+        val cacheSize: Long
+    )
+
+    private fun formatSize(bytes: Long): String = when {
+        bytes >= 1024L * 1024 * 1024 -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
+        bytes >= 1024L * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
+        bytes >= 1024L -> "%.1f KB".format(bytes / 1024.0)
+        else -> "$bytes B"
+    }
+
+    private fun showCacheManageDialog() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val appCacheDir = cacheDir
+            val modelDir = File(BenchmarkConfig().modelDir)
+
+            // Scan .onnx files (skip .onnx.data — they are companions)
+            val onnxFiles = if (modelDir.exists()) {
+                (modelDir.listFiles() ?: emptyArray())
+                    .filter { it.isFile && it.name.endsWith(".onnx") && !it.name.endsWith(".onnx.data") }
+                    .sortedBy { it.name }
+            } else emptyList()
+
+            // Index cache and partition files by model stem
+            val cacheMap = (appCacheDir.listFiles() ?: emptyArray())
+                .filter { it.name.startsWith("qnn_") && it.name.endsWith(".bin") }
+                .associateBy { it.nameWithoutExtension }  // qnn_modelname_fp16
+
+            val partMap = (appCacheDir.listFiles() ?: emptyArray())
+                .filter { it.name.startsWith("ort_partition_") && it.name.endsWith(".json") }
+                .associateBy { it.nameWithoutExtension.removePrefix("ort_partition_") }
+
+            // Build model entries
+            val entries = onnxFiles.map { onnx ->
+                val stem = onnx.nameWithoutExtension  // e.g., "yolov8n-seg", "vae_encoder_fp32"
+                val dataFile = File(onnx.absolutePath + ".data").takeIf { it.exists() }
+                // Find cache: try fp16 first, then fp32
+                val cache = cacheMap["qnn_${stem}_fp16"] ?: cacheMap["qnn_${stem}_fp32"]
+                val part = partMap[stem]
+                val partInfo = part?.let { OrtLogInfo.loadFromFile(it) }
+                val totalModelSize = onnx.length() + (dataFile?.length() ?: 0L)
+                ModelEntry(stem, onnx, dataFile, cache, part, partInfo, totalModelSize, cache?.length() ?: 0L)
+            }
+
+            // ORT profiling files (separate)
+            val profileFiles = (filesDir.listFiles() ?: emptyArray())
+                .filter { it.name.startsWith("ort_profile") && it.name.endsWith(".json") }
+
+            runOnUiThread {
+                showModelListDialog(entries, profileFiles)
+            }
+        }
+    }
+
+    private fun showModelListDialog(entries: List<ModelEntry>, profileFiles: List<File>) {
+        val report = buildString {
+            for (e in entries) {
+                appendLine("${e.name}  (${formatSize(e.modelSize)})")
+                val cacheTag = if (e.cacheFile != null) "OK ${formatSize(e.cacheSize)}" else "--"
+                val partTag = if (e.partitionInfo != null)
+                    "QNN:${e.partitionInfo.qnnNodes} CPU:${e.partitionInfo.cpuNodes}"
+                else "--"
+                appendLine("  Cache: $cacheTag  |  Partition: $partTag")
+            }
+            if (entries.isEmpty()) appendLine("(no models found)")
+
+            if (profileFiles.isNotEmpty()) {
+                appendLine()
+                appendLine("ORT Profiles: ${profileFiles.size} file(s)")
+            }
+        }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Model & Cache Manager")
+            .setMessage(report)
+            .setNegativeButton("Close", null)
+
+        val hasCache = entries.any { it.cacheFile != null }
+        if (hasCache || profileFiles.isNotEmpty()) {
+            builder.setPositiveButton("Clean Up...") { _, _ ->
+                showCleanUpDialog(entries, profileFiles)
+            }
+        }
+
+        if (entries.isNotEmpty()) {
+            builder.setNeutralButton("Actions...") { _, _ ->
+                showModelActionDialog(entries)
+            }
+        }
+
+        builder.show()
+    }
+
+    private fun showModelActionDialog(entries: List<ModelEntry>) {
+        val items = entries.map { e ->
+            val status = buildString {
+                append(e.name)
+                append("  (${formatSize(e.modelSize)})")
+                if (e.cacheFile != null) append("  [C]")
+                if (e.partitionInfo != null) append("[P]")
+            }
+            status
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("Select Model")
+            .setItems(items) { _, which ->
+                showSingleModelDialog(entries[which])
+            }
+            .setNegativeButton("Back", null)
+            .show()
+    }
+
+    private fun showSingleModelDialog(entry: ModelEntry) {
+        val info = buildString {
+            appendLine("Model: ${entry.modelFile.name}")
+            appendLine("Size: ${formatSize(entry.modelSize)}")
+            if (entry.dataFile != null) {
+                appendLine("External data: ${entry.dataFile.name} (${formatSize(entry.dataFile.length())})")
+            }
+            appendLine()
+            if (entry.cacheFile != null) {
+                appendLine("QNN Cache: ${entry.cacheFile.name}")
+                appendLine("Cache size: ${formatSize(entry.cacheSize)}")
+            } else {
+                appendLine("QNN Cache: not built")
+            }
+            appendLine()
+            if (entry.partitionInfo != null) {
+                val p = entry.partitionInfo
+                appendLine("Graph Partitioning:")
+                appendLine("  Total nodes: ${p.totalNodes}")
+                appendLine("  QNN nodes: ${p.qnnNodes}")
+                appendLine("  CPU fallback: ${p.cpuNodes}")
+                if (p.fallbackOps.isNotEmpty()) {
+                    appendLine("  Fallback ops: ${p.fallbackOps.joinToString(", ")}")
+                }
+                val coverage = if (p.totalNodes > 0) "%.1f%%".format(p.qnnNodes * 100.0 / p.totalNodes) else "N/A"
+                appendLine("  QNN coverage: $coverage")
+            } else {
+                appendLine("Partition info: not available")
+            }
+        }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle(entry.name)
+            .setMessage(info)
+            .setNegativeButton("Back", null)
+
+        if (entry.cacheFile != null) {
+            builder.setPositiveButton("Delete Cache") { _, _ ->
+                entry.cacheFile.delete()
+                entry.partitionFile?.delete()
+                Toast.makeText(this, "Cache deleted. Will be rebuilt on next run.", Toast.LENGTH_SHORT).show()
+                updateCacheStatus()
+            }
+        } else {
+            builder.setPositiveButton("Build Cache") { _, _ ->
+                buildCacheForModel(entry)
+            }
+        }
+
+        builder.setNeutralButton("Delete Model") { _, _ ->
+            AlertDialog.Builder(this)
+                .setTitle("Delete ${entry.name}?")
+                .setMessage("Model file + cache + partition will be deleted.")
+                .setPositiveButton("Delete") { _, _ ->
+                    entry.modelFile.delete()
+                    entry.dataFile?.delete()
+                    entry.cacheFile?.delete()
+                    entry.partitionFile?.delete()
+                    Toast.makeText(this, "${entry.name} deleted", Toast.LENGTH_SHORT).show()
+                    updateCacheStatus()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
+        builder.show()
+    }
+
+    private fun buildCacheForModel(entry: ModelEntry) {
+        val ep = when (binding.radioGroupEp.checkedRadioButtonId) {
+            R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
+            R.id.radioEpCpu -> {
+                Toast.makeText(this, "CPU does not need QNN cache", Toast.LENGTH_SHORT).show()
+                return
+            }
+            else -> ExecutionProvider.QNN_NPU
+        }
+        val useFp16 = buildPrecisionMap().values.any { it != SdPrecision.FP32 }
+
+        binding.tvCacheStatus.text = "Building cache: ${entry.name}..."
+        binding.btnManageCache.isEnabled = false
+        binding.btnPrepareCache.isEnabled = false
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val logcatCapture = LogcatCapture()
+            val captureScope = CoroutineScope(currentCoroutineContext())
+            logcatCapture.startCapture(listOf("onnxruntime", "OrtRunner", "QNN"), captureScope)
+
+            val runner = OrtRunner(this@MainActivity)
+            val success = runner.initialize(
+                modelPath = entry.modelFile.absolutePath,
+                executionProvider = ep,
+                useNpuFp16 = useFp16,
+                useContextCache = true,
+                htpPerformanceMode = "burst"
+            )
+
+            logcatCapture.stopCapture()
+            val ortInfo = logcatCapture.parseOrtInfo()
+
+            // Save partition info if captured
+            if (ortInfo.hasData()) {
+                OrtLogInfo.saveForModel(this@MainActivity, entry.name, ortInfo)
+            }
+
+            val resultMsg = if (success) {
+                "Cache built: ${entry.name} (${runner.sessionCreateMs}ms)"
+            } else {
+                "Cache build failed: ${runner.lastError}"
+            }
+
+            runner.release()
+
+            runOnUiThread {
+                binding.tvCacheStatus.text = resultMsg
+                binding.btnManageCache.isEnabled = true
+                binding.btnPrepareCache.isEnabled = true
+                Toast.makeText(this@MainActivity, resultMsg, Toast.LENGTH_LONG).show()
+                updateCacheStatus()
+            }
+        }
+    }
+
+    private fun showCleanUpDialog(entries: List<ModelEntry>, profileFiles: List<File>) {
+        data class CleanItem(val label: String, val files: List<File>)
+        val items = mutableListOf<CleanItem>()
+
+        val cacheFiles = entries.mapNotNull { it.cacheFile }
+        if (cacheFiles.isNotEmpty()) {
+            val size = formatSize(cacheFiles.sumOf { it.length() })
+            items.add(CleanItem("QNN Cache (${cacheFiles.size}, $size)", cacheFiles))
+        }
+        val partFiles = entries.mapNotNull { it.partitionFile }
+        if (partFiles.isNotEmpty()) {
+            items.add(CleanItem("Partition Info (${partFiles.size})", partFiles))
+        }
+        if (profileFiles.isNotEmpty()) {
+            val size = formatSize(profileFiles.sumOf { it.length() })
+            items.add(CleanItem("ORT Profiles (${profileFiles.size}, $size)", profileFiles))
+        }
+
+        if (items.isEmpty()) {
+            Toast.makeText(this, "Nothing to clean", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val labels = items.map { it.label }.toTypedArray()
+        val checked = BooleanArray(items.size) { true }
+
+        AlertDialog.Builder(this)
+            .setTitle("Clean Up")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("Delete") { _, _ ->
+                var deleted = 0
+                for ((i, item) in items.withIndex()) {
+                    if (!checked[i]) continue
+                    for (f in item.files) { if (f.delete()) deleted++ }
+                }
+                Toast.makeText(this, "Deleted $deleted file(s)", Toast.LENGTH_SHORT).show()
+                updateCacheStatus()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        clearSelectedInputs()
         benchmarkRunner.release()
     }
 }

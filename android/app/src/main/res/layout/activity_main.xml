@@ -225,45 +225,125 @@
 
                 </RadioGroup>
 
-                <!-- SD Precision -->
+                <!-- SD Precision (per-component) -->
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="SD Precision"
+                    android:text="SD Precision (per component)"
                     android:textSize="14sp"
                     android:textColor="@color/text_secondary"
-                    android:layout_marginBottom="8dp" />
+                    android:layout_marginBottom="4dp" />
 
-                <RadioGroup
-                    android:id="@+id/radioGroupPrecision"
+                <!-- Bulk preset buttons -->
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
+                    android:layout_marginBottom="4dp">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnPrecAllFp32"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:text="All FP32"
+                        android:textSize="11sp"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_marginEnd="2dp"
+                        app:cornerRadius="4dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnPrecAllFp16"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:text="All FP16"
+                        android:textSize="11sp"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_marginHorizontal="2dp"
+                        app:cornerRadius="4dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnPrecAllW8a8"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:text="All W8A8"
+                        android:textSize="11sp"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_marginStart="2dp"
+                        app:cornerRadius="4dp" />
+
+                </LinearLayout>
+
+                <!-- Per-component precision spinners -->
+                <GridLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:columnCount="2"
                     android:layout_marginBottom="12dp">
 
-                    <RadioButton
-                        android:id="@+id/radioPrecFp32"
+                    <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="FP32" />
+                        android:layout_columnWeight="1"
+                        android:text="VAE Enc"
+                        android:textSize="12sp"
+                        android:gravity="center_vertical"
+                        android:layout_gravity="center_vertical" />
+                    <Spinner
+                        android:id="@+id/spinnerPrecVaeEnc"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_columnWeight="1"
+                        android:spinnerMode="dropdown" />
 
-                    <RadioButton
-                        android:id="@+id/radioPrecFp16"
+                    <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="FP16"
-                        android:checked="true" />
+                        android:layout_columnWeight="1"
+                        android:text="Text Enc"
+                        android:textSize="12sp"
+                        android:gravity="center_vertical"
+                        android:layout_gravity="center_vertical" />
+                    <Spinner
+                        android:id="@+id/spinnerPrecTextEnc"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_columnWeight="1"
+                        android:spinnerMode="dropdown" />
 
-                    <RadioButton
-                        android:id="@+id/radioPrecW8a8"
+                    <TextView
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="W8A8" />
+                        android:layout_columnWeight="1"
+                        android:text="UNet"
+                        android:textSize="12sp"
+                        android:gravity="center_vertical"
+                        android:layout_gravity="center_vertical" />
+                    <Spinner
+                        android:id="@+id/spinnerPrecUnet"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_columnWeight="1"
+                        android:spinnerMode="dropdown" />
 
-                </RadioGroup>
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_columnWeight="1"
+                        android:text="VAE Dec"
+                        android:textSize="12sp"
+                        android:gravity="center_vertical"
+                        android:layout_gravity="center_vertical" />
+                    <Spinner
+                        android:id="@+id/spinnerPrecVaeDec"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_columnWeight="1"
+                        android:spinnerMode="dropdown" />
+
+                </GridLayout>
 
                 <!-- SD Backend (Execution Provider) -->
                 <TextView
@@ -453,6 +533,41 @@
                         android:layout_height="wrap_content"
                         android:text="QNN Context Cache"
                         android:checked="false" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnPrepareCache"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Prepare QNN Cache"
+                        android:textSize="12sp"
+                        android:layout_marginTop="8dp"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        app:cornerRadius="8dp"
+                        app:icon="@android:drawable/ic_popup_sync"
+                        app:iconGravity="textStart" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnManageCache"
+                        android:layout_width="match_parent"
+                        android:layout_height="36dp"
+                        android:text="Manage Cache"
+                        android:textSize="11sp"
+                        android:layout_marginTop="4dp"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        app:cornerRadius="8dp"
+                        app:icon="@android:drawable/ic_menu_manage"
+                        app:iconGravity="textStart"
+                        app:iconSize="16dp" />
+
+                    <TextView
+                        android:id="@+id/tvCacheStatus"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text=""
+                        android:textSize="11sp"
+                        android:textColor="@color/text_secondary"
+                        android:fontFamily="monospace"
+                        android:layout_marginTop="4dp" />
 
                 </LinearLayout>
 

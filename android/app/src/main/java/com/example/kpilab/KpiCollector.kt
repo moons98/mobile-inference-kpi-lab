@@ -289,9 +289,10 @@ class KpiCollector(private val context: Context) {
             BufferedReader(FileReader(PROC_STATUS)).use { reader ->
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
-                    if (line!!.startsWith("VmRSS:")) {
+                    val currentLine = line ?: continue
+                    if (currentLine.startsWith("VmRSS:")) {
                         // Format: "VmRSS:     12345 kB"
-                        val parts = line!!.trim().split(Regex("\\s+"))
+                        val parts = currentLine.trim().split(Regex("\\s+"))
                         if (parts.size >= 2) {
                             vmRssKb = parts[1].toIntOrNull() ?: -1
                         }

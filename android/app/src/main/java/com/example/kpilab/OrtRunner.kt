@@ -109,7 +109,7 @@ class OrtRunner(private val context: Context) {
                 ortEnv = sharedEnv
                 ownsOrtEnv = false
             } else {
-                ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_INFO)
+                ortEnv = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE)
                 ownsOrtEnv = true
             }
 
@@ -123,18 +123,15 @@ class OrtRunner(private val context: Context) {
                 profilingEnabled = true
             }
 
-            // Load model file (timed)
+            // Model file info
             val file = File(modelPath)
             modelFileSizeKb = (file.length() / 1024).toInt()
+            modelLoadMs = 0  // No separate load step with path-based API
+            Log.i(TAG, "Model file: ${modelFileSizeKb}KB")
 
-            val loadStart = System.currentTimeMillis()
-            val modelBytes = file.readBytes()
-            modelLoadMs = System.currentTimeMillis() - loadStart
-            Log.i(TAG, "Model loaded: ${modelFileSizeKb}KB in ${modelLoadMs}ms")
-
-            // Create session (timed — includes QNN compilation)
+            // Create session from file path (avoids OOM from readBytes on large models)
             val sessionStart = System.currentTimeMillis()
-            ortSession = ortEnv!!.createSession(modelBytes, sessionOptions)
+            ortSession = ortEnv!!.createSession(modelPath, sessionOptions)
             sessionCreateMs = System.currentTimeMillis() - sessionStart
             Log.i(TAG, "Session created in ${sessionCreateMs}ms")
 
@@ -165,10 +162,12 @@ class OrtRunner(private val context: Context) {
         val env = ortEnv ?: return null
         val session = ortSession ?: return null
 
+        var tensorInputs: Map<String, OnnxTensor> = emptyMap()
+        var results: OrtSession.Result? = null
         return try {
             // Create input tensors
             val inputCreateStart = System.nanoTime()
-            val tensorInputs = inputs.map { (name, pair) ->
+            tensorInputs = inputs.map { (name, pair) ->
                 val (buffer, shape) = pair
                 val tensor = when (buffer) {
                     is FloatBuffer -> OnnxTensor.createTensor(env, buffer, shape)
@@ -181,7 +180,7 @@ class OrtRunner(private val context: Context) {
 
             // Run session
             val runStart = System.nanoTime()
-            val results = session.run(tensorInputs)
+            results = session.run(tensorInputs)
             val sessionRunMs = ((System.nanoTime() - runStart) / 1_000_000.0).toFloat()
 
             // Extract outputs
@@ -197,14 +196,13 @@ class OrtRunner(private val context: Context) {
             }
             val outputCopyMs = ((System.nanoTime() - outputCopyStart) / 1_000_000.0).toFloat()
 
-            // Cleanup
-            tensorInputs.values.forEach { it.close() }
-            results.close()
-
             RunResult(sessionRunMs, inputCreateMs, outputCopyMs, outputMap)
         } catch (e: Exception) {
             Log.e(TAG, "Run failed: ${e.message}", e)
             null
+        } finally {
+            results?.close()
+            tensorInputs.values.forEach { it.close() }
         }
     }
 

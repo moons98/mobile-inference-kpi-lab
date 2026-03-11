@@ -25,7 +25,7 @@ class Tokenizer(context: Context) {
 
     init {
         // Load vocabulary
-        val vocabJson = context.assets.open("vocab.json").bufferedReader().readText()
+        val vocabJson = context.assets.open("vocab.json").bufferedReader().use { it.readText() }
         val jsonObj = JSONObject(vocabJson)
         val vocabMap = mutableMapOf<String, Int>()
         jsonObj.keys().forEach { key ->
@@ -35,7 +35,7 @@ class Tokenizer(context: Context) {
         Log.i(TAG, "Vocab loaded: ${vocab.size} tokens")
 
         // Load BPE merges
-        val mergesText = context.assets.open("merges.txt").bufferedReader().readLines()
+        val mergesText = context.assets.open("merges.txt").bufferedReader().use { it.readLines() }
         merges = mergesText
             .drop(1) // Skip header line
             .filter { it.isNotBlank() }

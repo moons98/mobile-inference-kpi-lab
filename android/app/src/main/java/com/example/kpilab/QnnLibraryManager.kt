@@ -131,13 +131,13 @@ object QnnLibraryManager {
             val assetFiles = assetManager.list("qnn_libs") ?: emptyArray()
             Log.i(TAG, "Found ${assetFiles.size} files in assets/qnn_libs/")
 
-            for (filename in assetFiles) {
+            val selectedFiles = assetFiles.filter { it in QNN_LIBRARIES }
+            for (filename in selectedFiles) {
                 val targetFile = File(targetDir, filename)
 
-                // Check if already extracted (and same size)
+                // Overwrite to avoid stale/partial files after app updates.
                 if (targetFile.exists()) {
-                    Log.d(TAG, "Library already exists: $filename")
-                    continue
+                    targetFile.delete()
                 }
 
                 // Extract from assets
@@ -153,6 +153,12 @@ object QnnLibraryManager {
                 targetFile.setReadable(true, false)
 
                 Log.i(TAG, "Extracted: $filename (${targetFile.length()} bytes)")
+            }
+
+            val missing = QNN_LIBRARIES.filterNot { File(targetDir, it).exists() }
+            if (missing.isNotEmpty()) {
+                Log.e(TAG, "Missing required QNN libs after extraction: $missing")
+                return false
             }
 
             return true
