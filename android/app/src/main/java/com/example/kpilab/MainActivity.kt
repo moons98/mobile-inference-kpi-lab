@@ -135,12 +135,19 @@ class MainActivity : AppCompatActivity() {
         binding.radioGroupStrength.setOnCheckedChangeListener { _, _ -> updateStrengthLabel() }
         binding.radioGroupSteps.setOnCheckedChangeListener { _, _ -> updateStrengthLabel() }
 
-        // QNN options visibility
+        // QNN options visibility + precision filter
         binding.radioGroupEp.setOnCheckedChangeListener { _, checkedId ->
-            binding.layoutQnnOptions.visibility = when (checkedId) {
-                R.id.radioEpCpu -> View.GONE
-                else -> View.VISIBLE
-            }
+            val isNpu = checkedId == R.id.radioEpNpu
+            val isCpu = checkedId == R.id.radioEpCpu
+            binding.layoutQnnOptions.visibility = if (isCpu) View.GONE else View.VISIBLE
+            updatePrecisionOptions(allowFp32 = !isNpu)
+        }
+
+        // Phase toggle: show/hide SD vs YOLO options
+        binding.radioGroupPhase.setOnCheckedChangeListener { _, checkedId ->
+            val isYoloOnly = checkedId == R.id.radioPhaseYolo
+            binding.sectionSdOptions.visibility = if (isYoloOnly) View.GONE else View.VISIBLE
+            binding.sectionYoloOptions.visibility = if (isYoloOnly) View.VISIBLE else View.GONE
         }
 
         // Per-component precision spinners
@@ -156,30 +163,54 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    /** Precision options: NPU에서는 FP32가 실제로 FP16으로 실행되므로 제외 */
+    private val npuPrecOptions = SdPrecision.values().filter { it != SdPrecision.FP32 }
+    private val allPrecOptions = SdPrecision.values().toList()
+    private var currentPrecOptions = allPrecOptions
+
     private fun setupPrecisionSpinners() {
-        val precOptions = SdPrecision.values().map { it.displayName }
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, precOptions)
+        updatePrecisionOptions(allowFp32 = binding.radioGroupEp.checkedRadioButtonId != R.id.radioEpNpu)
+
+        // Bulk preset buttons
+        binding.btnPrecAllFp32.setOnClickListener { setAllPrecision(SdPrecision.FP32) }
+        binding.btnPrecAllFp16.setOnClickListener { setAllPrecision(SdPrecision.FP16) }
+        binding.btnPrecAllW8a8.setOnClickListener { setAllPrecision(SdPrecision.W8A8) }
+    }
+
+    /**
+     * NPU에서는 FP32가 실제로 FP16으로 실행되므로 FP32 선택지를 숨긴다.
+     * CPU/GPU에서는 전체 옵션을 표시한다.
+     */
+    private fun updatePrecisionOptions(allowFp32: Boolean) {
+        currentPrecOptions = if (allowFp32) allPrecOptions else npuPrecOptions
+        val displayNames = currentPrecOptions.map { it.displayName }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, displayNames)
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
 
         for (spinner in precisionSpinners) {
+            val prevPrecision = currentPrecOptions.getOrNull(spinner.selectedItemPosition)
             spinner.adapter = adapter
-            spinner.setSelection(1) // Default: FP16
+            // Restore previous selection if still available, otherwise default to FP16
+            val newIndex = currentPrecOptions.indexOf(prevPrecision).takeIf { it >= 0 }
+                ?: currentPrecOptions.indexOf(SdPrecision.FP16).takeIf { it >= 0 }
+                ?: 0
+            spinner.setSelection(newIndex)
         }
 
-        // Bulk preset buttons
-        binding.btnPrecAllFp32.setOnClickListener { setAllPrecision(0) }
-        binding.btnPrecAllFp16.setOnClickListener { setAllPrecision(1) }
-        binding.btnPrecAllW8a8.setOnClickListener { setAllPrecision(2) }
+        // Hide "All FP32" button when NPU is selected
+        binding.btnPrecAllFp32.visibility = if (allowFp32) View.VISIBLE else View.GONE
     }
 
-    private fun setAllPrecision(index: Int) {
+    private fun setAllPrecision(precision: SdPrecision) {
+        val index = currentPrecOptions.indexOf(precision)
+        if (index < 0) return
         for (spinner in precisionSpinners) {
             spinner.setSelection(index)
         }
     }
 
     private fun buildPrecisionMap(): Map<SdComponent, SdPrecision> {
-        val precValues = SdPrecision.values()
+        val precValues = currentPrecOptions.toTypedArray()
         return mapOf(
             SdComponent.VAE_ENCODER to precValues[binding.spinnerPrecVaeEnc.selectedItemPosition],
             SdComponent.TEXT_ENCODER to precValues[binding.spinnerPrecTextEnc.selectedItemPosition],
@@ -385,6 +416,8 @@ class MainActivity : AppCompatActivity() {
             else -> BenchmarkPhase.SINGLE_ERASE
         }
 
+        val isYoloOnly = phase == BenchmarkPhase.YOLO_SEG_ONLY
+
         return BenchmarkConfig(
             sdBackend = when (binding.radioGroupEp.checkedRadioButtonId) {
                 R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
@@ -392,13 +425,28 @@ class MainActivity : AppCompatActivity() {
                 else -> ExecutionProvider.QNN_NPU
             },
             sdPrecisionMap = buildPrecisionMap(),
-            yoloBackend = when (binding.radioGroupEp.checkedRadioButtonId) {
-                R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
-                R.id.radioEpCpu -> ExecutionProvider.CPU
-                else -> ExecutionProvider.QNN_NPU
+            yoloBackend = if (isYoloOnly) {
+                when (binding.radioGroupYoloEp.checkedRadioButtonId) {
+                    R.id.radioYoloEpGpu -> ExecutionProvider.QNN_GPU
+                    R.id.radioYoloEpCpu -> ExecutionProvider.CPU
+                    else -> ExecutionProvider.QNN_NPU
+                }
+            } else {
+                when (binding.radioGroupEp.checkedRadioButtonId) {
+                    R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
+                    R.id.radioEpCpu -> ExecutionProvider.CPU
+                    else -> ExecutionProvider.QNN_NPU
+                }
             },
-            yoloPrecision = if (buildPrecisionMap().values.any { it == SdPrecision.W8A8 })
-                YoloPrecision.INT8 else YoloPrecision.FP32,
+            yoloPrecision = if (isYoloOnly) {
+                when (binding.radioGroupYoloPrec.checkedRadioButtonId) {
+                    R.id.radioYoloPrecInt8 -> YoloPrecision.INT8
+                    else -> YoloPrecision.FP32
+                }
+            } else {
+                if (buildPrecisionMap().values.any { it == SdPrecision.W8A8 })
+                    YoloPrecision.INT8 else YoloPrecision.FP32
+            },
             phase = phase,
             steps = getSelectedSteps(),
             strength = getSelectedStrength(),

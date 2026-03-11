@@ -72,6 +72,9 @@ outputs/
 logs/
 runs/
 
+# exp outputs
+exp_outputs
+
 # Temporary
 tmp/
 temp/
@@ -86,3 +89,6 @@ datasets/
 
 # deprecated
 deprecated/
+
+# qai output files
+qai-outputs

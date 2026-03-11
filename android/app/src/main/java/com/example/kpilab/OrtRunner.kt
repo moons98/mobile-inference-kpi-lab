@@ -320,18 +320,33 @@ class OrtRunner(private val context: Context) {
             ExecutionProvider.QNN_NPU -> {
                 try {
                     val qnnOptions = mutableMapOf<String, String>()
-                    val qnnLibPath = QnnLibraryManager.getLibraryPath()
-                    if (qnnLibPath != null) {
-                        qnnOptions["backend_path"] = "$qnnLibPath/libQnnHtp.so"
-                        qnnOptions["skel_library_dir"] = qnnLibPath
+                    // Use ORT-bundled QNN libraries from app's native lib directory
+                    val nativeLibDir = context.applicationInfo.nativeLibraryDir
+                    val ortQnnHtp = "$nativeLibDir/libQnnHtp.so"
+                    if (File(ortQnnHtp).exists()) {
+                        qnnOptions["backend_path"] = ortQnnHtp
+                        qnnOptions["skel_library_dir"] = nativeLibDir
+                        Log.i(TAG, "Using ORT-bundled QNN from: $nativeLibDir")
                     } else {
-                        qnnOptions["backend_path"] = "libQnnHtp.so"
+                        // Fallback to custom QNN libs or system default
+                        val qnnLibPath = QnnLibraryManager.getLibraryPath()
+                        if (qnnLibPath != null) {
+                            qnnOptions["backend_path"] = "$qnnLibPath/libQnnHtp.so"
+                            qnnOptions["skel_library_dir"] = qnnLibPath
+                        } else {
+                            qnnOptions["backend_path"] = "libQnnHtp.so"
+                        }
                     }
                     qnnOptions["htp_performance_mode"] = htpPerformanceMode
                     qnnOptions["htp_graph_finalization_optimization_mode"] = "3"
                     qnnOptions["enable_htp_fp16_precision"] = if (useNpuFp16) "1" else "0"
 
-                    if (useContextCache) {
+                    // Skip context cache for EpContext stub models (precompiled .bin alongside .onnx)
+                    val companionBin = File(modelPath.removeSuffix(".onnx") + ".bin")
+                    val isEpContextModel = companionBin.exists()
+                    if (isEpContextModel) {
+                        Log.i(TAG, "EpContext model detected (companion .bin exists), skipping context cache options")
+                    } else if (useContextCache) {
                         val cacheDir = context.cacheDir
                         val modelName = File(modelPath).nameWithoutExtension
                         val precStr = if (useNpuFp16) "fp16" else "fp32"
@@ -339,8 +354,8 @@ class OrtRunner(private val context: Context) {
                         qnnOptions["qnn_context_cache_path"] = "${cacheDir.absolutePath}/qnn_${modelName}_${precStr}.bin"
                     }
 
-                    val libSource = if (qnnLibPath != null) "custom" else "bundled"
-                    qnnOptionsStr = "backend=HTP;perf=$htpPerformanceMode;fp16=${if (useNpuFp16) "1" else "0"};cache=${if (useContextCache) "1" else "0"};libs=$libSource"
+                    val libSource = if (File(ortQnnHtp).exists()) "ort-bundled" else "fallback"
+                    qnnOptionsStr = "backend=HTP;perf=$htpPerformanceMode;fp16=${if (useNpuFp16) "1" else "0"};cache=${if (useContextCache && !isEpContextModel) "1" else "0"};epctx=${if (isEpContextModel) "1" else "0"};libs=$libSource"
 
                     options.addQnn(qnnOptions)
                     activeExecutionProvider = "QNN_NPU"

@@ -18,7 +18,7 @@ android {
             abiFilters += listOf("arm64-v8a")
         }
 
-        buildConfigField("String", "ORT_VERSION", "\"1.23.2\"")
+        buildConfigField("String", "ORT_VERSION", "\"1.24.3\"")
     }
 
     buildTypes {
@@ -49,6 +49,13 @@ android {
     androidResources {
         noCompress += listOf("onnx", "ort", "jpg")
     }
+
+    // Extract native libs so QNN EP can find them by file path
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {
@@ -63,6 +70,6 @@ dependencies {
     implementation("com.google.code.gson:gson:2.10.1")
 
     // ONNX Runtime with QNN Execution Provider (NPU)
-    // Version 1.23.2 uses QNN SDK 2.37.1 - check device compatibility
-    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.23.2")
+    // Version 1.24.3 - upgraded for QAI Hub compiled binary compatibility
+    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.24.3")
 }

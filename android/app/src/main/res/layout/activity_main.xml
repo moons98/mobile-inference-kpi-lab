@@ -225,6 +225,94 @@
 
                 </RadioGroup>
 
+                <!-- YOLO-seg Options (visible only in YOLO_SEG_ONLY phase) -->
+                <LinearLayout
+                    android:id="@+id/sectionYoloOptions"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="YOLO Backend"
+                        android:textSize="14sp"
+                        android:textColor="@color/text_secondary"
+                        android:layout_marginBottom="8dp" />
+
+                    <RadioGroup
+                        android:id="@+id/radioGroupYoloEp"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="12dp">
+
+                        <RadioButton
+                            android:id="@+id/radioYoloEpNpu"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="NPU"
+                            android:checked="true" />
+
+                        <RadioButton
+                            android:id="@+id/radioYoloEpGpu"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="GPU" />
+
+                        <RadioButton
+                            android:id="@+id/radioYoloEpCpu"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="CPU" />
+
+                    </RadioGroup>
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="YOLO Precision"
+                        android:textSize="14sp"
+                        android:textColor="@color/text_secondary"
+                        android:layout_marginBottom="8dp" />
+
+                    <RadioGroup
+                        android:id="@+id/radioGroupYoloPrec"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="12dp">
+
+                        <RadioButton
+                            android:id="@+id/radioYoloPrecFp32"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="FP32"
+                            android:checked="true" />
+
+                        <RadioButton
+                            android:id="@+id/radioYoloPrecInt8"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="INT8" />
+
+                    </RadioGroup>
+
+                </LinearLayout>
+
+                <!-- SD Options (hidden in YOLO_SEG_ONLY phase) -->
+                <LinearLayout
+                    android:id="@+id/sectionSdOptions"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
                 <!-- SD Precision (per-component) -->
                 <TextView
                     android:layout_width="wrap_content"
@@ -519,6 +607,9 @@
                         android:text="Large" />
 
                 </RadioGroup>
+
+                </LinearLayout>
+                <!-- end sectionSdOptions -->
 
                 <!-- QNN Options -->
                 <LinearLayout

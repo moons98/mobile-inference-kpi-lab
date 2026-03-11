@@ -39,7 +39,7 @@ enum class SdPrecision(val displayName: String, val dirSuffix: String) {
  * YOLO-seg model precision.
  */
 enum class YoloPrecision(val displayName: String, val suffix: String) {
-    FP32("FP32", ""),
+    FP32("FP32", "_fp32"),
     INT8("INT8", "_int8_qdq")
 }
 
