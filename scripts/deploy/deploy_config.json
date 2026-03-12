@@ -20,13 +20,13 @@
             "note": "FP32 ONNX → QAI Hub compiles to FP16 binary"
         },
         {
-            "deploy_name": "unet_mixed_pr",
+            "deploy_name": "unet_int8_qdq",
             "job_dir": "sd_v1.5_inpaint/compile_mixed_pr_unet_jgkynzmyp",
             "precision": "int8",
             "note": "Conv/MatMul INT8, LayerNorm FP32 → QAI Hub compiled (CosSim 0.994)"
         },
         {
-            "deploy_name": "vae_encoder_qai_int8",
+            "deploy_name": "vae_encoder_int8_qdq",
             "job_dir": "sd_v1.5_inpaint/compile_int8_vae_encoder_j5q2kj245",
             "precision": "int8",
             "note": "QAI Hub W8A8 quantized VAE encoder → compiled (CosSim 0.984)"
@@ -38,7 +38,7 @@
             "note": "FP32 ONNX → QAI Hub compiles to FP16 binary"
         },
         {
-            "deploy_name": "vae_decoder_qai_int8",
+            "deploy_name": "vae_decoder_int8_qdq",
             "job_dir": "sd_v1.5_inpaint/compile_int8_vae_decoder_j561jk10p",
             "precision": "int8",
             "note": "QAI Hub W8A8 quantized VAE decoder → compiled (CosSim 0.968)"
