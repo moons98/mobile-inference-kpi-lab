@@ -19,7 +19,7 @@ SD_ONNX_DIR="$PROJECT_DIR/weights/sd_v1.5_inpaint/onnx"
 YOLO_ONNX_DIR="$PROJECT_DIR/weights/yolov8n_seg/onnx"
 
 # Device target directory
-DEVICE_DIR="/sdcard/sd_models"
+DEVICE_DIR="//sdcard/sd_models"
 
 echo "=== AI Eraser Model Push ==="
 echo "Source (SD):   $SD_ONNX_DIR"
@@ -44,7 +44,7 @@ echo "Device: $DEVICE_MODEL"
 echo ""
 
 # Create target directory
-adb shell "mkdir -p $DEVICE_DIR" 2>/dev/null
+adb shell "mkdir -p /sdcard/sd_models" 2>/dev/null
 
 push_file() {
     local src="$1"
@@ -66,11 +66,11 @@ push_file() {
 
 if [ "$1" = "--status" ]; then
     echo "=== On-device models ($DEVICE_DIR) ==="
-    adb shell "ls -la $DEVICE_DIR/ 2>/dev/null" || echo "  Directory not found"
+    adb shell "ls -la /sdcard/sd_models/ 2>/dev/null" || echo "  Directory not found"
     echo ""
     echo "=== Required for FP32/FP16 ==="
     for f in vae_encoder_fp32.onnx text_encoder_fp32.onnx unet_fp32.onnx unet_fp32.onnx.data vae_decoder_fp32.onnx; do
-        if adb shell "test -f $DEVICE_DIR/$f" 2>/dev/null; then
+        if adb shell "test -f /sdcard/sd_models/$f" 2>/dev/null; then
             echo "  [OK] $f"
         else
             echo "  [--] $f"
@@ -79,7 +79,7 @@ if [ "$1" = "--status" ]; then
     echo ""
     echo "=== Required for W8A8 ==="
     for f in vae_encoder_int8_qdq.onnx text_encoder_int8_qdq.onnx unet_int8_qdq.onnx vae_decoder_int8_qdq.onnx; do
-        if adb shell "test -f $DEVICE_DIR/$f" 2>/dev/null; then
+        if adb shell "test -f /sdcard/sd_models/$f" 2>/dev/null; then
             echo "  [OK] $f"
         else
             echo "  [--] $f"
@@ -88,7 +88,7 @@ if [ "$1" = "--status" ]; then
     echo ""
     echo "=== YOLO-seg ==="
     for f in yolov8n-seg_fp32.onnx yolov8n-seg_int8_qdq.onnx; do
-        if adb shell "test -f $DEVICE_DIR/$f" 2>/dev/null; then
+        if adb shell "test -f /sdcard/sd_models/$f" 2>/dev/null; then
             echo "  [OK] $f"
         else
             echo "  [--] $f"
@@ -201,5 +201,5 @@ esac
 
 echo ""
 echo "=== Done ==="
-adb shell "ls -la $DEVICE_DIR/" 2>/dev/null | tail -20
+adb shell "ls -la /sdcard/sd_models/" 2>/dev/null | tail -20
 
