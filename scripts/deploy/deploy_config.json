@@ -1,60 +1,35 @@
 {
-    "_comment": "QAI Hub compile job → deploy filename mapping. model.onnx(stub) + model.bin → deploy_name.onnx + deploy_name.bin",
+    "_comment": "QAI Hub compile job → deploy filename mapping for txt2img pipeline. model.onnx(stub) + model.bin → deploy_name.onnx + deploy_name.bin",
     "compiled": [
         {
-            "deploy_name": "vae_encoder_fp32",
-            "job_dir": "sd_v1.5_inpaint/compile_fp32_vae_encoder_j57dwqdl5",
-            "precision": "fp16",
-            "note": "FP32 ONNX → QAI Hub compiles to FP16 binary"
-        },
-        {
             "deploy_name": "text_encoder_fp32",
-            "job_dir": "sd_v1.5_inpaint/compile_fp32_text_encoder_jpydw9d7p",
+            "job_dir": "sd_v1.5/compile_fp32_text_encoder_jpydw9d7p",
             "precision": "fp16",
             "note": "FP32 ONNX → QAI Hub compiles to FP16 binary"
         },
         {
-            "deploy_name": "unet_fp32",
-            "job_dir": "sd_v1.5_inpaint/compile_fp32_unet_jgov0yex5",
+            "deploy_name": "unet_base_fp32",
+            "job_dir": "sd_v1.5/compile_fp32_unet_base_jpev3d9v5",
             "precision": "fp16",
-            "note": "FP32 ONNX → QAI Hub compiles to FP16 binary"
+            "note": "SD v1.5 Base UNet (4ch) FP32 → FP16 compiled (1,731MB .bin)"
         },
         {
-            "deploy_name": "unet_int8_qdq",
-            "job_dir": "sd_v1.5_inpaint/compile_mixed_pr_unet_jgkynzmyp",
-            "precision": "int8",
-            "note": "Conv/MatMul INT8, LayerNorm FP32 → QAI Hub compiled (CosSim 0.994)"
-        },
-        {
-            "deploy_name": "vae_encoder_int8_qdq",
-            "job_dir": "sd_v1.5_inpaint/compile_int8_vae_encoder_j5q2kj245",
-            "precision": "int8",
-            "note": "QAI Hub W8A8 quantized VAE encoder → compiled (CosSim 0.984)"
+            "deploy_name": "unet_lcm_fp32",
+            "job_dir": "sd_v1.5/compile_fp32_unet_lcm_jp87vq9q5",
+            "precision": "fp16",
+            "note": "LCM-LoRA UNet (4ch) FP32 → FP16 compiled (1,731MB .bin)"
         },
         {
             "deploy_name": "vae_decoder_fp32",
-            "job_dir": "sd_v1.5_inpaint/compile_fp32_vae_decoder_jpx1jw11g",
+            "job_dir": "sd_v1.5/compile_fp32_vae_decoder_jpx1jw11g",
             "precision": "fp16",
             "note": "FP32 ONNX → QAI Hub compiles to FP16 binary"
         },
         {
             "deploy_name": "vae_decoder_int8_qdq",
-            "job_dir": "sd_v1.5_inpaint/compile_int8_vae_decoder_j561jk10p",
+            "job_dir": "sd_v1.5/compile_int8_vae_decoder_j561jk10p",
             "precision": "int8",
-            "note": "QAI Hub W8A8 quantized VAE decoder → compiled (CosSim 0.968)"
-        },
-
-        {
-            "deploy_name": "yolov8n-seg_fp32",
-            "job_dir": "yolo_seg/compile_fp16_j5mz2jqqp",
-            "precision": "fp16",
-            "note": "YOLO-seg FP32 → FP16 compiled"
-        },
-        {
-            "deploy_name": "yolov8n-seg_int8_qdq",
-            "job_dir": "yolo_seg/compile_int8_noh_j561jkn0p",
-            "precision": "int8",
-            "note": "YOLO-seg INT8 QDQ no-head compiled"
+            "note": "QAI Hub W8A8 quantized VAE decoder → compiled"
         }
     ]
 }

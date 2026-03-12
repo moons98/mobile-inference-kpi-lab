@@ -2,7 +2,7 @@
 """
 Extract CLIP tokenizer assets (vocab.json + merges.txt) for Android app.
 
-These files are required by the on-device Tokenizer.kt for SD v1.5 inpainting.
+These files are required by the on-device Tokenizer.kt for SD v1.5 txt2img.
 Output goes to android/app/src/main/assets/ for APK bundling.
 
 Usage:
@@ -15,10 +15,10 @@ import json
 import shutil
 from pathlib import Path
 
-SD_MODEL_ID = "stable-diffusion-v1-5/stable-diffusion-inpainting"
+SD_MODEL_ID = "runwayml/stable-diffusion-v1-5"
 SCRIPTS_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPTS_DIR.parent.parent
-WEIGHTS_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint"
+WEIGHTS_DIR = PROJECT_ROOT / "weights" / "sd_v1.5"
 DEFAULT_OUTPUT = PROJECT_ROOT / "android" / "app" / "src" / "main" / "assets"
 
 

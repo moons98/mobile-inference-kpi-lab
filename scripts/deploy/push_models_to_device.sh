@@ -1,11 +1,10 @@
 #!/bin/bash
-# Push ONNX models to Android device for AI Eraser benchmark.
+# Push ONNX models to Android device for SD v1.5 txt2img benchmark.
 #
 # Usage:
 #   ./scripts/deploy/push_models_to_device.sh           # push all available models
-#   ./scripts/deploy/push_models_to_device.sh --fp32     # FP32 only
+#   ./scripts/deploy/push_models_to_device.sh --fp32     # FP32 only (text_enc + unet_base + unet_lcm + vae_dec)
 #   ./scripts/deploy/push_models_to_device.sh --int8     # INT8 only
-#   ./scripts/deploy/push_models_to_device.sh --yolo     # YOLO-seg only
 #   ./scripts/deploy/push_models_to_device.sh --deploy   # push all from weights/deploy/
 #   ./scripts/deploy/push_models_to_device.sh --status   # check what's on device
 
@@ -14,17 +13,15 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-# Source directories
-SD_ONNX_DIR="$PROJECT_DIR/weights/sd_v1.5_inpaint/onnx"
-YOLO_ONNX_DIR="$PROJECT_DIR/weights/yolov8n_seg/onnx"
+# Source directory
+SD_ONNX_DIR="$PROJECT_DIR/weights/sd_v1.5/onnx"
 
 # Device target directory
 DEVICE_DIR="//sdcard/sd_models"
 
-echo "=== AI Eraser Model Push ==="
-echo "Source (SD):   $SD_ONNX_DIR"
-echo "Source (YOLO): $YOLO_ONNX_DIR"
-echo "Target:        $DEVICE_DIR"
+echo "=== SD v1.5 Txt2Img Model Push ==="
+echo "Source: $SD_ONNX_DIR"
+echo "Target: $DEVICE_DIR"
 echo ""
 
 # Check adb
@@ -64,110 +61,121 @@ push_file() {
     adb push "$src" "$DEVICE_DIR/$filename"
 }
 
+push_with_data() {
+    local src="$1"
+    if [ -f "$src" ]; then
+        push_file "$src"
+        # Push external data file if exists
+        if [ -f "${src}.data" ]; then
+            push_file "${src}.data"
+        fi
+    else
+        echo "  [MISS] $(basename "$src")"
+    fi
+}
+
 if [ "$1" = "--status" ]; then
     echo "=== On-device models ($DEVICE_DIR) ==="
     adb shell "ls -la /sdcard/sd_models/ 2>/dev/null" || echo "  Directory not found"
     echo ""
-    echo "=== Required for FP32/FP16 ==="
-    for f in vae_encoder_fp32.onnx text_encoder_fp32.onnx unet_fp32.onnx unet_fp32.onnx.data vae_decoder_fp32.onnx; do
+
+    echo "=== Txt2Img Components ==="
+    echo "--- Shared (Text Encoder / VAE Decoder) ---"
+    for f in text_encoder_fp32.onnx vae_decoder_fp32.onnx vae_decoder_int8_qdq.onnx; do
         if adb shell "test -f /sdcard/sd_models/$f" 2>/dev/null; then
             echo "  [OK] $f"
         else
             echo "  [--] $f"
         fi
     done
+
     echo ""
-    echo "=== Required for W8A8 ==="
-    for f in vae_encoder_int8_qdq.onnx text_encoder_int8_qdq.onnx unet_int8_qdq.onnx vae_decoder_int8_qdq.onnx; do
+    echo "--- UNet Base (SD v1.5) ---"
+    for f in unet_base_fp32.onnx unet_base_fp32.onnx.data; do
         if adb shell "test -f /sdcard/sd_models/$f" 2>/dev/null; then
             echo "  [OK] $f"
         else
             echo "  [--] $f"
         fi
     done
+
     echo ""
-    echo "=== YOLO-seg ==="
-    for f in yolov8n-seg_fp32.onnx yolov8n-seg_int8_qdq.onnx; do
+    echo "--- UNet LCM ---"
+    for f in unet_lcm_fp32.onnx unet_lcm_fp32.onnx.data; do
         if adb shell "test -f /sdcard/sd_models/$f" 2>/dev/null; then
             echo "  [OK] $f"
         else
             echo "  [--] $f"
+        fi
+    done
+
+    echo ""
+    echo "--- Cached Embeddings ---"
+    for f in text_embeddings.npy uncond_embeddings.npy; do
+        if adb shell "test -f /sdcard/sd_models/$f" 2>/dev/null; then
+            echo "  [OK] $f"
+        else
+            echo "  [--] $f (generate: python scripts/deploy/generate_cached_embeddings.py)"
         fi
     done
     exit 0
 fi
 
-# Push SD models
-push_sd_fp32() {
-    echo "--- SD Inpainting FP32 (also used for FP16 runtime) ---"
-    for f in vae_encoder_fp32.onnx text_encoder_fp32.onnx unet_fp32.onnx vae_decoder_fp32.onnx; do
+# Push cached text embeddings
+push_embeddings() {
+    echo "--- Cached Text Embeddings ---"
+    for f in text_embeddings.npy uncond_embeddings.npy; do
         if [ -f "$SD_ONNX_DIR/$f" ]; then
             push_file "$SD_ONNX_DIR/$f"
         else
-            echo "  [MISS] $f ??run: python scripts/sd/export_sd_to_onnx.py --export-all --precision fp32"
+            echo "  [MISS] $f — run: python scripts/deploy/generate_cached_embeddings.py"
         fi
     done
-    # UNet external data file
-    if [ -f "$SD_ONNX_DIR/unet_fp32.onnx.data" ]; then
-        push_file "$SD_ONNX_DIR/unet_fp32.onnx.data"
-    fi
+}
+
+# Push txt2img FP32 components
+push_sd_fp32() {
+    echo "--- Text Encoder FP32 ---"
+    push_with_data "$SD_ONNX_DIR/text_encoder_fp32.onnx"
+
+    echo ""
+    echo "--- UNet Base (SD v1.5) FP32 ---"
+    push_with_data "$SD_ONNX_DIR/unet_base_fp32.onnx"
+
+    echo ""
+    echo "--- UNet LCM FP32 ---"
+    push_with_data "$SD_ONNX_DIR/unet_lcm_fp32.onnx"
+
+    echo ""
+    echo "--- VAE Decoder FP32 ---"
+    push_with_data "$SD_ONNX_DIR/vae_decoder_fp32.onnx"
 }
 
 push_sd_int8() {
-    echo "--- SD Inpainting INT8 QDQ (W8A8) ---"
-    for f in vae_encoder_int8_qdq.onnx text_encoder_int8_qdq.onnx unet_int8_qdq.onnx vae_decoder_int8_qdq.onnx; do
-        if [ -f "$SD_ONNX_DIR/$f" ]; then
-            push_file "$SD_ONNX_DIR/$f"
-        else
-            echo "  [MISS] $f ??run: python scripts/sd/export_sd_to_onnx.py --export-all --precision int8"
-        fi
-    done
-    # UNet INT8 external data file
-    if [ -f "$SD_ONNX_DIR/unet_int8_qdq.onnx.data" ]; then
-        push_file "$SD_ONNX_DIR/unet_int8_qdq.onnx.data"
-    fi
-}
+    echo "--- VAE Decoder INT8 ---"
+    push_with_data "$SD_ONNX_DIR/vae_decoder_int8_qdq.onnx"
 
-push_yolo() {
-    echo "--- YOLO-seg ---"
-    for f in yolov8n-seg_fp32.onnx yolov8n-seg_int8_qdq.onnx; do
-        if [ -f "$YOLO_ONNX_DIR/$f" ]; then
-            push_file "$YOLO_ONNX_DIR/$f"
-        else
-            echo "  [MISS] $f"
-        fi
-    done
-}
+    echo ""
+    echo "--- UNet Base INT8 ---"
+    push_with_data "$SD_ONNX_DIR/unet_base_int8_qdq.onnx"
 
-push_yolo_compiled() {
-    echo "--- YOLO-seg Compiled (QAI Hub .bin + stub .onnx) ---"
-    # Replace original .onnx with stub, add .bin
-    local stub="$YOLO_ONNX_DIR/yolov8n-seg_compiled.onnx"
-    local bin="$YOLO_ONNX_DIR/yolov8n-seg_compiled.bin"
-    if [ -f "$stub" ] && [ -f "$bin" ]; then
-        echo "  [PUSH] yolov8n-seg.onnx (stub 428B, replacing original)..."
-        adb push "$stub" "$DEVICE_DIR/yolov8n-seg.onnx"
-        echo "  [PUSH] yolov8n-seg.bin (QNN context binary)..."
-        adb push "$bin" "$DEVICE_DIR/yolov8n-seg.bin"
-    else
-        echo "  [MISS] compiled files not found. Run QAI Hub compile first."
-    fi
+    echo ""
+    echo "--- UNet LCM INT8 ---"
+    push_with_data "$SD_ONNX_DIR/unet_lcm_int8_qdq.onnx"
 }
 
 push_deploy() {
     local DEPLOY_DIR="$PROJECT_DIR/weights/deploy"
-    echo "--- Deploy Directory (all models) ---"
+    echo "--- Deploy Directory (precompiled models) ---"
     if [ ! -d "$DEPLOY_DIR" ]; then
-        echo "  [MISS] Deploy dir not found. Run: python scripts/prepare_deploy_models.py"
+        echo "  [MISS] Deploy dir not found. Run: python scripts/deploy/prepare_deploy_models.py"
         return
     fi
     for f in "$DEPLOY_DIR"/*; do
         [ -f "$f" ] || continue
         local filename="$(basename "$f")"
-        # Skip .onnx.data files — they are pushed alongside their .onnx
         case "$filename" in *.onnx.data) continue ;; esac
         push_file "$f"
-        # If companion .onnx.data exists, push it too
         if [ -f "${f}.data" ]; then
             push_file "${f}.data"
         fi
@@ -177,29 +185,26 @@ push_deploy() {
 case "$1" in
     --fp32)
         push_sd_fp32
+        echo ""
+        push_embeddings
         ;;
     --int8)
         push_sd_int8
         ;;
-    --yolo)
-        push_yolo
-        ;;
-    --yolo-compiled)
-        push_yolo_compiled
-        ;;
     --deploy)
         push_deploy
+        echo ""
+        push_embeddings
         ;;
     *)
         push_sd_fp32
         echo ""
         push_sd_int8
         echo ""
-        push_yolo
+        push_embeddings
         ;;
 esac
 
 echo ""
 echo "=== Done ==="
 adb shell "ls -la /sdcard/sd_models/" 2>/dev/null | tail -20
-

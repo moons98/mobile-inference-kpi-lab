@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Evaluate SD v1.5 Inpainting INT8 quantization quality degradation.
+Evaluate SD v1.5 INT8 quantization quality degradation.
 
 Component-level comparison: same input -> FP32 vs INT8 output -> measure error.
 Uses pre-generated calibration NPZ as test inputs.
@@ -17,7 +17,7 @@ Metrics:
 
 Usage:
     python scripts/sd/quant_report_sd.py
-    python scripts/sd/quant_report_sd.py --components vae_encoder text_encoder
+    python scripts/sd/quant_report_sd.py --components vae_encoder unet_base
     python scripts/sd/quant_report_sd.py --num-samples 8
 """
 
@@ -31,16 +31,17 @@ import numpy as np
 
 SCRIPTS_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPTS_DIR.parent.parent
-MODEL_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "onnx"
-CALIB_DIR = PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "calib_data"
+MODEL_DIR = PROJECT_ROOT / "weights" / "sd_v1.5" / "onnx"
+CALIB_DIR = PROJECT_ROOT / "weights" / "sd_v1.5" / "calib_data"
 
-ALL_COMPONENTS = ["vae_encoder", "text_encoder", "vae_decoder", "unet"]
+ALL_COMPONENTS = ["vae_encoder", "text_encoder", "vae_decoder", "unet_base", "unet_lcm"]
 
-# INT8 variant suffixes to scan for each component
+# Quantized variant suffixes to scan for each component
 INT8_VARIANTS = [
     ("int8_qdq", "Custom QDQ"),
     ("mixed_pr", "Mixed Precision"),
     ("qai_int8", "QAI Hub W8A8"),
+    ("w8a16", "AIMET W8A16"),
 ]
 
 
@@ -89,14 +90,50 @@ def _run_variant(int8_path, fp32_cache, fp32_outputs, arrays, keys, n):
 
     print(f"  Loading INT8 session: {int8_path.name}...")
     int8_sess = ort.InferenceSession(str(int8_path), sess_opts, providers=["CPUExecutionProvider"])
+    int8_inputs = {inp.name: inp for inp in int8_sess.get_inputs()}
     int8_outputs = [o.name for o in int8_sess.get_outputs()]
     if len(int8_outputs) != len(fp32_outputs):
         print(f"  WARN: output count mismatch FP32={len(fp32_outputs)} INT8={len(int8_outputs)}")
 
+    # Build input name mapping (FP32 keys -> INT8 keys) for qai-hub-models variants
+    # that use different input names (e.g. sample->latent, encoder_hidden_states->text_emb)
+    INPUT_ALIASES = {
+        "sample": ["latent"], "latent": ["sample"],
+        "encoder_hidden_states": ["text_emb"], "text_emb": ["encoder_hidden_states"],
+    }
+    key_map = {}  # maps FP32 key -> INT8 input name
+    for k in keys:
+        if k in int8_inputs:
+            key_map[k] = k
+        else:
+            for alias in INPUT_ALIASES.get(k, []):
+                if alias in int8_inputs:
+                    key_map[k] = alias
+                    break
+    if len(key_map) != len(keys):
+        missing = [k for k in keys if k not in key_map]
+        print(f"  WARN: unmapped inputs: {missing}, INT8 expects: {list(int8_inputs.keys())}")
+
     metrics_acc = {}
     int8_time_sum = 0.0
     for i in range(n):
-        feed = {k: arrays[k][i:i + 1] for k in keys}
+        feed = {}
+        for k in keys:
+            if k not in key_map:
+                continue
+            mapped_name = key_map[k]
+            val = arrays[k][i:i + 1]
+            # Handle dtype/shape mismatches (e.g. int64->float32, [1]->[1,1])
+            inp_meta = int8_inputs[mapped_name]
+            expected_type = inp_meta.type
+            if "float" in expected_type and val.dtype != np.float32:
+                val = val.astype(np.float32)
+            expected_shape = inp_meta.shape
+            if expected_shape is not None and len(expected_shape) == len(val.shape) + 1:
+                val = val.reshape(expected_shape)
+            elif expected_shape is not None and len(expected_shape) != len(val.shape):
+                val = val.reshape(expected_shape)
+            feed[mapped_name] = val
         t0 = time.perf_counter()
         int8_result = int8_sess.run(None, feed)
         int8_time_sum += (time.perf_counter() - t0)
@@ -162,7 +199,9 @@ def evaluate_component(component: str, num_samples: int) -> dict:
     import onnxruntime as ort
 
     fp32_path = MODEL_DIR / f"{component}_fp32.onnx"
-    npz_path = CALIB_DIR / f"calib_{component}.npz"
+    # UNet base/lcm share calibration data
+    calib_name = "unet" if component.startswith("unet_") else component
+    npz_path = CALIB_DIR / f"calib_{calib_name}.npz"
 
     if not fp32_path.exists():
         print(f"  SKIP: {fp32_path.name} not found")
@@ -277,12 +316,12 @@ def build_report(results: list, num_samples: int) -> str:
     suffix_labels = {s: l for s, l in INT8_VARIANTS}
 
     sep()
-    lines.append("  SD v1.5 Inpainting INT8 Quantization Quality Report")
+    lines.append("  SD v1.5 INT8 Quantization Quality Report")
     lines.append(f"  {now}")
     sep()
 
     lines.append("")
-    lines.append("  Model: runwayml/stable-diffusion-inpainting (SD v1.5)")
+    lines.append("  Model: runwayml/stable-diffusion-v1-5 (SD v1.5)")
     lines.append("  Resolution: 512x512, Latent: 64x64")
     lines.append(f"  Test samples: {num_samples}")
     lines.append("")
@@ -400,7 +439,7 @@ def print_summary(results: list, num_samples: int = 8):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evaluate SD v1.5 Inpainting INT8 quantization quality"
+        description="Evaluate SD v1.5 INT8 quantization quality"
     )
     parser.add_argument(
         "--components", nargs="+", default=ALL_COMPONENTS,

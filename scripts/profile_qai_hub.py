@@ -2,9 +2,9 @@
 """
 Profile & quantize ONNX models on Qualcomm AI Hub (Snapdragon 8 Gen 2).
 
-Supports all AI Eraser pipeline components:
-  - SD v1.5 Inpainting: vae_encoder, text_encoder, unet, vae_decoder
-  - YOLO-seg: yolo_seg
+Supports SD v1.5 txt2img pipeline components:
+  - Shared: vae_encoder, text_encoder, vae_decoder
+  - UNet: unet_base (SD v1.5), unet_lcm (LCM-LoRA fused)
 
 Operations:
   --profile       Compile + profile (pre-quantized ONNX)
@@ -23,11 +23,11 @@ Usage:
 
     # Profile pre-quantized INT8 models
     python scripts/profile_qai_hub.py --profile-all
-    python scripts/profile_qai_hub.py --profile yolo_seg --onnx-dir weights/yolov8n_seg/onnx
+    python scripts/profile_qai_hub.py --profile unet_base
 
     # Quantize FP32 via QAI Hub + profile
-    python scripts/profile_qai_hub.py --quantize yolo_seg --calib-samples 100
-    python scripts/profile_qai_hub.py --quantize vae_encoder unet --calib-samples 50
+    python scripts/profile_qai_hub.py --quantize unet_base unet_lcm --calib-samples 50
+    python scripts/profile_qai_hub.py --quantize vae_encoder --calib-samples 50
 
     # Check job status and results
     python scripts/profile_qai_hub.py --check-jobs
@@ -58,12 +58,13 @@ RESULTS_FILE = PROJECT_ROOT / "outputs" / "qai_hub_jobs.json"
 COCO_VAL_DIR = PROJECT_ROOT / "datasets" / "coco" / "val2017"
 
 # Model directories
+SD_V15_DIR = PROJECT_ROOT / "weights" / "sd_v1.5" / "onnx"
 MODEL_DIRS = {
-    "vae_encoder":  PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "onnx",
-    "text_encoder": PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "onnx",
-    "unet":         PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "onnx",
-    "vae_decoder":  PROJECT_ROOT / "weights" / "sd_v1.5_inpaint" / "onnx",
-    "yolo_seg":     PROJECT_ROOT / "weights" / "yolov8n_seg" / "onnx",
+    "vae_encoder":  SD_V15_DIR,
+    "text_encoder": SD_V15_DIR,
+    "unet_base":    SD_V15_DIR,
+    "unet_lcm":     SD_V15_DIR,
+    "vae_decoder":  SD_V15_DIR,
 }
 
 # Target device: Snapdragon 8 Gen 2 (SM8550)
@@ -79,21 +80,25 @@ COMPONENTS = {
         "input_specs": dict(input_ids=((1, 77), "int64")),
         "description": "CLIP ViT-L/14 Text Encoder (768-dim)",
     },
-    "unet": {
+    "unet_base": {
         "input_specs": dict(
-            sample=((1, 9, 64, 64), "float32"),
+            sample=((1, 4, 64, 64), "float32"),
             timestep=((1,), "int64"),
             encoder_hidden_states=((1, 77, 768), "float32"),
         ),
-        "description": "Inpainting UNet2D (9ch, single step)",
+        "description": "SD v1.5 Base UNet (4ch)",
+    },
+    "unet_lcm": {
+        "input_specs": dict(
+            sample=((1, 4, 64, 64), "float32"),
+            timestep=((1,), "int64"),
+            encoder_hidden_states=((1, 77, 768), "float32"),
+        ),
+        "description": "SD v1.5 + LCM-LoRA UNet (4ch)",
     },
     "vae_decoder": {
         "input_specs": dict(latent_sample=((1, 4, 64, 64), "float32")),
         "description": "VAE Decoder (latent → 512×512 image)",
-    },
-    "yolo_seg": {
-        "input_specs": dict(images=((1, 3, 640, 640), "float32")),
-        "description": "YOLOv8n-seg instance segmentation",
     },
 }
 
@@ -101,12 +106,12 @@ COMPONENTS = {
 ONNX_FILENAMES = {
     "vae_encoder":  ["vae_encoder_int8_qdq.onnx", "vae_encoder_fp32.onnx"],
     "text_encoder": ["text_encoder_fp32.onnx"],  # INT8 broken
-    "unet":         ["unet_mixed_pr.onnx", "unet_fp32.onnx"],
+    "unet_base":    ["unet_base_int8_qdq.onnx", "unet_base_fp32.onnx"],
+    "unet_lcm":     ["unet_lcm_int8_qdq.onnx", "unet_lcm_fp32.onnx"],
     "vae_decoder":  ["vae_decoder_int8_qdq.onnx", "vae_decoder_fp32.onnx"],
-    "yolo_seg":     ["yolov8n-seg_int8_qdq.onnx", "yolov8n-seg_fp32.onnx"],
 }
 
-SD_COMPONENTS = ["vae_encoder", "text_encoder", "unet", "vae_decoder"]
+SD_COMPONENTS = ["vae_encoder", "text_encoder", "unet_base", "unet_lcm", "vae_decoder"]
 ALL_COMPONENT_NAMES = list(COMPONENTS.keys())
 
 
@@ -194,7 +199,7 @@ def _prepare_model_source(component: str, onnx_path: Path):
 def _compile_options(component: str, target_runtime: str) -> str:
     """Build compile options string."""
     opts = f"--target_runtime {target_runtime} --qairt_version 2.42"
-    if component in ("text_encoder", "unet"):
+    if component in ("text_encoder", "unet_base", "unet_lcm"):
         opts += " --truncate_64bit_io"
     return opts
 
@@ -211,27 +216,29 @@ def _prepare_calibration_data(component: str, num_samples: int = 100) -> dict:
     spec = COMPONENTS[component]
     input_specs = spec["input_specs"]
 
+    # UNet base/lcm: load from real calibration NPZ (calib_unet.npz)
+    if component.startswith("unet_"):
+        npz_path = PROJECT_ROOT / "weights" / "sd_v1.5" / "calib_data" / "calib_unet.npz"
+        if not npz_path.exists():
+            raise FileNotFoundError(
+                f"calib_unet.npz not found in {npz_path.parent}. "
+                "Run: python scripts/sd/export_sd_lcm_unet.py --generate-calib-data"
+            )
+        with np.load(npz_path) as data:
+            keys = list(data.keys())
+            total = len(data[keys[0]])
+            n = min(num_samples, total)
+            calib = {}
+            for key in keys:
+                calib[key] = [data[key][i:i+1] for i in range(n)]
+            print(f"  Calibration: {n}/{total} real samples from calib_unet.npz")
+        return calib
+
     calib = {}
     for input_name, (shape, dtype_str) in input_specs.items():
         samples = []
 
-        # Image-based calibration (COCO)
-        if component == "yolo_seg" and input_name == "images":
-            image_files = sorted(COCO_VAL_DIR.glob("*.jpg"))
-            if not image_files:
-                raise FileNotFoundError(f"No COCO images in {COCO_VAL_DIR}")
-            rng = np.random.default_rng(42)
-            indices = rng.choice(len(image_files), size=min(num_samples, len(image_files)),
-                                 replace=False)
-            for idx in indices:
-                img = Image.open(image_files[idx]).convert("RGB")
-                img = img.resize((shape[3], shape[2]), Image.LANCZOS)
-                arr = np.array(img, dtype=np.float32) / 255.0
-                arr = arr.transpose(2, 0, 1)[np.newaxis]
-                samples.append(arr)
-            print(f"  Calibration: {len(samples)} COCO images [0,1] for {input_name}")
-
-        elif component == "vae_encoder" and input_name == "sample":
+        if component == "vae_encoder" and input_name == "sample":
             image_files = sorted(COCO_VAL_DIR.glob("*.jpg"))
             if not image_files:
                 raise FileNotFoundError(f"No COCO images in {COCO_VAL_DIR}")
@@ -486,15 +493,17 @@ def print_pipeline_summary(results):
     print(f"|{'-'*18}|{'-'*14}|{'-'*14}|{'-'*14}|")
     print(f"| {'TOTAL':<16} | {total_inference:>8.1f} ms | {total_first_load:>8.1f} ms |{' '*14}|")
 
-    if "unet" in results:
-        unet_ms = results["unet"]["inference_time_ms"]
-        non_unet = total_inference - unet_ms
-        print(f"\nEstimated E2E (20 steps): "
-              f"{non_unet + unet_ms * 20:.0f} ms "
-              f"({(non_unet + unet_ms * 20)/1000:.1f} s)")
-        print(f"Estimated E2E (50 steps): "
-              f"{non_unet + unet_ms * 50:.0f} ms "
-              f"({(non_unet + unet_ms * 50)/1000:.1f} s)")
+    shared_ms = sum(
+        results[c]["inference_time_ms"] for c in ("vae_encoder", "text_encoder", "vae_decoder")
+        if c in results
+    )
+    for unet_key, label in [("unet_base", "SD v1.5 Base"), ("unet_lcm", "LCM-LoRA")]:
+        if unet_key in results:
+            unet_ms = results[unet_key]["inference_time_ms"]
+            print(f"\n  {label} estimated E2E:")
+            for steps in (4, 8, 20, 50):
+                e2e = shared_ms + unet_ms * steps
+                print(f"    {steps:>2} steps: {e2e:.0f} ms ({e2e/1000:.1f} s)")
 
 
 def save_job_info(jobs):

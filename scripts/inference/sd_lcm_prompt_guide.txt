@@ -1,0 +1,139 @@
+SD/LCM Prompt Guide (Draft v1)
+================================
+
+목표
+- SD v1.5(기본)와 LCM-LoRA(가속)에서 같은 주제를 비교할 때, 프롬프트 작성 규칙을 통일한다.
+- "화풍(style) + 내용(subject) + 품질(quality) + 억제(negative)"를 분리해서 관리한다.
+
+
+1) 핵심 원칙
+-------------
+
+1. 프롬프트는 한 문장으로 길게 쓰기보다, 의미 블록을 쉼표로 나눈다.
+2. subject(무엇) -> scene/environment(어디/상황) -> style(화풍) -> quality(디테일) 순서로 배치한다.
+3. negative prompt는 모델별 공통 템플릿을 두고, 화풍별로 일부만 바꾼다.
+4. SD와 LCM 모두 "단일 prompt 문자열"을 사용한다.
+5. prompt/negative/style을 각각 text encoder에 따로 넣고 합칠 필요는 없다.
+
+
+2) 공통 템플릿
+--------------
+
+Positive template
+- {subject}, {environment}, {style tokens}, {lighting/camera}, {quality tokens}
+
+Negative template (base)
+- blurry, low quality, artifacts, watermark, text, deformed, bad anatomy
+
+예시
+- a cozy cafe street, sunset, cinematic lighting, depth of field, highly detailed, sharp focus
+
+
+3) SD v1.5 작성 가이드
+----------------------
+
+권장 특성
+- 디테일 확보를 위해 quality token 효과가 비교적 안정적이다.
+- 다양한 스타일 대응 폭이 넓다.
+
+권장 파라미터(시작점)
+- steps: 25~35
+- guidance_scale: 6.5~8.0
+- resolution: 512x512 (모바일 비교 기준)
+
+SD용 quality token 예시
+- highly detailed, sharp focus, intricate details, professional lighting
+
+SD용 negative 확장 예시
+- worst quality, low quality, blurry, bad anatomy, extra limbs, deformed, jpeg artifacts, watermark, text
+
+
+4) LCM-LoRA 작성 가이드
+-----------------------
+
+권장 특성
+- 적은 step에서 빠르게 수렴한다.
+- 같은 prompt라도 SD 대비 디테일이 단순해질 수 있으므로 quality token을 명확히 넣는다.
+
+권장 파라미터(시작점)
+- steps: 6~10
+- guidance_scale: 1.0~2.0
+- resolution: 512x512 고정 권장
+
+LCM 작성 팁
+- subject/scene를 더 구체적으로 써서 모호성을 줄인다.
+- style을 명시하지 않으면 현실 사진풍으로 쏠릴 수 있다.
+- guidance를 높이면(예: 3 이상) 깨지거나 부자연스러워질 수 있다.
+
+
+5) 화풍(style) 프리셋 제안
+--------------------------
+
+cinematic
+- suffix: cinematic lighting, film still, depth of field, highly detailed
+- negative add: oversaturated
+
+anime
+- suffix: anime style, clean lineart, vibrant colors, masterpiece
+- negative add: realistic, photo
+
+watercolor
+- suffix: watercolor painting, soft washes, delicate brush texture, paper grain, artistic
+- negative add: hard edges, photo
+
+oil_painting
+- suffix: oil painting, textured brushstrokes, artistic composition, masterpiece
+- negative add: photo
+
+pixel_art
+- suffix: pixel art, 8-bit style, retro game palette
+- negative add: smooth shading, photo
+
+
+6) 운영 방식(권장)
+------------------
+
+1. 콘텐츠팀/기획이 subject + environment만 관리
+2. 엔지니어가 style preset과 negative preset 관리
+3. 실험 시 seed 고정 후 SD/LCM만 바꿔 비교
+4. 결과는 (SD, LCM, side-by-side) 3종 저장
+
+
+7) 스크립트 매핑(text2img_sd_lcm_compare.py 기준)
+------------------------------------------------
+
+- --prompt: subject + environment의 베이스 문장
+- --style: 위 스타일 프리셋 키(cinematic/anime/watercolor/oil_painting/pixel_art/none)
+- script 내부에서 최종 prompt = prompt + style suffix
+- script 내부에서 negative_prompt = style별 negative
+
+즉, 입력은 아래 2개를 중심으로 주면 된다.
+- base prompt
+- style key
+
+
+8) 바로 쓰는 예시
+-----------------
+
+예시 A (cinematic)
+- prompt: a traveler walking through a rainy neon alley at night
+- style: cinematic
+
+예시 B (watercolor)
+- prompt: a small village by a river under spring blossoms
+- style: watercolor
+
+예시 C (product)
+- prompt: a luxury wristwatch on a marble table, close-up shot
+- style: none
+
+
+9) 품질 이슈 발생 시 체크리스트
+------------------------------
+
+1. LCM guidance_scale이 2.0 초과인지 확인
+2. LCM steps가 4 이하로 너무 낮지 않은지 확인
+3. style token이 prompt에 빠지지 않았는지 확인
+4. negative prompt에 watermark/text/artifacts가 포함되었는지 확인
+5. SD/LCM 비교 시 seed/해상도/프롬프트가 동일한지 확인
+

@@ -8,11 +8,11 @@ Quantizes one component at a time from pre-exported FP32 ONNX + pre-generated NP
 
 Usage:
     # Full INT8 QDQ (all ops)
-    python3.13 scripts/sd/quant_runpod.py --component vae_encoder --dir /workspace/weights/sd_v1.5_inpaint/onnx
-    python3.13 scripts/sd/quant_runpod.py --component unet --dir /workspace/weights/sd_v1.5_inpaint/onnx
+    python3.13 scripts/sd/quant_runpod.py --component vae_encoder --dir /workspace/weights/sd_v1.5/onnx
+    python3.13 scripts/sd/quant_runpod.py --component unet_base --dir /workspace/weights/sd_v1.5/onnx
 
     # Mixed precision (Conv/MatMul/Gemm INT8, LayerNorm/Softmax FP32)
-    python3.13 scripts/sd/quant_runpod.py --component unet --dir /workspace/weights/sd_v1.5_inpaint/onnx \
+    python3.13 scripts/sd/quant_runpod.py --component unet_lcm --dir /workspace/weights/sd_v1.5/onnx \
         --op-types Conv MatMul Gemm --output-suffix mixed_pr
 """
 
@@ -85,6 +85,7 @@ def quantize_component(
     calibration_streaming_chunk: int = 1,
     op_types_to_quantize: list[str] | None = None,
     output_suffix: str = "int8_qdq",
+    calib_dir: Path | None = None,
 ):
     from onnxruntime.quantization import (
         quantize_static, QuantFormat, QuantType, CalibrationMethod,
@@ -93,7 +94,10 @@ def quantize_component(
 
     fp32_path = work_dir / f"{component}_fp32.onnx"
     int8_path = work_dir / f"{component}_{output_suffix}.onnx"
-    npz_path = work_dir / f"calib_{component}.npz"
+    # UNet base/lcm share the same calibration data (calib_unet.npz)
+    calib_name = "unet" if component.startswith("unet_") else component
+    calib_search = calib_dir or work_dir
+    npz_path = calib_search / f"calib_{calib_name}.npz"
 
     if not fp32_path.exists():
         print(f"ERROR: {fp32_path} not found")
@@ -218,10 +222,13 @@ def quantize_component(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Lightweight INT8 QDQ quantization (RunPod)")
     parser.add_argument("--component", required=True,
-                        choices=["vae_encoder", "text_encoder", "vae_decoder", "unet"],
+                        choices=["vae_encoder", "text_encoder", "vae_decoder",
+                                 "unet_base", "unet_lcm"],
                         help="Component to quantize")
     parser.add_argument("--dir", required=True, type=str,
-                        help="Directory with FP32 ONNX + calib NPZ files")
+                        help="Directory with FP32 ONNX files")
+    parser.add_argument("--calib-dir", type=str, default=None,
+                        help="Directory with calib NPZ files (default: same as --dir)")
     parser.add_argument("--calibration-method", choices=["minmax", "percentile"], default="minmax",
                         help="Calibration method (default: minmax)")
     parser.add_argument("--calibration-samples", type=int, default=8,
@@ -249,5 +256,6 @@ if __name__ == "__main__":
         calibration_streaming_chunk=args.calibration_streaming_chunk,
         op_types_to_quantize=args.op_types,
         output_suffix=args.output_suffix,
+        calib_dir=Path(args.calib_dir) if args.calib_dir else None,
     )
 
