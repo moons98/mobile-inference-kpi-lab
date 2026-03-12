@@ -7,10 +7,13 @@ Does NOT require: torch, diffusers, transformers
 Quantizes one component at a time from pre-exported FP32 ONNX + pre-generated NPZ.
 
 Usage:
+    # Full INT8 QDQ (all ops)
     python3.13 scripts/sd/quant_runpod.py --component vae_encoder --dir /workspace/weights/sd_v1.5_inpaint/onnx
-    python3.13 scripts/sd/quant_runpod.py --component text_encoder --dir /workspace/weights/sd_v1.5_inpaint/onnx
-    python3.13 scripts/sd/quant_runpod.py --component vae_decoder --dir /workspace/weights/sd_v1.5_inpaint/onnx
     python3.13 scripts/sd/quant_runpod.py --component unet --dir /workspace/weights/sd_v1.5_inpaint/onnx
+
+    # Mixed precision (Conv/MatMul/Gemm INT8, LayerNorm/Softmax FP32)
+    python3.13 scripts/sd/quant_runpod.py --component unet --dir /workspace/weights/sd_v1.5_inpaint/onnx \
+        --op-types Conv MatMul Gemm --output-suffix mixed_pr
 """
 
 import argparse
@@ -80,6 +83,8 @@ def quantize_component(
     calibration_samples: int = 8,
     calibration_method: str = "minmax",
     calibration_streaming_chunk: int = 1,
+    op_types_to_quantize: list[str] | None = None,
+    output_suffix: str = "int8_qdq",
 ):
     from onnxruntime.quantization import (
         quantize_static, QuantFormat, QuantType, CalibrationMethod,
@@ -87,7 +92,7 @@ def quantize_component(
     from onnxruntime.quantization.calibrate import CalibrationDataReader
 
     fp32_path = work_dir / f"{component}_fp32.onnx"
-    int8_path = work_dir / f"{component}_int8_qdq.onnx"
+    int8_path = work_dir / f"{component}_{output_suffix}.onnx"
     npz_path = work_dir / f"calib_{component}.npz"
 
     if not fp32_path.exists():
@@ -173,7 +178,7 @@ def quantize_component(
     else:
         extra_options["num_bins"] = 2048
         extra_options["percentile"] = 99.999
-    quantize_static(
+    quant_kwargs = dict(
         model_input=str(input_path),
         model_output=str(int8_path),
         calibration_data_reader=reader,
@@ -185,6 +190,10 @@ def quantize_component(
         use_external_data_format=has_external,
         extra_options=extra_options,
     )
+    if op_types_to_quantize:
+        quant_kwargs["op_types_to_quantize"] = op_types_to_quantize
+        print(f"  Op types to quantize: {op_types_to_quantize}")
+    quantize_static(**quant_kwargs)
 
     # Cleanup
     del reader
@@ -219,11 +228,16 @@ if __name__ == "__main__":
                         help="Number of calibration samples to use (default: 8)")
     parser.add_argument("--calibration-streaming-chunk", type=int, default=2,
                         help="Histogram calibration streaming chunk size for percentile (default: 2)")
+    parser.add_argument("--op-types", nargs="+", default=None,
+                        help="Op types to quantize (e.g. Conv MatMul Gemm). Default: all ops")
+    parser.add_argument("--output-suffix", default="int8_qdq",
+                        help="Output filename suffix (default: int8_qdq -> {component}_int8_qdq.onnx)")
     args = parser.parse_args()
 
     work_dir = Path(args.dir)
+    label = args.output_suffix if args.op_types else "INT8 QDQ"
     print("=" * 60)
-    print(f"INT8 QDQ Quantization: {args.component}")
+    print(f"Quantization ({label}): {args.component}")
     print(f"Working dir: {work_dir}")
     print("=" * 60)
 
@@ -233,5 +247,7 @@ if __name__ == "__main__":
         calibration_samples=args.calibration_samples,
         calibration_method=args.calibration_method,
         calibration_streaming_chunk=args.calibration_streaming_chunk,
+        op_types_to_quantize=args.op_types,
+        output_suffix=args.output_suffix,
     )
 

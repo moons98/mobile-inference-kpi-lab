@@ -16,9 +16,9 @@ Metrics:
 - PSNR: signal-to-noise (higher = better)
 
 Usage:
-    python scripts/sd/eval_sd_inpaint_quality.py
-    python scripts/sd/eval_sd_inpaint_quality.py --components vae_encoder text_encoder
-    python scripts/sd/eval_sd_inpaint_quality.py --num-samples 8
+    python scripts/sd/quant_report_sd.py
+    python scripts/sd/quant_report_sd.py --components vae_encoder text_encoder
+    python scripts/sd/quant_report_sd.py --num-samples 8
 """
 
 import argparse
@@ -39,6 +39,7 @@ ALL_COMPONENTS = ["vae_encoder", "text_encoder", "vae_decoder", "unet"]
 # INT8 variant suffixes to scan for each component
 INT8_VARIANTS = [
     ("int8_qdq", "Custom QDQ"),
+    ("mixed_pr", "Mixed Precision"),
     ("qai_int8", "QAI Hub W8A8"),
 ]
 

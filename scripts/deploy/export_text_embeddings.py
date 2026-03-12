@@ -10,7 +10,7 @@ saving ~237MB of model storage and one ORT session.
 Output: weights/deploy/text_embeddings.npy  (shape: [1, 77, 768], float32, ~236KB)
 
 Usage:
-    python scripts/sd/export_text_embeddings.py
+    python scripts/deploy/export_text_embeddings.py
 """
 
 import time

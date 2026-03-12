@@ -101,7 +101,7 @@ COMPONENTS = {
 ONNX_FILENAMES = {
     "vae_encoder":  ["vae_encoder_int8_qdq.onnx", "vae_encoder_fp32.onnx"],
     "text_encoder": ["text_encoder_fp32.onnx"],  # INT8 broken
-    "unet":         ["unet_int8_qdq.onnx", "unet_fp32.onnx"],
+    "unet":         ["unet_mixed_pr.onnx", "unet_fp32.onnx"],
     "vae_decoder":  ["vae_decoder_int8_qdq.onnx", "vae_decoder_fp32.onnx"],
     "yolo_seg":     ["yolov8n-seg_int8_qdq.onnx", "yolov8n-seg_fp32.onnx"],
 }

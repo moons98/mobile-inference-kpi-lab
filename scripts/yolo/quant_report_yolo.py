@@ -19,10 +19,10 @@ Methodology:
 3. Optionally run ultralytics val() for official COCO mAP
 
 Usage:
-    python scripts/yolo/eval_yolo_seg_quality.py --compare --num-images 200
-    python scripts/yolo/eval_yolo_seg_quality.py --coco-val
-    python scripts/yolo/eval_yolo_seg_quality.py --compare --coco-val --num-images 200
-    python scripts/yolo/eval_yolo_seg_quality.py --status
+    python scripts/yolo/quant_report_yolo.py --compare --num-images 200
+    python scripts/yolo/quant_report_yolo.py --coco-val
+    python scripts/yolo/quant_report_yolo.py --compare --coco-val --num-images 200
+    python scripts/yolo/quant_report_yolo.py --status
 
 COCO val2017 images and annotations are auto-downloaded if not present.
 """
@@ -1078,10 +1078,10 @@ def main():
     if not args.compare and not args.coco_val:
         parser.print_help()
         print("\nExamples:")
-        print("  python scripts/yolo/eval_yolo_seg_quality.py --compare --num-images 200")
-        print("  python scripts/yolo/eval_yolo_seg_quality.py --coco-val")
-        print("  python scripts/yolo/eval_yolo_seg_quality.py --compare --coco-val --num-images 200")
-        print("  python scripts/yolo/eval_yolo_seg_quality.py --status")
+        print("  python scripts/yolo/quant_report_yolo.py --compare --num-images 200")
+        print("  python scripts/yolo/quant_report_yolo.py --coco-val")
+        print("  python scripts/yolo/quant_report_yolo.py --compare --coco-val --num-images 200")
+        print("  python scripts/yolo/quant_report_yolo.py --status")
         return
 
     # Auto-download COCO data as needed

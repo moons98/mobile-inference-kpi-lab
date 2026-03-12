@@ -6,8 +6,8 @@ These files are required by the on-device Tokenizer.kt for SD v1.5 inpainting.
 Output goes to android/app/src/main/assets/ for APK bundling.
 
 Usage:
-    python scripts/sd/extract_tokenizer_assets.py
-    python scripts/sd/extract_tokenizer_assets.py --output /path/to/output
+    python scripts/deploy/extract_tokenizer_assets.py
+    python scripts/deploy/extract_tokenizer_assets.py --output /path/to/output
 """
 
 import argparse

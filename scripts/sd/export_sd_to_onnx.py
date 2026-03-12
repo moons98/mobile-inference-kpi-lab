@@ -1094,7 +1094,7 @@ def main():
     print(f"Output directory: {OUTPUT_DIR}")
     print("\nNext steps:")
     print("  - Run eval_sd_quality.py to compare FP32 vs INT8 QDQ image quality")
-    print("  - Use analyze_ops.py to check NPU compatibility of each component")
+    print("  - Use analyze_qnn_compat.py to check NPU compatibility of each component")
     print("  - FP16 on-device: use FP32 model with useNpuFp16 QNN EP option")
 
 
