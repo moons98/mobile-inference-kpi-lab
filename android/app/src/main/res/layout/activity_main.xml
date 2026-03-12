@@ -15,48 +15,13 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="AI Eraser KPI Lab"
+            android:text="Text-to-Image KPI Lab"
             android:textSize="24sp"
             android:textStyle="bold"
             android:textColor="@color/text_primary"
             android:layout_marginBottom="16dp" />
 
-        <!-- Image Selection -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="12dp">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnSelectImage"
-                android:layout_width="0dp"
-                android:layout_height="48dp"
-                android:layout_weight="1"
-                android:text="Gallery"
-                android:textSize="13sp"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_marginEnd="4dp"
-                app:cornerRadius="8dp"
-                app:icon="@android:drawable/ic_menu_gallery"
-                app:iconGravity="textStart" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnBuiltinImage"
-                android:layout_width="0dp"
-                android:layout_height="48dp"
-                android:layout_weight="1"
-                android:text="Built-in"
-                android:textSize="13sp"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_marginStart="4dp"
-                app:cornerRadius="8dp"
-                app:icon="@android:drawable/ic_menu_slideshow"
-                app:iconGravity="textStart" />
-
-        </LinearLayout>
-
-        <!-- Before/After Image Card -->
+        <!-- Generated Image Card -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/cardImagePreview"
             android:layout_width="match_parent"
@@ -69,62 +34,27 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
+                android:orientation="vertical"
                 android:padding="8dp">
 
-                <LinearLayout
-                    android:layout_width="0dp"
+                <TextView
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:layout_marginEnd="4dp">
+                    android:text="Generated"
+                    android:textSize="11sp"
+                    android:textColor="@android:color/darker_gray"
+                    android:layout_marginBottom="2dp" />
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Before"
-                        android:textSize="11sp"
-                        android:textColor="@android:color/darker_gray"
-                        android:layout_marginBottom="2dp" />
-
-                    <ImageView
-                        android:id="@+id/imgBefore"
-                        android:layout_width="match_parent"
-                        android:layout_height="160dp"
-                        android:scaleType="centerCrop"
-                        android:background="#1A000000"
-                        android:foreground="?attr/selectableItemBackground"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:contentDescription="Before (tap to expand)" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:layout_marginStart="4dp">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="After (Inpainted)"
-                        android:textSize="11sp"
-                        android:textColor="@android:color/darker_gray"
-                        android:layout_marginBottom="2dp" />
-
-                    <ImageView
-                        android:id="@+id/imgAfter"
-                        android:layout_width="match_parent"
-                        android:layout_height="160dp"
-                        android:scaleType="centerCrop"
-                        android:background="#1A000000"
-                        android:foreground="?attr/selectableItemBackground"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:contentDescription="After (tap to expand)" />
-                </LinearLayout>
+                <ImageView
+                    android:id="@+id/imgGenerated"
+                    android:layout_width="match_parent"
+                    android:layout_height="256dp"
+                    android:scaleType="centerCrop"
+                    android:background="#1A000000"
+                    android:foreground="?attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="Generated (tap to expand)" />
 
             </LinearLayout>
 
@@ -224,6 +154,67 @@
                 android:orientation="vertical"
                 android:padding="16dp">
 
+                <!-- Prompt Input -->
+                <com.google.android.material.textfield.TextInputLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:hint="Prompt"
+                    app:boxBackgroundMode="outline"
+                    app:boxCornerRadiusBottomEnd="8dp"
+                    app:boxCornerRadiusBottomStart="8dp"
+                    app:boxCornerRadiusTopEnd="8dp"
+                    app:boxCornerRadiusTopStart="8dp">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/editPrompt"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="a photo of a cat sitting on a windowsill"
+                        android:textSize="13sp"
+                        android:inputType="textMultiLine"
+                        android:minLines="2"
+                        android:maxLines="4" />
+
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <!-- Style Preset -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Style Preset"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="4dp" />
+
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:scrollbars="none"
+                    android:layout_marginBottom="4dp">
+
+                    <com.google.android.material.chip.ChipGroup
+                        android:id="@+id/chipGroupStyle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        app:singleSelection="true"
+                        app:selectionRequired="true"
+                        app:chipSpacingHorizontal="4dp" />
+
+                </HorizontalScrollView>
+
+                <TextView
+                    android:id="@+id/tvCombinedPrompt"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textSize="11sp"
+                    android:textColor="@color/text_secondary"
+                    android:fontFamily="monospace"
+                    android:maxLines="3"
+                    android:ellipsize="end"
+                    android:layout_marginBottom="12dp"
+                    android:visibility="gone" />
+
                 <!-- Phase -->
                 <TextView
                     android:layout_width="wrap_content"
@@ -244,110 +235,49 @@
                         android:id="@+id/radioPhase1"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Phase1: Single Erase (5 trials, cooldown)"
+                        android:text="Phase1: Single Generate (5 trials, cooldown)"
                         android:checked="true" />
 
                     <RadioButton
                         android:id="@+id/radioPhase2"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Phase2: Sustained Erase (10 trials)" />
-
-                    <RadioButton
-                        android:id="@+id/radioPhaseYolo"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="YOLO-seg Only (20 trials)" />
+                        android:text="Phase2: Sustained Generate (10 trials)" />
 
                 </RadioGroup>
 
-                <!-- YOLO-seg Options (visible only in YOLO_SEG_ONLY phase) -->
-                <LinearLayout
-                    android:id="@+id/sectionYoloOptions"
+                <!-- Model Variant -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Model Variant"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/radioGroupVariant"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:visibility="gone">
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="12dp">
 
-                    <TextView
-                        android:layout_width="wrap_content"
+                    <RadioButton
+                        android:id="@+id/radioVariantSd15"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:text="YOLO Backend"
-                        android:textSize="14sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginBottom="8dp" />
+                        android:layout_weight="1"
+                        android:text="SD v1.5"
+                        android:checked="true" />
 
-                    <RadioGroup
-                        android:id="@+id/radioGroupYoloEp"
-                        android:layout_width="match_parent"
+                    <RadioButton
+                        android:id="@+id/radioVariantLcm"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginBottom="12dp">
+                        android:layout_weight="1"
+                        android:text="LCM-LoRA" />
 
-                        <RadioButton
-                            android:id="@+id/radioYoloEpNpu"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="NPU"
-                            android:checked="true" />
-
-                        <RadioButton
-                            android:id="@+id/radioYoloEpGpu"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="GPU" />
-
-                        <RadioButton
-                            android:id="@+id/radioYoloEpCpu"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="CPU" />
-
-                    </RadioGroup>
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="YOLO Precision"
-                        android:textSize="14sp"
-                        android:textColor="@color/text_secondary"
-                        android:layout_marginBottom="8dp" />
-
-                    <RadioGroup
-                        android:id="@+id/radioGroupYoloPrec"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:layout_marginBottom="12dp">
-
-                        <RadioButton
-                            android:id="@+id/radioYoloPrecFp32"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="FP32"
-                            android:checked="true" />
-
-                        <RadioButton
-                            android:id="@+id/radioYoloPrecInt8"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="INT8" />
-
-                    </RadioGroup>
-
-                </LinearLayout>
-
-                <!-- SD Options (hidden in YOLO_SEG_ONLY phase) -->
-                <LinearLayout
-                    android:id="@+id/sectionSdOptions"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical">
+                </RadioGroup>
 
                 <!-- SD Precision (per-component) -->
                 <TextView
@@ -408,21 +338,6 @@
                     android:layout_marginBottom="12dp">
 
                     <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_columnWeight="1"
-                        android:text="VAE Enc"
-                        android:textSize="12sp"
-                        android:gravity="center_vertical"
-                        android:layout_gravity="center_vertical" />
-                    <Spinner
-                        android:id="@+id/spinnerPrecVaeEnc"
-                        android:layout_width="0dp"
-                        android:layout_height="36dp"
-                        android:layout_columnWeight="1"
-                        android:spinnerMode="dropdown" />
-
-                    <TextView
                         android:id="@+id/tvLabelTextEnc"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
@@ -470,20 +385,11 @@
 
                 </GridLayout>
 
-                <CheckBox
-                    android:id="@+id/checkSkipTextEncode"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Skip Text Encoder (use cached embeddings)"
-                    android:textSize="12sp"
-                    android:checked="true"
-                    android:layout_marginBottom="8dp" />
-
                 <!-- SD Backend (Execution Provider) -->
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="SD Backend"
+                    android:text="Backend"
                     android:textSize="14sp"
                     android:textColor="@color/text_secondary"
                     android:layout_marginBottom="8dp" />
@@ -536,11 +442,25 @@
                     android:layout_marginBottom="12dp">
 
                     <RadioButton
-                        android:id="@+id/radioSteps10"
+                        android:id="@+id/radioSteps2"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="10" />
+                        android:text="2" />
+
+                    <RadioButton
+                        android:id="@+id/radioSteps4"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="4" />
+
+                    <RadioButton
+                        android:id="@+id/radioSteps8"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="8" />
 
                     <RadioButton
                         android:id="@+id/radioSteps20"
@@ -565,97 +485,6 @@
                         android:text="50" />
 
                 </RadioGroup>
-
-                <!-- Strength -->
-                <TextView
-                    android:id="@+id/tvStrengthLabel"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Strength: 0.7"
-                    android:textSize="14sp"
-                    android:textColor="@color/text_secondary"
-                    android:layout_marginBottom="8dp" />
-
-                <RadioGroup
-                    android:id="@+id/radioGroupStrength"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="12dp">
-
-                    <RadioButton
-                        android:id="@+id/radioStr05"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="0.5" />
-
-                    <RadioButton
-                        android:id="@+id/radioStr07"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="0.7"
-                        android:checked="true" />
-
-                    <RadioButton
-                        android:id="@+id/radioStr08"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="0.8" />
-
-                    <RadioButton
-                        android:id="@+id/radioStr10"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="1.0" />
-
-                </RadioGroup>
-
-                <!-- ROI Size -->
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="ROI Size"
-                    android:textSize="14sp"
-                    android:textColor="@color/text_secondary"
-                    android:layout_marginBottom="8dp" />
-
-                <RadioGroup
-                    android:id="@+id/radioGroupRoiSize"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="12dp">
-
-                    <RadioButton
-                        android:id="@+id/radioRoiSmall"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Small" />
-
-                    <RadioButton
-                        android:id="@+id/radioRoiMedium"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Medium"
-                        android:checked="true" />
-
-                    <RadioButton
-                        android:id="@+id/radioRoiLarge"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Large" />
-
-                </RadioGroup>
-
-                </LinearLayout>
-                <!-- end sectionSdOptions -->
 
                 <!-- Device Model Manager -->
                 <com.google.android.material.button.MaterialButton
@@ -800,7 +629,7 @@
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
                     android:orientation="horizontal" android:layout_marginBottom="8dp">
                     <TextView android:layout_width="0dp" android:layout_height="wrap_content"
-                        android:layout_weight="1" android:text="Inpaint E2E" android:textColor="@color/text_secondary" />
+                        android:layout_weight="1" android:text="Generate E2E" android:textColor="@color/text_secondary" />
                     <TextView android:id="@+id/tvE2e" android:layout_width="0dp" android:layout_height="wrap_content"
                         android:layout_weight="1" android:text="-- ms" android:textColor="@color/text_primary" android:textAlignment="textEnd" />
                 </LinearLayout>

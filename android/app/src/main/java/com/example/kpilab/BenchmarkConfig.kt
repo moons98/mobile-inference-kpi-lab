@@ -1,34 +1,31 @@
 package com.example.kpilab
 
 /**
- * Benchmark configuration for AI Eraser pipeline.
- * SD v1.5 Inpainting (5 sessions: YOLO-seg + VAE Enc + Text Enc + Inpaint UNet + VAE Dec)
+ * Benchmark configuration for text-to-image generation pipeline.
+ * SD v1.5 (baseline) vs LCM-LoRA (optimized few-step generation).
+ * Sessions: Text Encoder + UNet + VAE Decoder.
  */
 data class BenchmarkConfig(
-    // SD Inpainting — execution provider (applied to all 4 SD sessions)
+    // Model variant
+    val modelVariant: ModelVariant = ModelVariant.SD_V15,
+
+    // Execution provider (applied to all SD sessions)
     val sdBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
 
-    // SD Inpainting — per-component model precision
+    // Per-component model precision
     val sdPrecisionMap: Map<SdComponent, SdPrecision> = SdComponent.values().associateWith { SdPrecision.FP16 },
 
-    // YOLO-seg — execution provider (독립 설정)
-    val yoloBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
-
-    // YOLO-seg — model precision
-    val yoloPrecision: YoloPrecision = YoloPrecision.FP32,
-
     // Benchmark phase
-    val phase: BenchmarkPhase = BenchmarkPhase.SINGLE_ERASE,
+    val phase: BenchmarkPhase = BenchmarkPhase.SINGLE_GENERATE,
 
-    // SD pipeline parameters
+    // UNet denoising steps
     val steps: Int = 20,
-    val strength: Float = 0.7f,
 
-    // ROI size category (테스트 데이터 선택)
-    val roiSize: RoiSize = RoiSize.MEDIUM,
+    // CFG guidance scale (SD v1.5: 7.5, LCM-LoRA: 1.0)
+    val guidanceScale: Float = 7.5f,
 
-    // ROI padding ratio (bbox 대비)
-    val roiPaddingRatio: Float = 1.5f,
+    // Text prompt for generation
+    val prompt: String = "a photo of a cat sitting on a windowsill",
 
     // Phase 1: trials per config / Phase 2: total consecutive trials
     val trials: Int = 5,
@@ -38,9 +35,6 @@ data class BenchmarkConfig(
 
     // NPU FP16 precision override
     val useNpuFp16: Boolean = true,
-
-    // Skip text encoder — use precomputed text_embeddings.npy instead
-    val skipTextEncode: Boolean = true,
 
     // HTP performance mode
     val htpPerformanceMode: String = "burst",
@@ -61,29 +55,27 @@ data class BenchmarkConfig(
     /** Whether all components use the same precision */
     val isMixedPrecision: Boolean get() = sdPrecisionMap.values.toSet().size > 1
 
-    /** Inpainting resolution — 512 fixed for NPU */
+    /** Generation resolution — 512 fixed */
     val resolution: Int get() = 512
 
-    /** Actual UNet steps = total_steps × strength */
-    val actualSteps: Int get() = (steps * strength).toInt()
+    /** Actual UNet steps */
+    val actualSteps: Int get() = steps
 
     /** Latent space size = resolution / 8 */
     val latentSize: Int get() = resolution / 8
 
-    /** Fixed prompt for eraser */
-    val prompt: String get() = "remove the object and fill the background naturally"
-
     /** Total trials for this phase */
     val totalTrials: Int
         get() = when (phase) {
-            BenchmarkPhase.SINGLE_ERASE -> trials
-            BenchmarkPhase.SUSTAINED_ERASE -> trials
-            BenchmarkPhase.YOLO_SEG_ONLY -> 20  // YOLO-seg 별도 측정 고정 20회
+            BenchmarkPhase.SINGLE_GENERATE -> trials
+            BenchmarkPhase.SUSTAINED_GENERATE -> trials
         }
 
-    /** YOLO-seg model filename */
-    val yoloModelFilename: String
-        get() = "yolov8n-seg${yoloPrecision.suffix}.onnx"
+    /** UNet model filename (variant-aware) */
+    fun unetFilename(): String {
+        val prec = sdPrecisionFor(SdComponent.UNET)
+        return SdComponent.UNET.filename(prec, modelVariant.unetPrefix)
+    }
 
     /** Generate session ID for CSV/logging */
     fun generateSessionId(): String {
@@ -94,16 +86,19 @@ data class BenchmarkConfig(
             ExecutionProvider.CPU -> "cpu"
         }
         val phaseStr = when (phase) {
-            BenchmarkPhase.SINGLE_ERASE -> "single"
-            BenchmarkPhase.SUSTAINED_ERASE -> "sustained"
-            BenchmarkPhase.YOLO_SEG_ONLY -> "yolo"
+            BenchmarkPhase.SINGLE_GENERATE -> "single"
+            BenchmarkPhase.SUSTAINED_GENERATE -> "sustained"
+        }
+        val variantStr = when (modelVariant) {
+            ModelVariant.SD_V15 -> "sd15"
+            ModelVariant.LCM_LORA -> "lcm"
         }
         val precStr = if (isMixedPrecision) {
             "mixed_" + sdPrecisionMap.entries.joinToString("_") { "${it.key.baseName[0]}${it.value.dirSuffix}" }
         } else {
             sdPrecision.dirSuffix
         }
-        return "eraser_${precStr}_${sdEp}_s${steps}_str${(strength * 10).toInt()}_${roiSize.name.lowercase()}_${phaseStr}_${timestamp}"
+        return "txt2img_${variantStr}_${precStr}_${sdEp}_s${steps}_${phaseStr}_${timestamp}"
     }
 
     override fun toString(): String {
@@ -112,9 +107,8 @@ data class BenchmarkConfig(
         } else {
             sdPrecision.displayName
         }
-        return "EraseConfig(sdEp=${sdBackend.displayName}, sdPrec=$precStr, " +
-                "yoloEp=${yoloBackend.displayName}, yoloPrec=${yoloPrecision.displayName}, " +
-                "steps=$steps, strength=$strength, roi=${roiSize.displayName}, " +
+        return "Txt2ImgConfig(variant=${modelVariant.displayName}, sdEp=${sdBackend.displayName}, " +
+                "sdPrec=$precStr, steps=$steps, guidance=$guidanceScale, " +
                 "phase=${phase.displayName})"
     }
 
@@ -123,56 +117,44 @@ data class BenchmarkConfig(
         fun uniformPrecision(precision: SdPrecision): Map<SdComponent, SdPrecision> =
             SdComponent.values().associateWith { precision }
 
-        /** Phase 1: Single Erase Profiling */
-        fun phase1(
+        /** Phase 1: Single Generate Profiling */
+        fun singleGenerate(
+            modelVariant: ModelVariant = ModelVariant.SD_V15,
             sdBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
             sdPrecisionMap: Map<SdComponent, SdPrecision> = uniformPrecision(SdPrecision.FP16),
-            yoloBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
-            yoloPrecision: YoloPrecision = YoloPrecision.FP32,
             steps: Int = 20,
-            strength: Float = 0.7f,
-            roiSize: RoiSize = RoiSize.MEDIUM
+            guidanceScale: Float = 7.5f,
+            prompt: String = "a photo of a cat sitting on a windowsill"
         ) = BenchmarkConfig(
+            modelVariant = modelVariant,
             sdBackend = sdBackend,
             sdPrecisionMap = sdPrecisionMap,
-            yoloBackend = yoloBackend,
-            yoloPrecision = yoloPrecision,
-            phase = BenchmarkPhase.SINGLE_ERASE,
+            phase = BenchmarkPhase.SINGLE_GENERATE,
             steps = steps,
-            strength = strength,
-            roiSize = roiSize,
+            guidanceScale = guidanceScale,
+            prompt = prompt,
             trials = 5,
             warmupTrials = 2,
             htpPerformanceMode = "burst"
         )
 
-        /** Phase 2: Sustained Erase Test */
-        fun phase2(
+        /** Phase 2: Sustained Generate Test */
+        fun sustainedGenerate(
+            modelVariant: ModelVariant = ModelVariant.SD_V15,
             sdBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
             sdPrecisionMap: Map<SdComponent, SdPrecision> = uniformPrecision(SdPrecision.FP16),
             steps: Int = 20,
-            strength: Float = 0.7f,
-            roiSize: RoiSize = RoiSize.MEDIUM
+            guidanceScale: Float = 7.5f
         ) = BenchmarkConfig(
+            modelVariant = modelVariant,
             sdBackend = sdBackend,
             sdPrecisionMap = sdPrecisionMap,
-            phase = BenchmarkPhase.SUSTAINED_ERASE,
+            phase = BenchmarkPhase.SUSTAINED_GENERATE,
             steps = steps,
-            strength = strength,
-            roiSize = roiSize,
+            guidanceScale = guidanceScale,
             trials = 10,
             warmupTrials = 2,
             htpPerformanceMode = "sustained_high"
-        )
-
-        /** YOLO-seg only profiling */
-        fun yoloOnly(
-            yoloBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
-            yoloPrecision: YoloPrecision = YoloPrecision.FP32
-        ) = BenchmarkConfig(
-            yoloBackend = yoloBackend,
-            yoloPrecision = yoloPrecision,
-            phase = BenchmarkPhase.YOLO_SEG_ONLY
         )
     }
 }

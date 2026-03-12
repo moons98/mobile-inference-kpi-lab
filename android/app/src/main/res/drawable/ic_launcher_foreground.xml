@@ -5,46 +5,60 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Image frame (before) — left side -->
-    <path android:strokeColor="#80FFFFFF" android:strokeWidth="2"
-        android:pathData="M28,36 L50,36 L50,68 L28,68 Z"
+    <!-- Small image thumbnail (SD output) — top-left area -->
+    <path android:strokeColor="#80FFFFFF" android:strokeWidth="1.8"
+        android:pathData="M26,34 L46,34 L46,54 L26,54 Z"
         android:fillColor="#00000000"
         android:strokeLineJoin="round" />
+    <!-- Mountains in thumbnail -->
+    <path android:fillColor="#64B5F6"
+        android:pathData="M26,50 L32,42 L38,48 L42,40 L46,50 Z" />
+    <!-- Sun in thumbnail -->
+    <path android:fillColor="#FFD54F"
+        android:pathData="M40,38 m-2.5,0 a2.5,2.5 0,1 1,5 0 a2.5,2.5 0,1 1,-5 0" />
 
-    <!-- Mountain/landscape inside frame (simple photo icon) -->
-    <path android:fillColor="#80FFFFFF"
-        android:pathData="M28,60 L36,50 L42,56 L46,48 L50,60 Z" />
-
-    <!-- Sun in photo -->
-    <path android:fillColor="#80FFFFFF"
-        android:pathData="M44,42 m-3,0 a3,3 0,1 1,6 0 a3,3 0,1 1,-6 0" />
-
-    <!-- Arrow (transformation) -->
-    <path android:strokeColor="#00E5FF" android:strokeWidth="2.5"
-        android:pathData="M54,52 L62,52"
-        android:fillColor="#00000000"
-        android:strokeLineCap="round" />
+    <!-- Bar chart (KPI metrics) — bottom-right area -->
+    <!-- Bar 1 (short) -->
+    <path android:fillColor="#00E676"
+        android:pathData="M58,64 L63,64 L63,56 L58,56 Z" />
+    <!-- Bar 2 (tall) -->
     <path android:fillColor="#00E5FF"
-        android:pathData="M60,48 L66,52 L60,56 Z" />
-
-    <!-- Paintbrush (style transfer) — right side -->
-    <path android:strokeColor="#FFFFFF" android:strokeWidth="2.5"
-        android:pathData="M70,38 L78,62"
+        android:pathData="M65,64 L70,64 L70,46 L65,46 Z" />
+    <!-- Bar 3 (medium) -->
+    <path android:fillColor="#7C4DFF"
+        android:pathData="M72,64 L77,64 L77,52 L72,52 Z" />
+    <!-- Chart baseline -->
+    <path android:strokeColor="#60FFFFFF" android:strokeWidth="1.2"
+        android:pathData="M56,64 L80,64"
         android:fillColor="#00000000"
         android:strokeLineCap="round" />
 
-    <!-- Brush tip -->
-    <path android:fillColor="#FF6D00"
-        android:pathData="M76,58 L80,66 L74,66 Z" />
+    <!-- Neural network nodes — connecting image to chart -->
+    <!-- Node 1 -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M52,40 m-2.5,0 a2.5,2.5 0,1 1,5 0 a2.5,2.5 0,1 1,-5 0" />
+    <!-- Node 2 -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M52,52 m-2.5,0 a2.5,2.5 0,1 1,5 0 a2.5,2.5 0,1 1,-5 0" />
+    <!-- Connections from image to nodes -->
+    <path android:strokeColor="#40FFFFFF" android:strokeWidth="1"
+        android:pathData="M46,40 L49.5,40"
+        android:fillColor="#00000000" />
+    <path android:strokeColor="#40FFFFFF" android:strokeWidth="1"
+        android:pathData="M46,48 L49.5,52"
+        android:fillColor="#00000000" />
+    <!-- Connections from nodes to chart -->
+    <path android:strokeColor="#40FFFFFF" android:strokeWidth="1"
+        android:pathData="M54.5,40 L58,50"
+        android:fillColor="#00000000" />
+    <path android:strokeColor="#40FFFFFF" android:strokeWidth="1"
+        android:pathData="M54.5,52 L58,56"
+        android:fillColor="#00000000" />
 
-    <!-- Paint strokes (style effect) -->
-    <path android:strokeColor="#76FF03" android:strokeWidth="1.5"
-        android:pathData="M68,46 C72,44 74,48 78,46"
-        android:fillColor="#00000000"
-        android:strokeLineCap="round" />
-    <path android:strokeColor="#00E5FF" android:strokeWidth="1.5"
-        android:pathData="M66,52 C70,50 72,54 76,52"
-        android:fillColor="#00000000"
-        android:strokeLineCap="round" />
+    <!-- "KPI" text hint — small label -->
+    <path android:fillColor="#B0FFFFFF"
+        android:pathData="M60,38 L60,34 L62,36 L64,34 L64,38"
+        android:strokeColor="#B0FFFFFF"
+        android:strokeWidth="0.8" />
 
 </vector>

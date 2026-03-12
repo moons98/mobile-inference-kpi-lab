@@ -2,20 +2,23 @@ package com.example.kpilab
 
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.util.Log
+import android.view.LayoutInflater
 import android.view.View
 import android.view.WindowManager
 import android.widget.ImageView
 import android.widget.ArrayAdapter
 import android.widget.AdapterView
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.text.Editable
+import android.text.TextWatcher
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -23,6 +26,7 @@ import com.example.kpilab.batch.BatchProgress
 import com.example.kpilab.batch.ExperimentSet
 import com.example.kpilab.batch.ExperimentSetLoader
 import com.example.kpilab.databinding.ActivityMainBinding
+import com.google.android.material.chip.Chip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -41,32 +45,15 @@ class MainActivity : AppCompatActivity() {
 
     private var isBatchMode = false
     private var experimentSets: List<ExperimentSet> = emptyList()
-    private var selectedImageBitmap: Bitmap? = null
-    private var selectedMaskBitmap: Bitmap? = null
-
-    /** Built-in test images available in assets */
-    private data class BuiltinImage(
-        val label: String,
-        val imagePath: String,
-        val maskPath: String
-    )
-    private val builtinImages = listOf(
-        BuiltinImage("Wine Glass (Small)", "test_images/scene_small.jpg", "test_masks/mask_small.png"),
-        BuiltinImage("Cup (Medium)", "test_images/scene_medium.jpg", "test_masks/mask_medium.png"),
-        BuiltinImage("Person (Large)", "test_images/scene_large.jpg", "test_masks/mask_large.png"),
-        BuiltinImage("Cat (sample_image)", "sample_image.jpg", "")
-    )
-
-    private val galleryLauncher = registerForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let { loadGalleryImage(it) }
-    }
+    private var selectedStylePreset: StylePreset = StylePreset.NONE
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // Keep screen on during benchmarks (even when charger disconnected)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         checkStoragePermission()
         initializeComponents()
@@ -113,58 +100,77 @@ class MainActivity : AppCompatActivity() {
         binding.btnExport.setOnClickListener { exportData() }
         binding.btnExport.isEnabled = false
 
-        binding.btnSelectImage.setOnClickListener {
-            galleryLauncher.launch("image/*")
-        }
-
-        binding.btnBuiltinImage.setOnClickListener {
-            showBuiltinImagePicker()
-        }
-
         binding.btnManageModels.setOnClickListener {
             showDeviceModelManager()
         }
 
-        // Strength label update
-        binding.radioGroupStrength.setOnCheckedChangeListener { _, _ -> updateStrengthLabel() }
-        binding.radioGroupSteps.setOnCheckedChangeListener { _, _ -> updateStrengthLabel() }
-
-        // Precision filter: NPU disables FP32 (auto-converted to FP16)
+        // Precision filter: NPU disables FP32
         binding.radioGroupEp.setOnCheckedChangeListener { _, checkedId ->
             val isNpu = checkedId == R.id.radioEpNpu
             updatePrecisionOptions(allowFp32 = !isNpu)
         }
 
-        // Phase toggle: show/hide SD vs YOLO options
-        binding.radioGroupPhase.setOnCheckedChangeListener { _, checkedId ->
-            val isYoloOnly = checkedId == R.id.radioPhaseYolo
-            binding.sectionSdOptions.visibility = if (isYoloOnly) View.GONE else View.VISIBLE
-            binding.sectionYoloOptions.visibility = if (isYoloOnly) View.VISIBLE else View.GONE
+        // Model variant change → update step defaults
+        binding.radioGroupVariant.setOnCheckedChangeListener { _, checkedId ->
+            when (checkedId) {
+                R.id.radioVariantLcm -> binding.radioSteps4.isChecked = true
+                R.id.radioVariantSd15 -> binding.radioSteps20.isChecked = true
+            }
         }
 
         // Per-component precision spinners
         setupPrecisionSpinners()
 
-        // Skip Text Encode toggle → hide/show Text Enc precision row
-        binding.checkSkipTextEncode.setOnCheckedChangeListener { _, isChecked ->
-            updateTextEncVisibility(!isChecked)
-        }
-        updateTextEncVisibility(!binding.checkSkipTextEncode.isChecked)
+        // Style presets
+        setupStylePresets()
 
         // Image tap → full-screen viewer
-        binding.imgBefore.setOnClickListener { showImageFullscreen(binding.imgBefore, "Before") }
-        binding.imgAfter.setOnClickListener { showImageFullscreen(binding.imgAfter, "After (Inpainted)") }
+        binding.imgGenerated.setOnClickListener { showImageFullscreen(binding.imgGenerated, "Generated") }
     }
 
-    private fun updateTextEncVisibility(visible: Boolean) {
-        val vis = if (visible) View.VISIBLE else View.GONE
-        binding.tvLabelTextEnc.visibility = vis
-        binding.spinnerPrecTextEnc.visibility = vis
+    private fun setupStylePresets() {
+        for (preset in StylePreset.values()) {
+            val chip = Chip(this).apply {
+                text = preset.displayName
+                isCheckable = true
+                isChecked = preset == StylePreset.NONE
+                tag = preset
+                textSize = 12f
+            }
+            binding.chipGroupStyle.addView(chip)
+        }
+
+        binding.chipGroupStyle.setOnCheckedStateChangeListener { group, checkedIds ->
+            val checkedChip = checkedIds.firstOrNull()?.let { group.findViewById<Chip>(it) }
+            selectedStylePreset = (checkedChip?.tag as? StylePreset) ?: StylePreset.NONE
+            updateCombinedPromptPreview()
+        }
+
+        binding.editPrompt.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) { updateCombinedPromptPreview() }
+        })
+    }
+
+    private fun updateCombinedPromptPreview() {
+        if (selectedStylePreset == StylePreset.NONE) {
+            binding.tvCombinedPrompt.visibility = View.GONE
+        } else {
+            val combined = buildCombinedPrompt()
+            binding.tvCombinedPrompt.text = combined
+            binding.tvCombinedPrompt.visibility = View.VISIBLE
+        }
+    }
+
+    private fun buildCombinedPrompt(): String {
+        val base = binding.editPrompt.text?.toString()?.trim()
+            ?: "a photo of a cat sitting on a windowsill"
+        return selectedStylePreset.applyTo(base)
     }
 
     private val precisionSpinners by lazy {
         listOf(
-            binding.spinnerPrecVaeEnc,
             binding.spinnerPrecTextEnc,
             binding.spinnerPrecUnet,
             binding.spinnerPrecVaeDec
@@ -179,16 +185,11 @@ class MainActivity : AppCompatActivity() {
     private fun setupPrecisionSpinners() {
         updatePrecisionOptions(allowFp32 = binding.radioGroupEp.checkedRadioButtonId != R.id.radioEpNpu)
 
-        // Bulk preset buttons
         binding.btnPrecAllFp32.setOnClickListener { setAllPrecision(SdPrecision.FP32) }
         binding.btnPrecAllFp16.setOnClickListener { setAllPrecision(SdPrecision.FP16) }
         binding.btnPrecAllW8a8.setOnClickListener { setAllPrecision(SdPrecision.W8A8) }
     }
 
-    /**
-     * NPU에서는 FP32가 실제로 FP16으로 실행되므로 FP32 선택지를 숨긴다.
-     * CPU/GPU에서는 전체 옵션을 표시한다.
-     */
     private fun updatePrecisionOptions(allowFp32: Boolean) {
         currentPrecOptions = if (allowFp32) allPrecOptions else npuPrecOptions
         val displayNames = currentPrecOptions.map { it.displayName }
@@ -198,14 +199,12 @@ class MainActivity : AppCompatActivity() {
         for (spinner in precisionSpinners) {
             val prevPrecision = currentPrecOptions.getOrNull(spinner.selectedItemPosition)
             spinner.adapter = adapter
-            // Restore previous selection if still available, otherwise default to FP16
             val newIndex = currentPrecOptions.indexOf(prevPrecision).takeIf { it >= 0 }
                 ?: currentPrecOptions.indexOf(SdPrecision.FP16).takeIf { it >= 0 }
                 ?: 0
             spinner.setSelection(newIndex)
         }
 
-        // Hide "All FP32" button when NPU is selected
         binding.btnPrecAllFp32.visibility = if (allowFp32) View.VISIBLE else View.GONE
     }
 
@@ -220,9 +219,8 @@ class MainActivity : AppCompatActivity() {
     private fun buildPrecisionMap(): Map<SdComponent, SdPrecision> {
         val precValues = currentPrecOptions.toTypedArray()
         return mapOf(
-            SdComponent.VAE_ENCODER to precValues[binding.spinnerPrecVaeEnc.selectedItemPosition],
             SdComponent.TEXT_ENCODER to precValues[binding.spinnerPrecTextEnc.selectedItemPosition],
-            SdComponent.INPAINT_UNET to precValues[binding.spinnerPrecUnet.selectedItemPosition],
+            SdComponent.UNET to precValues[binding.spinnerPrecUnet.selectedItemPosition],
             SdComponent.VAE_DECODER to precValues[binding.spinnerPrecVaeDec.selectedItemPosition]
         )
     }
@@ -271,7 +269,7 @@ class MainActivity : AppCompatActivity() {
         val set = experimentSets[position]
         val defaults = experimentSetLoader.getDefaults()
 
-        binding.tvExperimentDefaults.text = "Defaults: ${defaults.phase} | steps=${defaults.steps} | strength=${defaults.strength}"
+        binding.tvExperimentDefaults.text = "Defaults: ${defaults.phase} | variant=${defaults.modelVariant} | steps=${defaults.steps}"
         binding.tvExperimentList.text = set.experiments.mapIndexed { i, exp ->
             "${i + 1}. ${exp.getDisplayName()}"
         }.joinToString("\n")
@@ -299,12 +297,7 @@ class MainActivity : AppCompatActivity() {
             benchmarkRunner.lastGeneratedImage.collectLatest { bitmap ->
                 if (bitmap != null) {
                     binding.cardImagePreview.visibility = View.VISIBLE
-                    // Show original: user-selected or benchmark source image
-                    val beforeImage = selectedImageBitmap ?: benchmarkRunner.getSourceImage()
-                    if (beforeImage != null) {
-                        binding.imgBefore.setImageBitmap(beforeImage)
-                    }
-                    binding.imgAfter.setImageBitmap(bitmap)
+                    binding.imgGenerated.setImageBitmap(bitmap)
                 }
             }
         }
@@ -389,13 +382,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setControlsEnabled(enabled: Boolean) {
-        binding.btnSelectImage.isEnabled = enabled
-        binding.btnBuiltinImage.isEnabled = enabled
         binding.checkBatchMode.isEnabled = enabled
         binding.spinnerExperimentSet.isEnabled = enabled
         binding.radioPhase1.isEnabled = enabled
         binding.radioPhase2.isEnabled = enabled
-        binding.radioPhaseYolo.isEnabled = enabled
+        binding.radioVariantSd15.isEnabled = enabled
+        binding.radioVariantLcm.isEnabled = enabled
         for (s in precisionSpinners) { s.isEnabled = enabled }
         binding.btnPrecAllFp32.isEnabled = enabled
         binding.btnPrecAllFp16.isEnabled = enabled
@@ -403,99 +395,65 @@ class MainActivity : AppCompatActivity() {
         binding.radioEpNpu.isEnabled = enabled
         binding.radioEpGpu.isEnabled = enabled
         binding.radioEpCpu.isEnabled = enabled
-        binding.radioSteps10.isEnabled = enabled
+        binding.radioSteps2.isEnabled = enabled
+        binding.radioSteps4.isEnabled = enabled
+        binding.radioSteps8.isEnabled = enabled
         binding.radioSteps20.isEnabled = enabled
         binding.radioSteps30.isEnabled = enabled
         binding.radioSteps50.isEnabled = enabled
-        binding.radioStr05.isEnabled = enabled
-        binding.radioStr07.isEnabled = enabled
-        binding.radioStr08.isEnabled = enabled
-        binding.radioStr10.isEnabled = enabled
-        binding.radioRoiSmall.isEnabled = enabled
-        binding.radioRoiMedium.isEnabled = enabled
-        binding.radioRoiLarge.isEnabled = enabled
-        binding.checkSkipTextEncode.isEnabled = enabled
         binding.btnManageModels.isEnabled = enabled
+        binding.editPrompt.isEnabled = enabled
+        for (i in 0 until binding.chipGroupStyle.childCount) {
+            binding.chipGroupStyle.getChildAt(i).isEnabled = enabled
+        }
     }
 
     private fun buildConfig(): BenchmarkConfig {
         val phase = when (binding.radioGroupPhase.checkedRadioButtonId) {
-            R.id.radioPhase2 -> BenchmarkPhase.SUSTAINED_ERASE
-            R.id.radioPhaseYolo -> BenchmarkPhase.YOLO_SEG_ONLY
-            else -> BenchmarkPhase.SINGLE_ERASE
+            R.id.radioPhase2 -> BenchmarkPhase.SUSTAINED_GENERATE
+            else -> BenchmarkPhase.SINGLE_GENERATE
         }
 
-        val isYoloOnly = phase == BenchmarkPhase.YOLO_SEG_ONLY
+        val variant = when (binding.radioGroupVariant.checkedRadioButtonId) {
+            R.id.radioVariantLcm -> ModelVariant.LCM_LORA
+            else -> ModelVariant.SD_V15
+        }
+
+        val guidanceScale = when (variant) {
+            ModelVariant.LCM_LORA -> 1.0f
+            ModelVariant.SD_V15 -> 7.5f
+        }
 
         return BenchmarkConfig(
+            modelVariant = variant,
             sdBackend = when (binding.radioGroupEp.checkedRadioButtonId) {
                 R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
                 R.id.radioEpCpu -> ExecutionProvider.CPU
                 else -> ExecutionProvider.QNN_NPU
             },
             sdPrecisionMap = buildPrecisionMap(),
-            yoloBackend = if (isYoloOnly) {
-                when (binding.radioGroupYoloEp.checkedRadioButtonId) {
-                    R.id.radioYoloEpGpu -> ExecutionProvider.QNN_GPU
-                    R.id.radioYoloEpCpu -> ExecutionProvider.CPU
-                    else -> ExecutionProvider.QNN_NPU
-                }
-            } else {
-                when (binding.radioGroupEp.checkedRadioButtonId) {
-                    R.id.radioEpGpu -> ExecutionProvider.QNN_GPU
-                    R.id.radioEpCpu -> ExecutionProvider.CPU
-                    else -> ExecutionProvider.QNN_NPU
-                }
-            },
-            yoloPrecision = if (isYoloOnly) {
-                when (binding.radioGroupYoloPrec.checkedRadioButtonId) {
-                    R.id.radioYoloPrecInt8 -> YoloPrecision.INT8
-                    else -> YoloPrecision.FP32
-                }
-            } else {
-                if (buildPrecisionMap().values.any { it == SdPrecision.W8A8 })
-                    YoloPrecision.INT8 else YoloPrecision.FP32
-            },
             phase = phase,
             steps = getSelectedSteps(),
-            strength = getSelectedStrength(),
-            roiSize = when (binding.radioGroupRoiSize.checkedRadioButtonId) {
-                R.id.radioRoiSmall -> RoiSize.SMALL
-                R.id.radioRoiLarge -> RoiSize.LARGE
-                else -> RoiSize.MEDIUM
-            },
+            guidanceScale = guidanceScale,
+            prompt = buildCombinedPrompt(),
             trials = when (phase) {
-                BenchmarkPhase.SUSTAINED_ERASE -> 10
-                BenchmarkPhase.YOLO_SEG_ONLY -> 20
-                BenchmarkPhase.SINGLE_ERASE -> 5
+                BenchmarkPhase.SUSTAINED_GENERATE -> 10
+                BenchmarkPhase.SINGLE_GENERATE -> 5
             },
-            skipTextEncode = binding.checkSkipTextEncode.isChecked,
             htpPerformanceMode = when (phase) {
-                BenchmarkPhase.SUSTAINED_ERASE -> "sustained_high"
+                BenchmarkPhase.SUSTAINED_GENERATE -> "sustained_high"
                 else -> "burst"
             }
         )
     }
 
-    private fun updateStrengthLabel() {
-        val strength = getSelectedStrength()
-        val steps = getSelectedSteps()
-        val actual = (steps * strength).toInt()
-        binding.tvStrengthLabel.text = "Strength: $strength (actual steps: $actual)"
-    }
-
     private fun getSelectedSteps(): Int = when (binding.radioGroupSteps.checkedRadioButtonId) {
-        R.id.radioSteps10 -> 10
+        R.id.radioSteps2 -> 2
+        R.id.radioSteps4 -> 4
+        R.id.radioSteps8 -> 8
         R.id.radioSteps30 -> 30
         R.id.radioSteps50 -> 50
         else -> 20
-    }
-
-    private fun getSelectedStrength(): Float = when (binding.radioGroupStrength.checkedRadioButtonId) {
-        R.id.radioStr05 -> 0.5f
-        R.id.radioStr08 -> 0.8f
-        R.id.radioStr10 -> 1.0f
-        else -> 0.7f
     }
 
     private fun startBenchmark() {
@@ -504,27 +462,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             val config = buildConfig()
             Log.i(TAG, "Starting: $config")
-            if (config.phase == BenchmarkPhase.YOLO_SEG_ONLY) {
-                val image = selectedImageBitmap
-                if (image != null) {
-                    benchmarkRunner.clearSourceInputs()
-                    benchmarkRunner.setSourceImage(image)
-                } else {
-                    benchmarkRunner.clearSourceInputs()
-                }
-            } else {
-                val image = selectedImageBitmap
-                val mask = selectedMaskBitmap
-                if (image != null && mask != null) {
-                    benchmarkRunner.setSourceImage(image)
-                    benchmarkRunner.setSourceMask(mask)
-                } else {
-                    if (image != null || mask != null) {
-                        Toast.makeText(this, "Custom input requires both image and mask. Using fixed test data.", Toast.LENGTH_SHORT).show()
-                    }
-                    benchmarkRunner.clearSourceInputs()
-                }
-            }
             benchmarkRunner.start(config, lifecycleScope)
             Toast.makeText(this, "Benchmark started", Toast.LENGTH_SHORT).show()
         }
@@ -541,8 +478,6 @@ class MainActivity : AppCompatActivity() {
         val set = experimentSets[idx]
         val defaults = experimentSetLoader.getDefaults()
 
-        // Batch mode enforces fixed datasets from assets for reproducibility.
-        benchmarkRunner.clearSourceInputs()
         benchmarkRunner.startBatch(
             experimentSet = set,
             defaults = defaults,
@@ -602,76 +537,6 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    private fun showBuiltinImagePicker() {
-        val labels = builtinImages.map { it.label }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Select Built-in Image")
-            .setItems(labels) { _, which ->
-                loadBuiltinImage(builtinImages[which])
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun loadBuiltinImage(builtin: BuiltinImage) {
-        try {
-            clearSelectedInputs()
-            val bitmap = assets.open(builtin.imagePath).use { BitmapFactory.decodeStream(it) }
-            if (bitmap != null) {
-                selectedImageBitmap = bitmap
-
-                // Load paired mask if available
-                if (builtin.maskPath.isNotEmpty()) {
-                    val mask = assets.open(builtin.maskPath).use { BitmapFactory.decodeStream(it) }
-                    if (mask != null) {
-                        selectedMaskBitmap = mask
-                    }
-                } else {
-                    selectedMaskBitmap = null
-                }
-
-                binding.cardImagePreview.visibility = View.VISIBLE
-                binding.imgBefore.setImageBitmap(bitmap)
-                binding.imgAfter.setImageBitmap(null)
-
-                val maskInfo = if (builtin.maskPath.isNotEmpty()) " + mask" else " (no mask)"
-                Toast.makeText(this,
-                    "${builtin.label} (${bitmap.width}x${bitmap.height})$maskInfo",
-                    Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load built-in image: ${builtin.imagePath}", e)
-            Toast.makeText(this, "Failed to load: ${builtin.label}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun loadGalleryImage(uri: Uri) {
-        try {
-            clearSelectedInputs()
-            val bitmap = contentResolver.openInputStream(uri).use { inputStream ->
-                BitmapFactory.decodeStream(inputStream)
-            }
-            if (bitmap != null) {
-                selectedImageBitmap = bitmap
-                selectedMaskBitmap = null
-                binding.cardImagePreview.visibility = View.VISIBLE
-                binding.imgBefore.setImageBitmap(bitmap)
-                binding.imgAfter.setImageBitmap(null)
-                Toast.makeText(this, "Image selected (${bitmap.width}×${bitmap.height})", Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load gallery image", e)
-            Toast.makeText(this, "Failed to load image", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun clearSelectedInputs() {
-        selectedImageBitmap?.recycle()
-        selectedImageBitmap = null
-        selectedMaskBitmap?.recycle()
-        selectedMaskBitmap = null
-    }
-
     private fun formatSize(bytes: Long): String = when {
         bytes >= 1024L * 1024 * 1024 -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
         bytes >= 1024L * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
@@ -679,7 +544,6 @@ class MainActivity : AppCompatActivity() {
         else -> "$bytes B"
     }
 
-    /** Represents a deployed model file pair (stub .onnx + .bin) on device. */
     private data class DeviceModel(
         val name: String,
         val onnxFile: File,
@@ -713,6 +577,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Classify model into a pipeline component group by name heuristics.
+     */
+    private fun classifyModelGroup(name: String): String {
+        val lower = name.lowercase()
+        return when {
+            "unet" in lower -> "UNet"
+            "text_encoder" in lower || "textencoder" in lower -> "Text Encoder"
+            "vae" in lower -> "VAE"
+            "safety" in lower -> "Safety Checker"
+            "tokenizer" in lower -> "Tokenizer"
+            "yolo" in lower || "seg" in lower -> "YOLO / Segmentation"
+            else -> "Other"
+        }
+    }
+
+    /**
+     * Extract a short display name: strip common prefixes (sd15_, lcm_) and
+     * the group keyword to keep the row concise.
+     */
+    private fun shortDisplayName(name: String): String {
+        return name
+            .removePrefix("sd15_").removePrefix("lcm_").removePrefix("sdxl_")
+            .replace("_", " ")
+    }
+
     private fun showDeviceModelList(models: List<DeviceModel>, modelDir: File) {
         if (models.isEmpty()) {
             AlertDialog.Builder(this)
@@ -724,30 +614,58 @@ class MainActivity : AppCompatActivity() {
         }
 
         val totalSize = models.sumOf { it.totalSize }
-        val title = "${models.size} models (${formatSize(totalSize)})"
+        val inflater = LayoutInflater.from(this)
+        val view = inflater.inflate(R.layout.dialog_model_manager, null)
+        val llModelList = view.findViewById<LinearLayout>(R.id.llModelList)
+        val tvSummary = view.findViewById<TextView>(R.id.tvModelSummary)
 
-        // List items: "model_name\n  stub+bin  236.7 MB"
-        val items = models.map { m ->
-            if (m.isPrecompiled) {
-                "${m.name}\n   stub+bin  ${formatSize(m.binSize)}"
-            } else {
-                "${m.name}\n   onnx  ${formatSize(m.onnxSize)}"
-            }
-        }.toTypedArray()
+        tvSummary.text = "${models.size} models  ·  ${formatSize(totalSize)}"
 
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setItems(items) { _, which ->
-                showModelDetail(models[which])
+        // Group models by pipeline component
+        val grouped = models.groupBy { classifyModelGroup(it.name) }
+        val groupOrder = listOf(
+            "UNet", "Text Encoder", "VAE", "Safety Checker",
+            "Tokenizer", "YOLO / Segmentation", "Other"
+        )
+
+        for (group in groupOrder) {
+            val items = grouped[group] ?: continue
+
+            // Section header
+            val header = inflater.inflate(R.layout.item_model_group_header, llModelList, false)
+            val groupSize = items.sumOf { it.totalSize }
+            (header as TextView).text = "$group  (${items.size}  ·  ${formatSize(groupSize)})"
+            llModelList.addView(header)
+
+            // Model rows
+            for (model in items) {
+                val row = inflater.inflate(R.layout.item_model_row, llModelList, false)
+                row.findViewById<TextView>(R.id.tvModelName).text = shortDisplayName(model.name)
+                row.findViewById<TextView>(R.id.tvModelMeta).text =
+                    if (model.isPrecompiled) "Precompiled · .onnx + .bin" else "ONNX"
+                row.findViewById<TextView>(R.id.tvModelSize).text = formatSize(model.totalSize)
+                row.setOnClickListener { showModelDetail(model) }
+                llModelList.addView(row)
             }
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Models on Device")
+            .setView(view)
             .setNegativeButton("Close", null)
-            .show()
+            .create()
+
+        // Delete All button
+        view.findViewById<View>(R.id.btnDeleteAll).setOnClickListener {
+            dialog.dismiss()
+            confirmDeleteAll(models)
+        }
+
+        dialog.show()
     }
 
     private fun showModelDetail(model: DeviceModel) {
         val info = buildString {
-            appendLine(model.name)
-            appendLine()
             if (model.isPrecompiled) {
                 appendLine("Type:  Precompiled (EpContext)")
                 appendLine("Stub:  ${model.onnxFile.name}  (${formatSize(model.onnxSize)})")
@@ -783,16 +701,34 @@ class MainActivity : AppCompatActivity() {
                 model.onnxFile.delete()
                 model.binFile?.delete()
                 Toast.makeText(this, "${model.name} deleted", Toast.LENGTH_SHORT).show()
-                // Refresh list
                 showDeviceModelManager()
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
+    private fun confirmDeleteAll(models: List<DeviceModel>) {
+        val totalSize = models.sumOf { it.totalSize }
+        val fileCount = models.count { it.isPrecompiled } + models.size
+
+        AlertDialog.Builder(this)
+            .setTitle("Delete all ${models.size} models?")
+            .setMessage("$fileCount files  ·  ${formatSize(totalSize)}\n\nThis cannot be undone.")
+            .setPositiveButton("Delete All") { _, _ ->
+                var deleted = 0
+                for (m in models) {
+                    if (m.onnxFile.delete()) deleted++
+                    m.binFile?.delete()
+                }
+                Toast.makeText(this, "$deleted models deleted", Toast.LENGTH_SHORT).show()
+                showDeviceModelManager()
+            }
+            .setNegativeButton("Cancel") { _, _ -> showDeviceModelManager() }
+            .show()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        clearSelectedInputs()
         benchmarkRunner.release()
     }
 }

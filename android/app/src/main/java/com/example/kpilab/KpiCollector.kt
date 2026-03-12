@@ -1,10 +1,13 @@
 package com.example.kpilab
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Debug
+import android.os.Process
 import android.util.Log
 import java.io.BufferedReader
 import java.io.File
@@ -87,6 +90,7 @@ class KpiCollector(private val context: Context) {
         context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
 
     private var thermalPath: String? = null
+    private var thermalZoneType: String = "unknown"
     private var useBatteryTemperature: Boolean = false
 
     init {
@@ -119,6 +123,19 @@ class KpiCollector(private val context: Context) {
                     Log.i(TAG, "  $path: exists=$exists, canRead=$canRead, value='$value', parsed=$parsed")
                     if (parsed != null) {
                         Log.i(TAG, "  -> Selected this path!")
+                        // Read thermal zone type from sibling "type" file
+                        try {
+                            val zoneDir = File(path).parentFile
+                            val typeFile = File(zoneDir, "type")
+                            if (typeFile.exists() && typeFile.canRead()) {
+                                thermalZoneType = BufferedReader(FileReader(typeFile)).use {
+                                    it.readLine()?.trim() ?: "unknown"
+                                }
+                                Log.i(TAG, "  Thermal zone type: $thermalZoneType")
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "  Could not read thermal zone type: ${e.message}")
+                        }
                         return path
                     }
                 } catch (e: Exception) {
@@ -176,6 +193,12 @@ class KpiCollector(private val context: Context) {
         Log.i(TAG, "Battery temperature fallback: $batteryTemp °C")
         Log.i(TAG, "=============================")
     }
+
+    /**
+     * Get the type of the selected thermal zone (e.g., "cpu-0-0", "gpuss-0")
+     * Returns "battery" if using battery temperature fallback
+     */
+    fun getThermalZoneType(): String = if (useBatteryTemperature) "battery" else thermalZoneType
 
     /**
      * Read current CPU/SoC temperature in Celsius
@@ -313,19 +336,85 @@ class KpiCollector(private val context: Context) {
     }
 
     /**
+     * Read native heap allocation in megabytes.
+     * Includes ORT/QNN native memory allocations.
+     * @return Native heap in MB
+     */
+    fun readNativeHeap(): Float {
+        return Debug.getNativeHeapAllocatedSize() / (1024f * 1024f)
+    }
+
+    /**
+     * Read PSS (Proportional Set Size) in megabytes.
+     * Includes proportional share of shared libraries.
+     * Note: This call can take 1-5ms — use sparingly (per-trial, not per-step).
+     * @return PSS in MB, or -1 if unavailable
+     */
+    fun readPss(): Float {
+        return try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val pid = Process.myPid()
+            val memInfo = am.getProcessMemoryInfo(intArrayOf(pid))
+            if (memInfo.isNotEmpty()) {
+                memInfo[0].totalPss / 1024f
+            } else {
+                -1f
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read PSS: ${e.message}")
+            -1f
+        }
+    }
+
+    /**
+     * Check if the device is currently charging.
+     * Power measurements are unreliable while charging.
+     * @return true if charging or full
+     */
+    fun isCharging(): Boolean {
+        return try {
+            val batteryStatus: Intent? = IntentFilter(Intent.ACTION_BATTERY_CHANGED).let { filter ->
+                context.registerReceiver(null, filter)
+            }
+            val status = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to check charging status: ${e.message}")
+            false
+        }
+    }
+
+    /**
      * Collect all system metrics at once
      */
     fun collectAll(): SystemMetrics {
         return SystemMetrics(
             thermalC = readThermal(),
             powerMw = readPower(),
-            memoryMb = readMemory()
+            memoryMb = readMemory(),
+            nativeHeapMb = readNativeHeap()
+        )
+    }
+
+    /**
+     * Collect all metrics including PSS (slower, use per-trial only)
+     */
+    fun collectAllWithPss(): SystemMetrics {
+        return SystemMetrics(
+            thermalC = readThermal(),
+            powerMw = readPower(),
+            memoryMb = readMemory(),
+            nativeHeapMb = readNativeHeap(),
+            pssMb = readPss()
         )
     }
 
     data class SystemMetrics(
         val thermalC: Float,
         val powerMw: Float,
-        val memoryMb: Int
+        val memoryMb: Int,
+        val nativeHeapMb: Float = 0f,
+        val pssMb: Float = -1f
     )
 }

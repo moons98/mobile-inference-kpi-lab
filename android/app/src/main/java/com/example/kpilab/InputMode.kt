@@ -4,14 +4,11 @@ package com.example.kpilab
  * Benchmark phase defining the execution strategy.
  */
 enum class BenchmarkPhase(val displayName: String) {
-    /** Phase 1: Single erase profiling — 5 trials, cooldown between */
-    SINGLE_ERASE("Phase 1: Single Erase"),
+    /** Phase 1: Single generation profiling — 5 trials, cooldown between */
+    SINGLE_GENERATE("Phase 1: Single Generate"),
 
-    /** Phase 2: Sustained erase — 10 consecutive trials, no cooldown */
-    SUSTAINED_ERASE("Phase 2: Sustained Erase"),
-
-    /** YOLO-seg only profiling — 20 trials, no cooldown */
-    YOLO_SEG_ONLY("YOLO-seg Profiling")
+    /** Phase 2: Sustained generation — 10 consecutive trials, no cooldown */
+    SUSTAINED_GENERATE("Phase 2: Sustained Generate")
 }
 
 /**
@@ -36,42 +33,42 @@ enum class SdPrecision(val displayName: String, val dirSuffix: String) {
 }
 
 /**
- * YOLO-seg model precision.
+ * Model variant: SD v1.5 baseline vs LCM-LoRA optimized.
  */
-enum class YoloPrecision(val displayName: String, val suffix: String) {
-    FP32("FP32", "_fp32"),
-    INT8("INT8", "_int8_qdq")
+enum class ModelVariant(val displayName: String, val unetPrefix: String) {
+    SD_V15("SD v1.5", "unet_base"),
+    LCM_LORA("LCM-LoRA", "unet_lcm")
 }
 
 /**
- * SD Inpainting pipeline component.
+ * SD text-to-image pipeline component.
  * 각 precision별 별도 모델 파일명을 관리한다.
  */
 enum class SdComponent(
     val displayName: String,
     val baseName: String
 ) {
-    VAE_ENCODER("VAE Encoder", "vae_encoder"),
     TEXT_ENCODER("Text Encoder", "text_encoder"),
-    INPAINT_UNET("Inpainting UNet", "unet"),
+    UNET("UNet", "unet"),
     VAE_DECODER("VAE Decoder", "vae_decoder");
 
     /**
-     * On-device ONNX filename matching export_sd_to_onnx.py output.
+     * On-device ONNX filename matching export script output.
      * FP16 uses FP32 model file + QNN EP useNpuFp16 runtime option.
+     * For LCM-LoRA UNet, caller should use ModelVariant.unetPrefix instead of baseName.
      */
     fun filename(precision: SdPrecision): String = when (precision) {
         SdPrecision.FP32 -> "${baseName}_fp32.onnx"
         SdPrecision.FP16 -> "${baseName}_fp32.onnx"
         SdPrecision.W8A8 -> "${baseName}_int8_qdq.onnx"
     }
-}
 
-/**
- * ROI size category for test data selection.
- */
-enum class RoiSize(val displayName: String, val testImage: String, val testMask: String) {
-    SMALL("Small (~128²)", "scene_small.jpg", "mask_small.png"),
-    MEDIUM("Medium (~256²)", "scene_medium.jpg", "mask_medium.png"),
-    LARGE("Large (~400²)", "scene_large.jpg", "mask_large.png")
+    /**
+     * Filename with custom base name (for variant-specific UNet).
+     */
+    fun filename(precision: SdPrecision, customBaseName: String): String = when (precision) {
+        SdPrecision.FP32 -> "${customBaseName}_fp32.onnx"
+        SdPrecision.FP16 -> "${customBaseName}_fp32.onnx"
+        SdPrecision.W8A8 -> "${customBaseName}_int8_qdq.onnx"
+    }
 }

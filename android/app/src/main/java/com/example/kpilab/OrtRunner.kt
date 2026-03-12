@@ -13,7 +13,7 @@ import java.nio.LongBuffer
 
 /**
  * Single ORT session wrapper for one SD component.
- * InpaintPipeline creates 4 instances (VAE Encoder, Text Encoder, Inpaint UNet, VAE Decoder).
+ * Txt2ImgPipeline creates 3 instances (Text Encoder, UNet, VAE Decoder).
  */
 class OrtRunner(private val context: Context) {
 
@@ -310,8 +310,24 @@ class OrtRunner(private val context: Context) {
     }
 
     fun release() {
-        ortSession?.close()
+        // Null the reference first so concurrent run() calls return early.
+        val session = ortSession
         ortSession = null
+
+        // ORT 1.24.3 + QNN EP: session.close() can trigger SIGABRT if QNN internal
+        // async ops are still in progress (pthread_mutex_lock on destroyed mutex).
+        // A brief delay lets QNN drain before the native session teardown begins.
+        if (session != null) {
+            try {
+                Thread.sleep(300)
+                session.close()
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (t: Throwable) {
+                Log.w(TAG, "Session close error (ignored): ${t.message}")
+            }
+        }
+
         if (ownsOrtEnv) {
             ortEnv?.close()
         }

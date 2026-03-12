@@ -4,8 +4,8 @@ import java.nio.FloatBuffer
 import kotlin.math.pow
 
 /**
- * EulerDiscrete scheduler for SD v1.5 Inpainting.
- * Handles noise schedule, add_noise for inpainting, and per-step denoising.
+ * EulerDiscrete scheduler for SD v1.5 text-to-image and LCM-LoRA.
+ * Handles noise schedule, initial noise generation, and per-step denoising.
  */
 class Scheduler(
     private val numTrainTimesteps: Int = 1000,
@@ -38,24 +38,19 @@ class Scheduler(
     }
 
     /**
-     * Set up the schedule for a given number of total steps and strength.
-     * For img2img, only the last (steps × strength) timesteps are used.
+     * Set up the schedule for a given number of denoising steps.
      */
-    fun setTimesteps(numSteps: Int, strength: Float): IntArray {
+    fun setTimesteps(numSteps: Int): IntArray {
         require(numSteps >= 1) { "numSteps must be >= 1, got $numSteps" }
 
         // Linearly spaced timesteps from numTrainTimesteps-1 to 0
-        val allTimesteps = if (numSteps == 1) {
+        timesteps = if (numSteps == 1) {
             intArrayOf(numTrainTimesteps - 1)
         } else {
             IntArray(numSteps) { i ->
                 ((numTrainTimesteps - 1).toFloat() * (numSteps - 1 - i) / (numSteps - 1)).toInt()
             }
         }
-
-        // For img2img: skip first steps based on strength
-        val startStep = (numSteps - (numSteps * strength).toInt()).coerceIn(0, numSteps - 1)
-        timesteps = allTimesteps.sliceArray(startStep until numSteps)
 
         // Compute sigmas for Euler method
         sigmas = FloatArray(timesteps.size + 1)
@@ -82,27 +77,21 @@ class Scheduler(
     }
 
     /**
-     * Add noise to image latent for img2img initialization.
-     * @param imageLatent Clean latent from VAE Encoder [1, 4, H, W]
+     * Generate pure random noise as starting latent for text-to-image generation.
+     * Scales noise by the initial sigma for Euler scheduler compatibility.
+     * @param size Total number of floats (1 × 4 × H × W)
      * @param seed Random seed for reproducibility
-     * @return Noisy latent as starting point for denoising
+     * @return Initial noisy latent scaled by sigma_0
      */
-    fun addNoise(imageLatent: FloatArray, seed: Long): FloatArray {
+    fun generateInitialNoise(size: Int, seed: Long): FloatArray {
         if (timesteps.isEmpty()) error("Call setTimesteps() first")
-
-        val t = timesteps[0]
-        val alphaCP = alphasCumprod[t]
-        val sqrtAlpha = kotlin.math.sqrt(alphaCP)
-        val sqrtOneMinusAlpha = kotlin.math.sqrt(1.0f - alphaCP)
-
-        val noise = generateNoise(imageLatent.size, seed)
-        val result = FloatArray(imageLatent.size)
-
-        for (i in result.indices) {
-            result[i] = sqrtAlpha * imageLatent[i] + sqrtOneMinusAlpha * noise[i]
+        val noise = generateNoise(size, seed)
+        // Scale by initial sigma for Euler discrete scheduler
+        val sigma0 = sigmas[0]
+        for (i in noise.indices) {
+            noise[i] *= sigma0
         }
-
-        return result
+        return noise
     }
 
     /**
@@ -152,7 +141,7 @@ class Scheduler(
      * Generate gaussian noise with a fixed seed.
      * Uses Box-Muller transform for reproducible normal distribution.
      */
-    private fun generateNoise(size: Int, seed: Long): FloatArray {
+    fun generateNoise(size: Int, seed: Long): FloatArray {
         val random = java.util.Random(seed)
         val noise = FloatArray(size)
 

@@ -2,8 +2,6 @@ package com.example.kpilab
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Rect
 import android.os.Environment
 import android.util.Log
 import com.example.kpilab.batch.BatchProgress
@@ -41,11 +39,10 @@ data class BenchmarkProgress(
 }
 
 /**
- * AI Eraser benchmark runner.
- * Phase 1 (SINGLE_ERASE): 5 trials, cooldown between, pre-defined mask.
- * Phase 2 (SUSTAINED_ERASE): 10 consecutive trials, no cooldown.
- * YOLO_SEG_ONLY: 20 trials YOLO-seg standalone.
- * Outputs 4 CSV record types per experiment_design.md Appendix C.
+ * Text-to-image benchmark runner.
+ * Phase 1 (SINGLE_GENERATE): 5 trials, cooldown between.
+ * Phase 2 (SUSTAINED_GENERATE): 10 consecutive trials, no cooldown.
+ * Outputs 3 CSV record types per experiment_design.md Appendix A.
  */
 class BenchmarkRunner(
     private val context: Context,
@@ -68,30 +65,21 @@ class BenchmarkRunner(
     private val _lastGeneratedImage = MutableStateFlow<Bitmap?>(null)
     val lastGeneratedImage: StateFlow<Bitmap?> = _lastGeneratedImage.asStateFlow()
 
-    private var pipeline: InpaintPipeline? = null
-    private var yoloRunner: YoloSegRunner? = null
+    private var pipeline: Txt2ImgPipeline? = null
     private var benchmarkJob: Job? = null
     private var systemMetricsJob: Job? = null
     private var batchJob: Job? = null
     private var config: BenchmarkConfig? = null
     private var lastExportConfig: BenchmarkConfig? = null
 
-    // Source image + pre-defined mask
-    private var sourceImage: Bitmap? = null
-    private var sourceMask: Bitmap? = null
-    private var sourceImageLabel: String? = null
-
-    /** Expose source image for UI preview (original before inpainting) */
-    fun getSourceImage(): Bitmap? = sourceImage
-
     // Collected data for CSV export
-    private val eraseSummaries = mutableListOf<EraseSummaryRecord>()
+    private val generateSummaries = mutableListOf<GenerateSummaryRecord>()
     private val unetStepDetails = mutableListOf<UnetStepRecord>()
     private var coldStartRecord: ColdStartRecord? = null
-    private val yoloSegDetails = mutableListOf<YoloSegRecord>()
     private var lastSystemThermal: Float = 0f
     private var lastSystemPower: Float = 0f
     private var lastSystemMemory: Int = 0
+    private var lastSystemNativeHeapMb: Float = 0f
 
     // Logcat capture
     private val logcatCapture = LogcatCapture()
@@ -104,38 +92,34 @@ class BenchmarkRunner(
     val isBatchRunning: Boolean
         get() = _batchProgress.value.isRunning
 
-    // --- CSV Record Types (Appendix C) ---
+    // --- CSV Record Types ---
 
-    /** Record Type 1: Erase Summary */
-    data class EraseSummaryRecord(
+    /** Record Type 1: Generation Summary */
+    data class GenerateSummaryRecord(
         val trialId: Int,
+        val modelVariant: String,
         val prompt: String,
         val steps: Int,
-        val strength: Float,
         val actualSteps: Int,
-        val roiSize: String,
+        val guidanceScale: Float,
         val backendSd: String,
         val precisionSd: String,
-        val backendYolo: String,
-        val precisionYolo: String,
-        val fullE2eMs: Float,
-        val inpaintE2eMs: Float,
-        val yoloSegMs: Float,
-        val roiCropMs: Float,
+        val generateE2eMs: Float,
         val tokenizeMs: Float,
         val textEncMs: Float,
-        val vaeEncMs: Float,
-        val maskedImgPrepMs: Float,
         val unetTotalMs: Float,
         val vaeDecMs: Float,
-        val compositeMs: Float,
         val unetPerStepMeanMs: Float,
         val unetPerStepP95Ms: Float,
         val schedulerOverheadMs: Float,
         val peakMemoryMb: Int,
         val startTempC: Float,
         val endTempC: Float,
-        val avgPowerMw: Float
+        val avgPowerMw: Float,
+        val pipelineWallClockMs: Float = 0f,
+        val trialWallClockMs: Float = 0f,
+        val nativeHeapMb: Float = 0f,
+        val pssMb: Float = -1f
     )
 
     /** Record Type 2: UNet Step Detail */
@@ -148,59 +132,44 @@ class BenchmarkRunner(
         val schedulerStepMs: Float,
         val stepTotalMs: Float,
         val thermalC: Float,
-        val powerMw: Float
+        val powerMw: Float,
+        val memoryMb: Int = 0,
+        val nativeHeapMb: Float = 0f
     )
 
     /** Record Type 3: Cold Start */
     data class ColdStartRecord(
         val startType: String,
-        val yoloSegLoadMs: Long,
-        val vaeEncLoadMs: Long,
         val textEncLoadMs: Long,
         val unetLoadMs: Long,
         val vaeDecLoadMs: Long,
         val totalLoadMs: Long,
-        val peakMemoryAfterLoadMb: Int
-    )
-
-    /** Record Type 4: YOLO-seg Detail */
-    data class YoloSegRecord(
-        val trialId: Int,
-        val testImage: String,
-        val backend: String,
-        val precision: String,
-        val e2eMs: Float,
-        val preprocessMs: Float,
-        val tensorCreateMs: Float,
-        val inferenceMs: Float,
-        val outputCopyMs: Float,
-        val detParseMs: Float,
-        val nmsMs: Float,
-        val maskDecodeMs: Float,
-        val maskCount: Int,
-        val selectedMaskAreaPct: Float,
-        val thermalC: Float,
-        val powerMw: Float,
-        val memoryMb: Int
+        val idleMemoryMb: Int,
+        val peakMemoryAfterLoadMb: Int,
+        val idleThermalC: Float,
+        val idlePowerMw: Float,
+        val firstInferenceWallClockMs: Float = 0f,
+        val coldStartTotalMs: Float = 0f,
+        val warmupTotalMs: Long = 0,
+        val thermalZoneType: String = "unknown",
+        val isCharging: Boolean = false,
+        val idleBaselinePowerMw: Float = -1f
     )
 
     // --- Benchmark Control ---
 
     fun start(config: BenchmarkConfig, scope: CoroutineScope) {
-        if (isRunning || isBatchRunning) return
+        if (isRunning || isBatchRunning || benchmarkJob?.isActive == true) return
         this.config = config
 
         benchmarkJob = scope.launch(Dispatchers.Default) {
             try {
-                runBenchmark(config, forceFixedTestData = false)
+                runBenchmark(config)
             } catch (e: CancellationException) {
                 Log.i(TAG, "Benchmark cancelled")
             } catch (e: Exception) {
                 Log.e(TAG, "Benchmark error: ${e.message}", e)
-                _progress.value = BenchmarkProgress(
-                    state = BenchmarkState.ERROR,
-                    errorMessage = "Failed: ${e.message}"
-                )
+                _progress.update { it.copy(state = BenchmarkState.ERROR, errorMessage = "Failed: ${e.message}") }
             } finally {
                 withContext(NonCancellable) {
                     cleanup()
@@ -223,57 +192,39 @@ class BenchmarkRunner(
 
     // --- Core Benchmark ---
 
-    private suspend fun runBenchmark(config: BenchmarkConfig, forceFixedTestData: Boolean) {
+    private suspend fun runBenchmark(config: BenchmarkConfig) {
         _progress.value = BenchmarkProgress(state = BenchmarkState.INITIALIZING)
         lastExportConfig = config
 
-        eraseSummaries.clear()
+        generateSummaries.clear()
         unetStepDetails.clear()
         coldStartRecord = null
-        yoloSegDetails.clear()
 
-        val captureScope = CoroutineScope(currentCoroutineContext())
+        val captureScope = CoroutineScope(Dispatchers.IO + Job())
         logcatCapture.startCapture(
-            listOf("onnxruntime", "OrtRunner", "InpaintPipeline", "QNN"), captureScope)
+            listOf("onnxruntime", "OrtRunner", "Txt2ImgPipeline", "QNN"), captureScope)
         try {
-            if (!prepareInputData(config, forceFixedTestData)) {
-                return
-            }
-
-            yoloRunner?.release()
-            yoloRunner = null
             pipeline?.release()
             pipeline = null
 
-            when (config.phase) {
-                BenchmarkPhase.YOLO_SEG_ONLY -> runYoloBenchmark(config)
-                BenchmarkPhase.SINGLE_ERASE,
-                BenchmarkPhase.SUSTAINED_ERASE -> {
-                    runInpaintBenchmark(config)
-                }
-            }
+            runTxt2ImgBenchmark(config)
 
-            // Ensure child metrics loop is stopped so benchmark coroutine can complete.
+            _progress.update { it.copy(state = BenchmarkState.IDLE) }
+
             systemMetricsJob?.let { job ->
                 job.cancel()
                 withTimeoutOrNull(3000) { job.join() }
             }
             systemMetricsJob = null
 
-            Log.i(TAG, "Benchmark complete: erase=${eraseSummaries.size}, yolo=${yoloSegDetails.size}")
+            Log.i(TAG, "Benchmark complete: generate=${generateSummaries.size}")
         } finally {
-            // Safety cleanup for early-return/error paths before outer cleanup().
             systemMetricsJob?.cancel()
             systemMetricsJob = null
             logcatCapture.stopCapture()
             lastOrtLogInfo = logcatCapture.parseOrtInfo()
 
-            // Persist partition info if we captured new data (cache-miss run),
-            // or load previously saved data if logcat had nothing (cache-hit run).
-            val modelKey = when (config.phase) {
-                BenchmarkPhase.YOLO_SEG_ONLY -> config.yoloModelFilename.substringBefore(".")
-                else -> "sd_${config.sdPrecision.dirSuffix}_${config.sdBackend.name.lowercase()}"
-            }
+            val modelKey = "sd_${config.modelVariant.name.lowercase()}_${config.sdPrecision.dirSuffix}_${config.sdBackend.name.lowercase()}"
             val info = lastOrtLogInfo
             if (info != null && info.hasData()) {
                 OrtLogInfo.saveForModel(context, modelKey, info)
@@ -289,135 +240,151 @@ class BenchmarkRunner(
     }
 
     /**
-     * Inpainting benchmark: Phase 1 & 2.
-     * Pre-defined mask, no YOLO-seg (yolo_seg_ms = 0).
+     * Text-to-image benchmark: Phase 1 & 2.
      */
-    private suspend fun runInpaintBenchmark(config: BenchmarkConfig) {
-        Log.i(TAG, "Initializing Inpaint Pipeline: $config")
-        val pipe = InpaintPipeline(context, config)
+    private suspend fun runTxt2ImgBenchmark(config: BenchmarkConfig) {
+        Log.i(TAG, "Initializing Txt2Img Pipeline: $config")
+
+        // Idle baseline: 5s, 10 samples at 500ms interval, take median
+        Log.i(TAG, "Collecting idle baseline (5s, 10 samples)...")
+        val idlePowerSamples = mutableListOf<Float>()
+        val idleThermalSamples = mutableListOf<Float>()
+        var idleMetrics = kpiCollector.collectAll()
+        repeat(10) {
+            val m = kpiCollector.collectAll()
+            if (m.powerMw > 0) idlePowerSamples.add(m.powerMw)
+            if (m.thermalC > 0) idleThermalSamples.add(m.thermalC)
+            idleMetrics = m  // keep last for memory baseline
+            delay(500)
+        }
+        val idleBaselinePowerMw = if (idlePowerSamples.isNotEmpty()) {
+            idlePowerSamples.sorted().let { it[it.size / 2] }
+        } else -1f
+        val idleBaselineThermalC = if (idleThermalSamples.isNotEmpty()) {
+            idleThermalSamples.sorted().let { it[it.size / 2] }
+        } else -1f
+        val isCharging = kpiCollector.isCharging()
+        val thermalZoneType = kpiCollector.getThermalZoneType()
+        Log.i(TAG, "Idle baseline: mem=${idleMetrics.memoryMb}MB, thermal=${idleBaselineThermalC}C, " +
+                "power=${idleBaselinePowerMw}mW (${idlePowerSamples.size} samples), " +
+                "charging=$isCharging, thermalZone=$thermalZoneType")
+        if (isCharging) {
+            Log.w(TAG, "⚠ Device is charging — power measurements will be unreliable")
+        }
+
+        val pipe = Txt2ImgPipeline(context, config)
         val initialized = withContext(Dispatchers.IO) { pipe.initialize() }
         if (!initialized) {
-            _progress.value = BenchmarkProgress(
-                state = BenchmarkState.ERROR,
-                errorMessage = "Pipeline initialization failed"
-            )
+            _progress.update { it.copy(state = BenchmarkState.ERROR, errorMessage = "Pipeline initialization failed: ${pipe.lastError ?: "unknown"}") }
             return
         }
         pipeline = pipe
 
-        // Cold start record
+        // First inference timing (post-load, pre-warmup — captures cold inference cost)
+        val firstInfStart = System.nanoTime()
+        withContext(Dispatchers.IO) { pipe.generate()?.outputImage?.recycle() }
+        val firstInferenceWallClockMs = nsToMs(System.nanoTime() - firstInfStart)
+        Log.i(TAG, "First inference wall-clock: ${firstInferenceWallClockMs}ms")
+
+        // Cold start record (with idle baseline + first inference)
         pipe.coldStartTiming?.let { cs ->
             val memAfterLoad = kpiCollector.readMemory()
             coldStartRecord = ColdStartRecord(
                 startType = "cold",
-                yoloSegLoadMs = 0,
-                vaeEncLoadMs = cs.vaeEncLoadMs,
                 textEncLoadMs = cs.textEncLoadMs,
                 unetLoadMs = cs.unetLoadMs,
                 vaeDecLoadMs = cs.vaeDecLoadMs,
                 totalLoadMs = cs.totalLoadMs,
-                peakMemoryAfterLoadMb = memAfterLoad
+                idleMemoryMb = idleMetrics.memoryMb,
+                peakMemoryAfterLoadMb = memAfterLoad,
+                idleThermalC = idleBaselineThermalC,
+                idlePowerMw = idleMetrics.powerMw,
+                firstInferenceWallClockMs = firstInferenceWallClockMs,
+                coldStartTotalMs = cs.totalLoadMs.toFloat() + firstInferenceWallClockMs,
+                thermalZoneType = thermalZoneType,
+                isCharging = isCharging,
+                idleBaselinePowerMw = idleBaselinePowerMw
             )
         }
-
-        val img = sourceImage ?: return
-        val mask = sourceMask ?: return
-
-        // ROI crop (measure once — same crop reused across all trials with pre-defined mask)
-        val roiCropStart = System.nanoTime()
-        val roiResult = ImagePreprocessor.cropRoiWithPadding(img, mask, config.roiPaddingRatio)
-        val roiCropMs = nsToMs(System.nanoTime() - roiCropStart)
-        if (roiResult == null) {
-            _progress.value = BenchmarkProgress(
-                state = BenchmarkState.ERROR,
-                errorMessage = "ROI crop failed: empty mask"
-            )
-            return
-        }
-        Log.i(TAG, "ROI crop: ${roiCropMs}ms (${roiResult.cropRect})")
 
         // Warmup
         _progress.update { it.copy(state = BenchmarkState.WARMING_UP) }
-        withContext(Dispatchers.IO) {
-            pipe.warmup(roiResult.roiBitmap, roiResult.roiMask, config.warmupTrials)
+        val warmupTotalMs = withContext(Dispatchers.IO) {
+            pipe.warmup(config.warmupTrials)
         }
+        coldStartRecord = coldStartRecord?.copy(warmupTotalMs = warmupTotalMs)
+        Log.i(TAG, "Warmup total: ${warmupTotalMs}ms")
 
-        // System metrics (cancel previous if batch mode)
+        // System metrics
         systemMetricsJob?.cancel()
-        val metricsScope = CoroutineScope(currentCoroutineContext())
+        val metricsScope = CoroutineScope(Dispatchers.Default + Job())
         systemMetricsJob = metricsScope.launch { collectSystemMetrics() }
 
         _progress.update { it.copy(state = BenchmarkState.RUNNING) }
-        try {
-            for (i in 0 until config.trials) {
-                if (!currentCoroutineContext().isActive) break
-                val trialId = i + 1
-                _progress.update { it.copy(currentTrial = trialId, totalTrials = config.trials) }
 
-                val trial = runEraseTrial(pipe, img, roiResult, roiCropMs)
-                if (trial != null) {
-                    recordEraseResult(trialId, config, trial)
-                    // Don't recycle previous image here — UI may still be rendering it.
-                    // Old bitmap will be GC'd when ImageView releases its reference.
-                    _lastGeneratedImage.value = trial.compositedImage
-                } else {
-                    Log.e(TAG, "Trial $trialId failed (inpaint returned null)")
-                    _progress.update { it.copy(currentStage = "trial_failed") }
-                }
+        for (i in 0 until config.trials) {
+            if (!currentCoroutineContext().isActive) break
+            val trialId = i + 1
+            _progress.update { it.copy(currentTrial = trialId, totalTrials = config.trials) }
 
-                // Cooldown only in Phase 1
-                if (config.phase == BenchmarkPhase.SINGLE_ERASE && i < config.trials - 1) {
-                    cooldown()
-                }
+            val trial = runGenerateTrial(pipe)
+            if (trial != null) {
+                recordGenerateResult(trialId, config, trial)
+                _lastGeneratedImage.value = trial.generateResult.outputImage
+            } else {
+                Log.e(TAG, "Trial $trialId failed (generate returned null)")
+                _progress.update { it.copy(currentStage = "trial_failed") }
             }
-        } finally {
-            // Recycle ROI crop bitmaps even on cancellation.
-            roiResult.roiBitmap.recycle()
-            roiResult.roiMask.recycle()
+
+            // Cooldown only in Phase 1
+            if (config.phase == BenchmarkPhase.SINGLE_GENERATE && i < config.trials - 1) {
+                cooldown()
+            }
         }
 
         _progress.update { it.copy(currentStage = "done") }
 
-        // Collect UNet profiling summary (SINGLE_ERASE phase only)
-        if (config.phase == BenchmarkPhase.SINGLE_ERASE) {
-            pipe.getUnetProfilingSummary()?.let { summary ->
-                Log.i(TAG, "UNet profiling: total=${summary.totalRunUs}us, " +
-                        "npu=${summary.npuComputeUs}us, cpu=${summary.cpuComputeUs}us, " +
-                        "fence=${summary.fenceUs}us, iterations=${summary.iterationCount}")
-            }
+        // Collect UNet profiling summary (SINGLE_GENERATE phase only).
+        if (config.phase == BenchmarkPhase.SINGLE_GENERATE) {
+            withTimeoutOrNull(5000) {
+                pipe.getUnetProfilingSummary()?.let { summary ->
+                    Log.i(TAG, "UNet profiling: total=${summary.totalRunUs}us, " +
+                            "npu=${summary.npuComputeUs}us, cpu=${summary.cpuComputeUs}us, " +
+                            "fence=${summary.fenceUs}us, iterations=${summary.iterationCount}")
+                }
+            } ?: Log.w(TAG, "UNet profiling timed out (5s)")
         }
     }
 
     // --- Single Trial ---
 
-    private data class EraseTrialResult(
-        val inpaintResult: InpaintPipeline.InpaintResult,
-        val compositedImage: Bitmap,
-        val roiCropMs: Float,
-        val compositeMs: Float,
+    private data class GenerateTrialResult(
+        val generateResult: Txt2ImgPipeline.GenerateResult,
         val startTempC: Float,
         val endTempC: Float,
         val avgPowerMw: Float,
-        val peakMemoryMb: Int
+        val peakMemoryMb: Int,
+        val trialWallClockMs: Float = 0f,
+        val peakNativeHeapMb: Float = 0f,
+        val peakPssMb: Float = -1f
     )
 
-    private suspend fun runEraseTrial(
-        pipe: InpaintPipeline,
-        originalImage: Bitmap,
-        roiResult: ImagePreprocessor.RoiCropResult,
-        roiCropMs: Float
-    ): EraseTrialResult? {
+    private suspend fun runGenerateTrial(pipe: Txt2ImgPipeline): GenerateTrialResult? {
+        val trialWallClockStart = System.nanoTime()
         val startTemp = kpiCollector.readThermal()
         val powerSamples = mutableListOf<Float>()
         var peakMemory = lastSystemMemory
+        var peakNativeHeap = lastSystemNativeHeapMb
 
-        val listener = object : InpaintPipeline.ProgressListener {
+        val listener = object : Txt2ImgPipeline.ProgressListener {
             override fun onStageStart(stage: String) {
                 _progress.update { it.copy(currentStage = stage) }
                 val power = lastSystemPower
                 if (power > 0) powerSamples.add(power)
                 val mem = lastSystemMemory
                 if (mem > peakMemory) peakMemory = mem
+                val nativeHeap = lastSystemNativeHeapMb
+                if (nativeHeap > peakNativeHeap) peakNativeHeap = nativeHeap
             }
             override fun onUnetStep(step: Int, totalSteps: Int) {
                 _progress.update { it.copy(currentStep = step + 1, totalSteps = totalSteps) }
@@ -425,84 +392,69 @@ class BenchmarkRunner(
                 if (power > 0) powerSamples.add(power)
                 val mem = lastSystemMemory
                 if (mem > peakMemory) peakMemory = mem
+                val nativeHeap = lastSystemNativeHeapMb
+                if (nativeHeap > peakNativeHeap) peakNativeHeap = nativeHeap
             }
         }
 
-        // Inpainting
-        val inpaintResult = withContext(Dispatchers.IO) {
-            pipe.inpaint(roiResult.roiBitmap, roiResult.roiMask, listener)
+        val generateResult = withContext(Dispatchers.IO) {
+            pipe.generate(listener)
         } ?: return null
-
-        // Composite
-        _progress.update { it.copy(currentStage = "composite") }
-        val compositeStart = System.nanoTime()
-        val compositedImage = ImagePreprocessor.composite(
-            originalImage, inpaintResult.outputImage,
-            roiResult.cropRect, roiResult.roiMask
-        )
-        val compositeMs = nsToMs(System.nanoTime() - compositeStart)
-        inpaintResult.outputImage.recycle()
 
         val endTemp = kpiCollector.readThermal()
         val avgPower = if (powerSamples.isNotEmpty()) powerSamples.average().toFloat() else lastSystemPower
+        // PSS: measured once per trial (expensive call)
+        val peakPss = kpiCollector.readPss()
+        val trialWallClockMs = nsToMs(System.nanoTime() - trialWallClockStart)
 
-        return EraseTrialResult(
-            inpaintResult = inpaintResult,
-            compositedImage = compositedImage,
-            roiCropMs = roiCropMs,
-            compositeMs = compositeMs,
+        return GenerateTrialResult(
+            generateResult = generateResult,
             startTempC = startTemp,
             endTempC = endTemp,
             avgPowerMw = avgPower,
-            peakMemoryMb = peakMemory
+            peakMemoryMb = peakMemory,
+            trialWallClockMs = trialWallClockMs,
+            peakNativeHeapMb = peakNativeHeap,
+            peakPssMb = peakPss
         )
     }
 
-    private fun recordEraseResult(
+    private fun recordGenerateResult(
         trialId: Int,
         config: BenchmarkConfig,
-        trial: EraseTrialResult
+        trial: GenerateTrialResult
     ) {
-        val result = trial.inpaintResult
+        val result = trial.generateResult
         val staging = result.stageTiming
         val stepRunTimes = result.stepDetails.map { it.sessionRunMs }
         val sortedTimes = stepRunTimes.sorted()
         val p95Index = ((sortedTimes.size * 0.95).toInt()).coerceAtMost(sortedTimes.size - 1)
 
-        // Inpaint E2E = core pipeline only (tokenize ~ vae_dec)
-        val inpaintE2eMs = staging.inpaintE2eMs
-        // Full E2E = yolo_seg + roi_crop + inpaint_e2e + composite
-        val fullE2eMs = 0f /*yoloSegMs*/ + trial.roiCropMs + inpaintE2eMs + trial.compositeMs
-
-        eraseSummaries.add(EraseSummaryRecord(
+        generateSummaries.add(GenerateSummaryRecord(
             trialId = trialId,
+            modelVariant = config.modelVariant.name,
             prompt = config.prompt,
             steps = config.steps,
-            strength = config.strength,
             actualSteps = result.actualSteps,
-            roiSize = config.roiSize.name,
+            guidanceScale = config.guidanceScale,
             backendSd = config.sdBackend.name,
             precisionSd = config.sdPrecision.displayName,
-            backendYolo = config.yoloBackend.name,
-            precisionYolo = config.yoloPrecision.displayName,
-            fullE2eMs = fullE2eMs,
-            inpaintE2eMs = inpaintE2eMs,
-            yoloSegMs = 0f,
-            roiCropMs = trial.roiCropMs,
+            generateE2eMs = staging.generateE2eMs,
             tokenizeMs = staging.tokenizeMs,
             textEncMs = staging.textEncMs,
-            vaeEncMs = staging.vaeEncMs,
-            maskedImgPrepMs = staging.maskedImgPrepMs,
             unetTotalMs = staging.unetTotalMs,
             vaeDecMs = staging.vaeDecMs,
-            compositeMs = trial.compositeMs,
             unetPerStepMeanMs = if (stepRunTimes.isNotEmpty()) stepRunTimes.average().toFloat() else 0f,
             unetPerStepP95Ms = if (sortedTimes.isNotEmpty()) sortedTimes[p95Index] else 0f,
             schedulerOverheadMs = staging.schedulerOverheadMs,
             peakMemoryMb = trial.peakMemoryMb,
             startTempC = trial.startTempC,
             endTempC = trial.endTempC,
-            avgPowerMw = trial.avgPowerMw
+            avgPowerMw = trial.avgPowerMw,
+            pipelineWallClockMs = staging.pipelineWallClockMs,
+            trialWallClockMs = trial.trialWallClockMs,
+            nativeHeapMb = trial.peakNativeHeapMb,
+            pssMb = trial.peakPssMb
         ))
 
         for (detail in result.stepDetails) {
@@ -515,225 +467,13 @@ class BenchmarkRunner(
                 schedulerStepMs = detail.schedulerStepMs,
                 stepTotalMs = detail.stepTotalMs,
                 thermalC = lastSystemThermal,
-                powerMw = lastSystemPower
+                powerMw = lastSystemPower,
+                memoryMb = lastSystemMemory,
+                nativeHeapMb = lastSystemNativeHeapMb
             ))
         }
 
-        _progress.update { it.copy(lastE2eMs = inpaintE2eMs) }
-    }
-
-    private suspend fun runYoloBenchmark(config: BenchmarkConfig) {
-        val image = sourceImage
-        if (image == null) {
-            _progress.value = BenchmarkProgress(
-                state = BenchmarkState.ERROR,
-                errorMessage = "YOLO test image is not available"
-            )
-            return
-        }
-
-        val runner = YoloSegRunner(context, config)
-        val initialized = withContext(Dispatchers.IO) { runner.initialize() }
-        if (!initialized) {
-            _progress.value = BenchmarkProgress(
-                state = BenchmarkState.ERROR,
-                errorMessage = "YOLO runner initialization failed"
-            )
-            return
-        }
-        yoloRunner = runner
-
-        val yoloLoadMs = runner.coldStartTiming?.loadMs ?: 0L
-        val memAfterLoad = kpiCollector.readMemory()
-        coldStartRecord = ColdStartRecord(
-            startType = "cold",
-            yoloSegLoadMs = yoloLoadMs,
-            vaeEncLoadMs = 0,
-            textEncLoadMs = 0,
-            unetLoadMs = 0,
-            vaeDecLoadMs = 0,
-            totalLoadMs = yoloLoadMs,
-            peakMemoryAfterLoadMb = memAfterLoad
-        )
-
-        _progress.update { it.copy(state = BenchmarkState.WARMING_UP) }
-        withContext(Dispatchers.IO) {
-            runner.warmup(image, config.warmupTrials)
-        }
-
-        systemMetricsJob?.cancel()
-        val metricsScope = CoroutineScope(currentCoroutineContext())
-        systemMetricsJob = metricsScope.launch { collectSystemMetrics() }
-        _progress.update { it.copy(state = BenchmarkState.RUNNING) }
-
-        val total = config.totalTrials
-        for (i in 0 until total) {
-            if (!currentCoroutineContext().isActive) break
-            val trialId = i + 1
-            _progress.update {
-                it.copy(
-                    currentTrial = trialId,
-                    totalTrials = total,
-                    currentStage = "yolo_infer",
-                    currentStep = 0,
-                    totalSteps = 0
-                )
-            }
-
-            val result = withContext(Dispatchers.IO) {
-                runner.runOnce(image)
-            } ?: continue
-
-            yoloSegDetails.add(
-                YoloSegRecord(
-                    trialId = trialId,
-                    testImage = sourceImageLabel ?: config.roiSize.testImage,
-                    backend = config.yoloBackend.name,
-                    precision = config.yoloPrecision.displayName,
-                    e2eMs = result.e2eMs,
-                    preprocessMs = result.preprocessMs,
-                    tensorCreateMs = result.tensorCreateMs,
-                    inferenceMs = result.inferenceMs,
-                    outputCopyMs = result.outputCopyMs,
-                    detParseMs = result.detParseMs,
-                    nmsMs = result.nmsMs,
-                    maskDecodeMs = result.maskDecodeMs,
-                    maskCount = result.maskCount,
-                    selectedMaskAreaPct = result.selectedMaskAreaPct,
-                    thermalC = lastSystemThermal,
-                    powerMw = lastSystemPower,
-                    memoryMb = lastSystemMemory
-                )
-            )
-            _progress.update { it.copy(lastE2eMs = result.inferenceMs) }
-        }
-
-        // Generate overlay AFTER all benchmark trials complete (not timed)
-        _progress.update { it.copy(currentStage = "overlay") }
-        try {
-            val overlay = withContext(Dispatchers.IO) {
-                runner.runOnce(image, generateOverlay = true)
-            }
-            if (overlay?.overlayBitmap != null) {
-                Log.i(TAG, "YOLO overlay: ${overlay.overlayBitmap.width}x${overlay.overlayBitmap.height}, masks=${overlay.maskCount}")
-                _lastGeneratedImage.value?.recycle()
-                _lastGeneratedImage.value = overlay.overlayBitmap
-            } else {
-                Log.w(TAG, "YOLO overlay null: masks=${overlay?.maskCount}")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "YOLO overlay generation failed: ${e.message}", e)
-        }
-    }
-
-    // --- Test Data ---
-
-    private fun prepareInputData(config: BenchmarkConfig, forceFixedTestData: Boolean): Boolean {
-        if (forceFixedTestData) {
-            return loadTestData(config)
-        }
-
-        val hasSourceImage = sourceImage != null
-        val hasSourceMask = sourceMask != null
-        if (config.phase == BenchmarkPhase.YOLO_SEG_ONLY) {
-            return when {
-                hasSourceImage -> {
-                    Log.i(TAG, "Using user-provided source image for YOLO")
-                    true
-                }
-                hasSourceMask -> {
-                    _progress.value = BenchmarkProgress(
-                        state = BenchmarkState.ERROR,
-                        errorMessage = "YOLO mode requires image input"
-                    )
-                    false
-                }
-                else -> {
-                    Log.i(TAG, "No user input provided, loading fixed test dataset")
-                    loadTestData(config)
-                }
-            }
-        }
-        return when {
-            hasSourceImage && hasSourceMask -> {
-                Log.i(TAG, "Using user-provided source image + mask")
-                true
-            }
-            !hasSourceImage && !hasSourceMask -> {
-                Log.i(TAG, "No user input provided, loading fixed test dataset")
-                loadTestData(config)
-            }
-            else -> {
-                _progress.value = BenchmarkProgress(
-                    state = BenchmarkState.ERROR,
-                    errorMessage = "Image and mask must be provided together, or neither"
-                )
-                false
-            }
-        }
-    }
-
-    private fun loadTestData(config: BenchmarkConfig): Boolean {
-        val roiSize = config.roiSize
-        sourceImage?.recycle()
-        sourceMask?.recycle()
-
-        val loadedImage = try {
-            context.assets.open("test_images/${roiSize.testImage}").use {
-                BitmapFactory.decodeStream(it)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Test image load failed: test_images/${roiSize.testImage}", e)
-            null
-        }
-
-        val requireMask = config.phase != BenchmarkPhase.YOLO_SEG_ONLY
-        val loadedMask = if (requireMask) {
-            try {
-                context.assets.open("test_masks/${roiSize.testMask}").use {
-                    BitmapFactory.decodeStream(it)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Test mask load failed: test_masks/${roiSize.testMask}", e)
-                null
-            }
-        } else {
-            null
-        }
-
-        if (loadedImage == null || (requireMask && loadedMask == null)) {
-            loadedImage?.recycle()
-            loadedMask?.recycle()
-            _progress.value = BenchmarkProgress(
-                state = BenchmarkState.ERROR,
-                errorMessage = "Missing fixed test assets for ${roiSize.name}"
-            )
-            return false
-        }
-
-        sourceImage = loadedImage
-        sourceMask = loadedMask
-        sourceImageLabel = "fixed:${roiSize.testImage}"
-        return true
-    }
-
-    fun setSourceImage(bitmap: Bitmap) {
-        sourceImage?.recycle()
-        sourceImage = bitmap.copy(bitmap.config, false)
-        sourceImageLabel = "custom:image"
-    }
-
-    fun setSourceMask(bitmap: Bitmap) {
-        sourceMask?.recycle()
-        sourceMask = bitmap.copy(bitmap.config, false)
-    }
-
-    fun clearSourceInputs() {
-        sourceImage?.recycle()
-        sourceImage = null
-        sourceMask?.recycle()
-        sourceMask = null
-        sourceImageLabel = null
+        _progress.update { it.copy(lastE2eMs = staging.generateE2eMs) }
     }
 
     // --- Cooldown ---
@@ -776,7 +516,7 @@ class BenchmarkRunner(
             lastSystemThermal = metrics.thermalC
             lastSystemPower = metrics.powerMw
             lastSystemMemory = metrics.memoryMb
-            // Atomic update to avoid race with other coroutines modifying progress
+            lastSystemNativeHeapMb = metrics.nativeHeapMb
             _progress.update { current ->
                 if (current.state == BenchmarkState.RUNNING || current.state == BenchmarkState.WARMING_UP) {
                     current.copy(
@@ -784,7 +524,7 @@ class BenchmarkRunner(
                         lastPowerMw = metrics.powerMw,
                         lastMemoryMb = metrics.memoryMb)
                 } else {
-                    current  // Don't overwrite STOPPING/IDLE/ERROR states
+                    current
                 }
             }
             delay(SYSTEM_METRICS_INTERVAL_MS)
@@ -801,14 +541,22 @@ class BenchmarkRunner(
         sb.appendLine("# device_model,${deviceInfo["device_model"]}")
         sb.appendLine("# soc_model,${deviceInfo["soc_model"]}")
         sb.appendLine("# runtime,ONNX Runtime ${BuildConfig.ORT_VERSION}")
+        sb.appendLine("# model_variant,${cfg.modelVariant.name}")
         sb.appendLine("# sd_backend,${cfg.sdBackend.name}")
         sb.appendLine("# sd_precision,${cfg.sdPrecision.displayName}")
-        sb.appendLine("# yolo_backend,${cfg.yoloBackend.name}")
-        sb.appendLine("# yolo_precision,${cfg.yoloPrecision.displayName}")
+        if (cfg.isMixedPrecision) {
+            sb.appendLine("# sd_precision_per_component,${SdComponent.values().joinToString(";") { "${it.baseName}=${cfg.sdPrecisionFor(it).dirSuffix}" }}")
+        }
         sb.appendLine("# steps,${cfg.steps}")
-        sb.appendLine("# strength,${cfg.strength}")
-        sb.appendLine("# roi_size,${cfg.roiSize.name}")
+        sb.appendLine("# guidance_scale,${cfg.guidanceScale}")
         sb.appendLine("# phase,${cfg.phase.name}")
+
+        // System measurement metadata
+        coldStartRecord?.let { cs ->
+            sb.appendLine("# thermal_zone_type,${cs.thermalZoneType}")
+            sb.appendLine("# is_charging,${cs.isCharging}")
+            sb.appendLine("# idle_baseline_power_mw,${"%.1f".format(cs.idleBaselinePowerMw)}")
+        }
 
         // ORT graph partitioning metadata
         lastOrtLogInfo?.let { ort ->
@@ -820,78 +568,67 @@ class BenchmarkRunner(
             }
         }
 
-        // Record Type 1: Erase Summary
+        // Record Type 1: Generation Summary
         sb.appendLine()
-        sb.appendLine("# ERASE_SUMMARY")
-        sb.appendLine("trial_id,prompt,steps,strength,actual_steps,roi_size," +
-                "backend_sd,precision_sd,backend_yolo,precision_yolo," +
-                "full_e2e_ms,inpaint_e2e_ms," +
-                "yolo_seg_ms,roi_crop_ms,tokenize_ms,text_enc_ms,vae_enc_ms,masked_img_prep_ms," +
-                "unet_total_ms,vae_dec_ms,composite_ms," +
+        sb.appendLine("# GENERATE_SUMMARY")
+        sb.appendLine("trial_id,model_variant,prompt,steps,actual_steps,guidance_scale," +
+                "backend_sd,precision_sd," +
+                "generate_e2e_ms,tokenize_ms,text_enc_ms," +
+                "unet_total_ms,vae_dec_ms," +
                 "unet_per_step_mean_ms,unet_per_step_p95_ms,scheduler_overhead_ms," +
-                "peak_memory_mb,start_temp_c,end_temp_c,avg_power_mw")
-        for (r in eraseSummaries) {
-            sb.appendLine("${r.trialId},${r.prompt},${r.steps},${r.strength},${r.actualSteps},${r.roiSize}," +
-                    "${r.backendSd},${r.precisionSd},${r.backendYolo},${r.precisionYolo}," +
-                    "${"%.2f".format(r.fullE2eMs)},${"%.2f".format(r.inpaintE2eMs)}," +
-                    "${"%.2f".format(r.yoloSegMs)},${"%.2f".format(r.roiCropMs)}," +
-                    "${"%.2f".format(r.tokenizeMs)},${"%.2f".format(r.textEncMs)}," +
-                    "${"%.2f".format(r.vaeEncMs)},${"%.2f".format(r.maskedImgPrepMs)}," +
+                "peak_memory_mb,start_temp_c,end_temp_c,avg_power_mw," +
+                "pipeline_wall_clock_ms,trial_wall_clock_ms,native_heap_mb,pss_mb")
+        for (r in generateSummaries) {
+            sb.appendLine("${r.trialId},${r.modelVariant},${r.prompt},${r.steps},${r.actualSteps},${r.guidanceScale}," +
+                    "${r.backendSd},${r.precisionSd}," +
+                    "${"%.2f".format(r.generateE2eMs)},${"%.2f".format(r.tokenizeMs)},${"%.2f".format(r.textEncMs)}," +
                     "${"%.2f".format(r.unetTotalMs)},${"%.2f".format(r.vaeDecMs)}," +
-                    "${"%.2f".format(r.compositeMs)}," +
                     "${"%.2f".format(r.unetPerStepMeanMs)},${"%.2f".format(r.unetPerStepP95Ms)}," +
                     "${"%.2f".format(r.schedulerOverheadMs)}," +
-                    "${r.peakMemoryMb},${"%.1f".format(r.startTempC)},${"%.1f".format(r.endTempC)},${"%.1f".format(r.avgPowerMw)}")
+                    "${r.peakMemoryMb},${"%.1f".format(r.startTempC)},${"%.1f".format(r.endTempC)},${"%.1f".format(r.avgPowerMw)}," +
+                    "${"%.2f".format(r.pipelineWallClockMs)},${"%.2f".format(r.trialWallClockMs)}," +
+                    "${"%.1f".format(r.nativeHeapMb)},${"%.1f".format(r.pssMb)}")
         }
 
         // Record Type 2: UNet Step Detail
         sb.appendLine()
         sb.appendLine("# UNET_STEP_DETAIL")
         sb.appendLine("trial_id,step_index,input_create_ms,session_run_ms,output_copy_ms," +
-                "scheduler_step_ms,step_total_ms,thermal_c,power_mw")
+                "scheduler_step_ms,step_total_ms,thermal_c,power_mw," +
+                "memory_mb,native_heap_mb")
         for (r in unetStepDetails) {
             sb.appendLine("${r.trialId},${r.stepIndex}," +
                     "${"%.2f".format(r.inputCreateMs)},${"%.2f".format(r.sessionRunMs)}," +
                     "${"%.2f".format(r.outputCopyMs)},${"%.2f".format(r.schedulerStepMs)}," +
                     "${"%.2f".format(r.stepTotalMs)}," +
-                    "${"%.1f".format(r.thermalC)},${"%.1f".format(r.powerMw)}")
+                    "${"%.1f".format(r.thermalC)},${"%.1f".format(r.powerMw)}," +
+                    "${r.memoryMb},${"%.1f".format(r.nativeHeapMb)}")
         }
 
         // Record Type 3: Cold Start
         sb.appendLine()
         sb.appendLine("# COLD_START")
-        sb.appendLine("start_type,yolo_seg_load_ms,vae_enc_load_ms,text_enc_load_ms," +
-                "unet_load_ms,vae_dec_load_ms,total_load_ms,peak_memory_after_load_mb")
+        sb.appendLine("start_type,text_enc_load_ms," +
+                "unet_load_ms,vae_dec_load_ms,total_load_ms," +
+                "idle_memory_mb,peak_memory_after_load_mb,memory_delta_mb," +
+                "idle_thermal_c,idle_power_mw," +
+                "first_inference_wall_clock_ms,cold_start_total_ms,warmup_total_ms," +
+                "thermal_zone_type,is_charging,idle_baseline_power_mw")
         coldStartRecord?.let { r ->
-            sb.appendLine("${r.startType},${r.yoloSegLoadMs},${r.vaeEncLoadMs}," +
-                    "${r.textEncLoadMs},${r.unetLoadMs},${r.vaeDecLoadMs}," +
-                    "${r.totalLoadMs},${r.peakMemoryAfterLoadMb}")
-        }
-
-        // Record Type 4: YOLO-seg Detail
-        if (yoloSegDetails.isNotEmpty()) {
-            sb.appendLine()
-            sb.appendLine("# YOLO_SEG_DETAIL")
-            sb.appendLine("trial_id,test_image,backend,precision," +
-                    "e2e_ms,preprocess_ms,tensor_create_ms,inference_ms,output_copy_ms," +
-                    "det_parse_ms,nms_ms,mask_decode_ms," +
-                    "mask_count,selected_mask_area_pct," +
-                    "thermal_c,power_mw,memory_mb")
-            for (r in yoloSegDetails) {
-                sb.appendLine("${r.trialId},${r.testImage},${r.backend},${r.precision}," +
-                        "${"%.2f".format(r.e2eMs)},${"%.2f".format(r.preprocessMs)}," +
-                        "${"%.2f".format(r.tensorCreateMs)},${"%.2f".format(r.inferenceMs)}," +
-                        "${"%.2f".format(r.outputCopyMs)},${"%.2f".format(r.detParseMs)}," +
-                        "${"%.2f".format(r.nmsMs)},${"%.2f".format(r.maskDecodeMs)}," +
-                        "${r.maskCount},${"%.2f".format(r.selectedMaskAreaPct)}," +
-                        "${"%.1f".format(r.thermalC)},${"%.1f".format(r.powerMw)},${r.memoryMb}")
-            }
+            val memDelta = r.peakMemoryAfterLoadMb - r.idleMemoryMb
+            sb.appendLine("${r.startType},${r.textEncLoadMs}," +
+                    "${r.unetLoadMs},${r.vaeDecLoadMs}," +
+                    "${r.totalLoadMs}," +
+                    "${r.idleMemoryMb},${r.peakMemoryAfterLoadMb},${memDelta}," +
+                    "${"%.1f".format(r.idleThermalC)},${"%.1f".format(r.idlePowerMw)}," +
+                    "${"%.2f".format(r.firstInferenceWallClockMs)},${"%.2f".format(r.coldStartTotalMs)},${r.warmupTotalMs}," +
+                    "${r.thermalZoneType},${r.isCharging},${"%.1f".format(r.idleBaselinePowerMw)}")
         }
 
         return sb.toString()
     }
 
-    fun getRecordCount(): Int = eraseSummaries.size + yoloSegDetails.size
+    fun getRecordCount(): Int = generateSummaries.size
 
     fun exportAndSaveCsv(): String? {
         val csvData = exportCsv()
@@ -901,17 +638,15 @@ class BenchmarkRunner(
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             val cfg = config ?: lastExportConfig ?: return null
             val phaseTag = when (cfg.phase) {
-                BenchmarkPhase.SINGLE_ERASE -> "single"
-                BenchmarkPhase.SUSTAINED_ERASE -> "sustained"
-                BenchmarkPhase.YOLO_SEG_ONLY -> "yolo"
+                BenchmarkPhase.SINGLE_GENERATE -> "single"
+                BenchmarkPhase.SUSTAINED_GENERATE -> "sustained"
             }
-            val baseFilename = if (cfg.phase == BenchmarkPhase.YOLO_SEG_ONLY) {
-                "yolo_${cfg.yoloPrecision.displayName.lowercase()}_${cfg.yoloBackend.name.lowercase()}_" +
-                        "${cfg.roiSize.name.lowercase()}_${phaseTag}_${timestamp}"
-            } else {
-                "eraser_${cfg.sdPrecision.dirSuffix}_${cfg.sdBackend.name.lowercase()}_" +
-                        "s${cfg.steps}_str${(cfg.strength * 10).toInt()}_${cfg.roiSize.name.lowercase()}_${phaseTag}_${timestamp}"
+            val variantTag = when (cfg.modelVariant) {
+                ModelVariant.SD_V15 -> "sd15"
+                ModelVariant.LCM_LORA -> "lcm"
             }
+            val baseFilename = "txt2img_${variantTag}_${cfg.sdPrecision.dirSuffix}_${cfg.sdBackend.name.lowercase()}_" +
+                    "s${cfg.steps}_${phaseTag}_${timestamp}"
 
             val exportDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
             if (exportDir != null) {
@@ -971,7 +706,7 @@ class BenchmarkRunner(
                     this@BenchmarkRunner.config = cfg
 
                     try {
-                        runBenchmark(cfg, forceFixedTestData = true)
+                        runBenchmark(cfg)
                     } catch (e: CancellationException) { throw e }
                     catch (e: Throwable) {
                         Log.e(TAG, "Batch experiment failed: ${e.message}", e)
@@ -1005,7 +740,6 @@ class BenchmarkRunner(
     // --- Cleanup ---
 
     private suspend fun cleanup() {
-        // Cancel metrics with timeout to avoid hanging on blocking I/O
         systemMetricsJob?.let { job ->
             job.cancel()
             withTimeoutOrNull(3000) { job.join() }
@@ -1017,17 +751,12 @@ class BenchmarkRunner(
             Log.w(TAG, "logcatCapture.stopCapture failed: ${e.message}")
         }
 
-        // Set IDLE immediately so UI unblocks (Export CSV enabled) before slow model release.
-        // Use update{} to preserve display values (lastE2eMs, thermal, power) after completion.
         if (_progress.value.state != BenchmarkState.ERROR) {
             _progress.update { it.copy(state = BenchmarkState.IDLE) }
         }
         config = null
         Log.i(TAG, "Cleanup: IDLE set, releasing models...")
 
-        // Model release may take several seconds (large QNN model unload)
-        yoloRunner?.release()
-        yoloRunner = null
         pipeline?.release()
         pipeline = null
         Log.i(TAG, "Cleanup complete")
@@ -1037,17 +766,10 @@ class BenchmarkRunner(
         stopBatch()
         stop()
         if (logcatCapture.isCapturing()) logcatCapture.stopCapture()
-        yoloRunner?.release()
-        yoloRunner = null
         pipeline?.release()
         pipeline = null
         _lastGeneratedImage.value?.recycle()
         _lastGeneratedImage.value = null
-        sourceImage?.recycle()
-        sourceImage = null
-        sourceMask?.recycle()
-        sourceMask = null
-        sourceImageLabel = null
     }
 
     private fun nsToMs(ns: Long): Float = (ns / 1_000_000.0).toFloat()
