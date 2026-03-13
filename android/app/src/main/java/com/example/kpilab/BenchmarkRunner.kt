@@ -86,13 +86,17 @@ class BenchmarkRunner(
     private val logcatCapture = LogcatCapture()
     private var lastOrtLogInfo: OrtLogInfo? = null
 
+    // System metrics coroutine scope (field so cleanup() can cancel the parent Job)
+    private var metricsScope: CoroutineScope? = null
+
     // WakeLock — prevents CPU sleep during long benchmark runs
     private val wakeLock: PowerManager.WakeLock = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "kpilab:benchmark")
 
     val isRunning: Boolean
         get() = _progress.value.state in listOf(
-            BenchmarkState.RUNNING, BenchmarkState.WARMING_UP, BenchmarkState.INITIALIZING)
+            BenchmarkState.RUNNING, BenchmarkState.WARMING_UP, BenchmarkState.INITIALIZING,
+            BenchmarkState.STOPPING)
 
     val isBatchRunning: Boolean
         get() = _batchProgress.value.isRunning
@@ -207,37 +211,50 @@ class BenchmarkRunner(
         unetStepDetails.clear()
         coldStartRecord = null
 
-        val captureScope = CoroutineScope(Dispatchers.IO + Job())
+        val captureScopeJob = Job()
+        val captureScope = CoroutineScope(Dispatchers.IO + captureScopeJob)
         logcatCapture.startCapture(
             listOf("onnxruntime", "OrtRunner", "Txt2ImgPipeline", "QNN"), captureScope)
         try {
             pipeline?.release()
             pipeline = null
+            // Hint JVM GC and give QNN DSP memory time to settle before next session init.
+            System.gc()
+            delay(1000)
 
             runTxt2ImgBenchmark(config)
 
-            _progress.update { it.copy(state = BenchmarkState.IDLE) }
-
-            systemMetricsJob?.let { job ->
-                job.cancel()
-                withTimeoutOrNull(3000) { job.join() }
+            // 활성 추론은 완료됐으므로 즉시 STOPPING으로 전환해 UI에 반영.
+            // IDLE이 아닌 STOPPING을 사용하는 이유: isRunning에 STOPPING이 포함되어 있어
+            // cleanup() 완료 전에 새 실행이 시작되는 race condition을 막을 수 있음.
+            // IDLE 전환은 cleanup()에서 pipeline = null 이후에만 수행.
+            if (_progress.value.state != BenchmarkState.ERROR) {
+                _progress.update { it.copy(state = BenchmarkState.STOPPING) }
             }
-            systemMetricsJob = null
 
             Log.i(TAG, "Benchmark complete: generate=${generateSummaries.size}")
         } finally {
             systemMetricsJob?.cancel()
             systemMetricsJob = null
             try { logcatCapture.stopCapture() } catch (e: Exception) { Log.w(TAG, "logcatCapture.stopCapture failed: ${e.message}") }
+            captureScopeJob.cancel()
             try {
                 val modelKey = "sd_${config.modelVariant.name.lowercase()}_${config.sdPrecision.dirSuffix}_${config.sdBackend.name.lowercase()}"
-                val parsed = withTimeoutOrNull(5000) { logcatCapture.parseOrtInfo() }
-                if (parsed != null) {
-                    lastOrtLogInfo = parsed
-                    if (parsed.hasData()) {
-                        OrtLogInfo.saveForModel(context, modelKey, parsed)
-                        Log.i(TAG, "Saved partition info for $modelKey")
+                // EpContext (.bin) 모델은 세션 생성 시 그래프 파티션 로그를 출력하지 않음.
+                // 로그를 전부 스캔해도 항상 빈 결과 → 수만 줄 파싱을 skip하고 캐시만 조회.
+                val isEpContext = java.io.File(config.modelDir).listFiles()
+                    ?.any { it.extension == "bin" } == true
+                if (!isEpContext) {
+                    val parsed = withTimeoutOrNull(5000) { logcatCapture.parseOrtInfo() }
+                    if (parsed != null) {
+                        lastOrtLogInfo = parsed
+                        if (parsed.hasData()) {
+                            OrtLogInfo.saveForModel(context, modelKey, parsed)
+                            Log.i(TAG, "Saved partition info for $modelKey")
+                        }
                     }
+                } else {
+                    Log.i(TAG, "EpContext model: skipping ORT log parse, loading cached partition info")
                 }
                 if (lastOrtLogInfo == null || !lastOrtLogInfo!!.hasData()) {
                     val cached = OrtLogInfo.loadForModel(context, modelKey)
@@ -331,8 +348,10 @@ class BenchmarkRunner(
 
         // System metrics
         systemMetricsJob?.cancel()
-        val metricsScope = CoroutineScope(Dispatchers.Default + Job())
-        systemMetricsJob = metricsScope.launch { collectSystemMetrics() }
+        metricsScope?.cancel()
+        val newMetricsScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        metricsScope = newMetricsScope
+        systemMetricsJob = newMetricsScope.launch { collectSystemMetrics() }
 
         _progress.update { it.copy(state = BenchmarkState.RUNNING) }
 
@@ -781,21 +800,27 @@ class BenchmarkRunner(
             withTimeoutOrNull(3000) { job.join() }
         }
         systemMetricsJob = null
+        metricsScope?.cancel()
+        metricsScope = null
         try {
             if (logcatCapture.isCapturing()) logcatCapture.stopCapture()
         } catch (e: Exception) {
             Log.w(TAG, "logcatCapture.stopCapture failed: ${e.message}")
         }
 
-        if (_progress.value.state != BenchmarkState.ERROR) {
-            _progress.update { it.copy(state = BenchmarkState.IDLE) }
-        }
         config = null
-        Log.i(TAG, "Cleanup: IDLE set, releasing models...")
+        Log.i(TAG, "Cleanup: releasing models...")
 
         pipeline?.release()
         pipeline = null
         if (wakeLock.isHeld) wakeLock.release()
+
+        // IDLE 전환은 pipeline 해제 완료 후에 수행.
+        // IDLE을 먼저 설정하면 start()의 isRunning 가드를 통과한 2차 실행이
+        // cleanup()과 동시에 pipeline?.release()를 호출해 OrtSession 이중 close 발생.
+        if (_progress.value.state != BenchmarkState.ERROR) {
+            _progress.update { it.copy(state = BenchmarkState.IDLE) }
+        }
         Log.i(TAG, "Cleanup complete")
     }
 

@@ -184,10 +184,10 @@ class MainActivity : AppCompatActivity() {
     private var vaeDecOptions: List<SdPrecision> = listOf(SdPrecision.FP16)
 
     private fun setupPrecisionSpinners() {
-        // Initial scan on background thread, then refresh spinners
+        // allowFp32는 메인 스레드에서 미리 읽어야 함 (IO 스레드에서 UI 접근 금지)
+        val allowFp32 = binding.radioGroupEp.checkedRadioButtonId != R.id.radioEpNpu
         lifecycleScope.launch(Dispatchers.IO) {
             val scanResult = ModelScanner.scan(BenchmarkConfig().modelDir, currentVariant())
-            val allowFp32 = binding.radioGroupEp.checkedRadioButtonId != R.id.radioEpNpu
             launch(Dispatchers.Main) {
                 applyModelScanResult(scanResult, allowFp32)
             }
@@ -251,10 +251,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updatePrecisionOptions(allowFp32: Boolean) {
-        applyModelScanResult(
-            ModelScanner.scan(BenchmarkConfig().modelDir, currentVariant()),
-            allowFp32
-        )
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = ModelScanner.scan(BenchmarkConfig().modelDir, currentVariant())
+            launch(Dispatchers.Main) { applyModelScanResult(result, allowFp32) }
+        }
     }
 
     private fun buildPrecisionMap(): Map<SdComponent, SdPrecision> = mapOf(
@@ -360,7 +360,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         val isRunning = progress.state in listOf(
-            BenchmarkState.RUNNING, BenchmarkState.WARMING_UP, BenchmarkState.INITIALIZING)
+            BenchmarkState.RUNNING, BenchmarkState.WARMING_UP, BenchmarkState.INITIALIZING,
+            BenchmarkState.STOPPING)
 
         binding.progressBar.visibility = if (isRunning) View.VISIBLE else View.GONE
         binding.progressBar.progress = progress.progressPercent
@@ -558,11 +559,17 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "No data", Toast.LENGTH_SHORT).show()
             return
         }
-        val path = benchmarkRunner.exportAndSaveCsv()
-        if (path != null) {
-            Toast.makeText(this, "Exported to:\n${File(path).name}", Toast.LENGTH_LONG).show()
-        } else {
-            Toast.makeText(this, "Export failed", Toast.LENGTH_SHORT).show()
+        binding.btnExport.isEnabled = false
+        lifecycleScope.launch(Dispatchers.IO) {
+            val path = benchmarkRunner.exportAndSaveCsv()
+            launch(Dispatchers.Main) {
+                binding.btnExport.isEnabled = benchmarkRunner.getRecordCount() > 0
+                if (path != null) {
+                    Toast.makeText(this@MainActivity, "Exported to:\n${File(path).name}", Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(this@MainActivity, "Export failed", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 

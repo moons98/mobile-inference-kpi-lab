@@ -22,7 +22,7 @@ class LogcatCapture {
 
     private var captureJob: Job? = null
     private val capturedLogs = StringBuilder()
-    private var isCapturing = false
+    @Volatile private var isCapturing = false
     @Volatile private var captureProcess: Process? = null
     @Volatile private var captureReader: BufferedReader? = null
 

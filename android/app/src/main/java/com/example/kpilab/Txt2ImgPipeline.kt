@@ -138,7 +138,14 @@ class Txt2ImgPipeline(
         } else {
             initializeSequential(ep, fp16, perf, modelDir, enableProfiling, env)
         }
-        if (!ok) return false
+        if (!ok) {
+            // sequential 경로에서 부분 실패 시 this.textEncoder/unet에 이미 할당된
+            // OrtRunner가 있을 수 있음. 해제하지 않으면 OrtSession 네이티브 메모리 누수.
+            textEncoder?.release(); textEncoder = null
+            unet?.release(); unet = null
+            vaeDecoder?.release(); vaeDecoder = null
+            return false
+        }
 
         val wallClockMs = (System.nanoTime() - wallClockStart) / 1_000_000
 
@@ -231,6 +238,10 @@ class Txt2ImgPipeline(
                     if (vd == null) "VAE Decoder" else null
                 ).joinToString(", ") + " init failed"
                 Log.e(TAG, lastError!!)
+                // 성공한 runner들을 해제하지 않으면 OrtSession 네이티브 메모리 누수 발생
+                te?.release()
+                un?.release()
+                vd?.release()
                 false
             } else {
                 textEncoder = te
@@ -554,7 +565,9 @@ class Txt2ImgPipeline(
         textEncoder = null
         unet = null
         vaeDecoder = null
-        ortEnv?.close()
+        // OrtEnvironment.getEnvironment() is a process-level singleton.
+        // Closing and recreating it between experiments tears down the QNN HTP backend,
+        // causing a SIGSEGV on the second session init. Leave the env alive for the process lifetime.
         ortEnv = null
         tokenizer = null
         scheduler = null

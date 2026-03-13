@@ -175,12 +175,14 @@ class OrtRunner(private val context: Context) {
         val env = ortEnv ?: return null
         val session = ortSession ?: return null
 
-        var tensorInputs: Map<String, OnnxTensor> = emptyMap()
+        val tensorInputMap = mutableMapOf<String, OnnxTensor>()
+        var tensorInputs: Map<String, OnnxTensor> = tensorInputMap  // alias for finally block
         var results: OrtSession.Result? = null
         return try {
-            // Create input tensors
+            // Create input tensors incrementally so partially-built tensors are
+            // visible to the finally block even if createTensor() throws mid-loop.
             val inputCreateStart = System.nanoTime()
-            tensorInputs = inputs.map { (name, pair) ->
+            for ((name, pair) in inputs) {
                 val (buffer, shape) = pair
                 val tensor = when (buffer) {
                     is FloatBuffer -> OnnxTensor.createTensor(env, buffer, shape)
@@ -189,8 +191,8 @@ class OrtRunner(private val context: Context) {
                     is ShortBuffer -> OnnxTensor.createTensor(env, buffer, shape, OnnxJavaType.FLOAT16)
                     else -> throw IllegalArgumentException("Unsupported buffer type: ${buffer::class}")
                 }
-                name to tensor
-            }.toMap()
+                tensorInputMap[name] = tensor
+            }
             val inputCreateMs = ((System.nanoTime() - inputCreateStart) / 1_000_000.0).toFloat()
 
             // Run session
