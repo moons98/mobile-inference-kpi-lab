@@ -391,7 +391,10 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.stop_benchmark) else getString(R.string.start_benchmark)
 
         setControlsEnabled(!isRunning)
-        binding.btnExport.isEnabled = !isRunning && benchmarkRunner.getRecordCount() > 0
+        // STOPPING: 추론 완료, cleanup 진행 중 — 데이터는 이미 확정됐으므로 export 허용
+        val canExport = (progress.state == BenchmarkState.STOPPING || !isRunning) &&
+                benchmarkRunner.getRecordCount() > 0
+        binding.btnExport.isEnabled = canExport
     }
 
     private fun updateBatchUI(progress: BatchProgress) {
