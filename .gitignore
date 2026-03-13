@@ -77,6 +77,8 @@ runs/
 tmp/
 temp/
 *.tmp
+
+# docs
 docs/reference.md
 
 # weight
