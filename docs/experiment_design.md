@@ -6,22 +6,37 @@
 
 ### 0.1 문제정의
 
-Cloud 기반 text-to-image 생성이 보편화되었으나, mobile on-device 환경에서의 실행 가능성은 아직 충분히 검증되지 않았다. 본 프로젝트의 핵심 질문은 다음이다.
+Samsung Galaxy S26 Ultra 기준으로 photo/creative 기능은 실행 위치가 나뉜다.
 
-**Diffusion 기반 text-to-image 생성을 mobile on-device 환경에서 실사용 가능한 수준으로 수행할 수 있는가?**
+**On-device 기능** (로컬 추론):
+- AI Eraser (ai 지우개): ~10s
+- Move (피사체 이동 + 배경 생성)
 
-이를 단일 기능 구현 문제가 아니라, 시스템 관점의 **feasibility 분석**으로 정의한다.
+**Cloud 기능** (서버 추론):
+- 만들기 (텍스트 기반 이미지 편집): 이미지 크기 12M → 9M
+- 스타일 (화풍 변환): 원본 해상도 유지(512 배수), ~12s (통신 상태에 따라 최대 20s)
+- Creative Studio:
+  - 텍스트 기반 이미지 생성 (배경화면 등): 1024×1024, ~8s
+  - 스티커 생성: 720×720, ~9s
+  - 스티커 세트 확장: 9개 이미지, ~25s
 
-- Baseline: SD v1.5의 standard denoising (20–50 steps)
-- Optimized: LCM-LoRA를 통한 few-step generation (2–8 steps)
+Creative Studio의 이미지/스티커 생성 기능은 Text Encoder + UNet + VAE Decoder로 구성되는 Stable Diffusion 계열 모델을 기반으로 할 것으로 분석된다. 이 컴포넌트들은 크기가 크지만 구조적으로 mobile NPU에서 실행 가능한 범주에 있다.
 
-핵심 비교는 **동일 backbone에서 step 수 감소가 mobile KPI를 얼마나 개선하는가**이다.
+현재는 서버에서 실행되어 네트워크 latency가 포함된다. 만약 같은 모델을 on-device에서 실행한다면:
+- 서버 비용 없이 오프라인에서도 동작 가능
+- 하지만 device 자원(메모리, 전력, 발열) 사용이 불가피
+
+**본 프로젝트의 핵심 질문**:
+
+> SD v1.5 기반 text-to-image 파이프라인을 Samsung Galaxy S23(Snapdragon 8 Gen 2)에서 on-device로 실행할 경우, 어느 조건에서 실사용 가능한 latency와 시스템 자원 비용을 달성할 수 있는가?
+
+이를 단일 기능 구현이 아닌 **실행 위치 결정을 위한 feasibility 분석**으로 정의한다.
 
 ### 0.2 프로젝트 목표
 
 Android 단말(Snapdragon NPU 타겟)에서 diffusion text-to-image 파이프라인의 실행 가능성을 아래 KPI로 정량화한다.
 
-- Latency
+- Latency — 현재 cloud 실행 latency(~8–25s)와 비교 가능한 수치 확보
 - Memory
 - Power
 - Thermal
@@ -37,7 +52,7 @@ Android 단말(Snapdragon NPU 타겟)에서 diffusion text-to-image 파이프라
 1. SD v1.5 기반 text-to-image 생성을 mobile on-device에서 수행할 수 있는가?
 2. LCM-LoRA(few-step)는 SD v1.5 대비 mobile KPI를 얼마나 개선하는가?
 3. UNet 반복 구간이 전체 latency에서 차지하는 비중은 얼마인가?
-4. 어느 조건(step/precision/backend)부터 on-device latency가 실사용 가능 구간에 들어오는가?
+4. 어느 조건(step/precision/backend)부터 on-device latency가 현재 cloud 수준(~8–25s)과 경쟁 가능한가?
 
 ### 0.4 가설
 
@@ -49,10 +64,10 @@ Android 단말(Snapdragon NPU 타겟)에서 diffusion text-to-image 파이프라
 
 본 실험은 동일 SD v1.5 backbone에서 두 가지 생성 모드를 비교한다.
 
-- **SD v1.5 (Baseline)**: standard scheduler, 20–50 steps
-- **LCM-LoRA (Optimized)**: LCM scheduler + LoRA adapter, 2–8 steps
+- **SD v1.5 (Baseline)**: EulerDiscrete scheduler, 20–50 steps, CFG guidance_scale 7.5
+- **LCM-LoRA (Optimized)**: LCM-LoRA adapter fused UNet, DDIM-style scheduler, 2–8 steps, guidance_scale 1.0 (CFG 비활성화)
 
-공통 backbone은 동일하며, LCM-LoRA는 UNet에 LoRA weight를 적용하고 scheduler를 교체하는 방식이다.
+공통 backbone(SD v1.5)은 동일하며, LCM-LoRA는 UNet에 LoRA weight를 fuse한 별도 모델이다. 두 variant 모두 동일한 Text Encoder / VAE Decoder를 공유한다.
 
 ---
 
@@ -61,9 +76,9 @@ Android 단말(Snapdragon NPU 타겟)에서 diffusion text-to-image 파이프라
 ### 1.1 비교 축 (Primary Axes)
 
 - **Model Variant**: SD v1.5 (baseline) vs LCM-LoRA (optimized)
-- **Steps**: SD v1.5 20/30/50, LCM-LoRA 2/4/6/8
-- **Precision**: FP16 vs INT8(W8A8 또는 mixed)
-- **Backend**: CPU / GPU / NPU(QNN)
+- **Steps**: SD v1.5 20/30/50, LCM-LoRA 2/4/8
+- **Precision**: FP16 / W8A8 (`_int8_qdq.onnx`, QAI Hub W8A8) / MIXED_PR (Conv·MatMul·Gemm INT8, LayerNorm FP32) / W8A16 (AIMET weight-only)
+- **Backend**: CPU(FP32) / QNN GPU / QNN HTP(NPU)
 
 ### 1.2 Runtime Stack
 
@@ -115,6 +130,50 @@ Text Prompt → Text Encoder → Initial Noise(1,4,64,64) → Denoising Loop(UNe
 
 ---
 
+## 2.5 모델 준비 (Pre-Experiment)
+
+실험 전에 완료된 작업이다. 상세 내용은 `docs/weights_inventory.md` 참조.
+
+### 2.5.1 Export
+
+- `scripts/sd/export_sd_to_onnx.py` — Text Encoder / VAE Encoder / VAE Decoder (opset 18, FP32)
+- `scripts/sd/export_sd_lcm_unet.py` — UNet base / LCM-LoRA fused UNet (external data 형식)
+
+### 2.5.2 Quantization
+
+QAI Hub 및 AIMET 기반으로 아래 precision variant를 생성했다.
+
+| Precision | 방법 | 대상 |
+|---|---|---|
+| W8A8 | QAI Hub quantize (MinMax, 64 samples) | VAE Encoder, VAE Decoder |
+| MIXED_PR | `quant_runpod.py` (Conv/MatMul/Gemm INT8, LayerNorm FP32) | UNet base, UNet LCM |
+| W8A16 | AIMET weight-only (`qai-hub-models` export) | Text Encoder, VAE Decoder, UNet base, UNet LCM |
+
+### 2.5.3 QAI Hub Compile
+
+- Target: Samsung Galaxy S23 (Snapdragon 8 Gen 2), `--target_runtime precompiled_qnn_onnx --qairt_version 2.42`
+- 산출물: `{name}.onnx` (stub) + `{name}.bin` (QNN context binary)
+
+### 2.5.4 품질 스크리닝
+
+`scripts/sd/eval_sd_quant_quality.py` — component-level CosSim (FP32 vs quantized) 측정.
+결과: `exp_outputs/quantization/sd_quant_quality.txt`
+
+| Component | Variant | CosSim | Grade | 배포 |
+|---|---|---|---|---|
+| vae_encoder | W8A8 | 0.9810 | Marginal | 조건부 |
+| text_encoder | W8A16 | 0.9849 | Marginal | 조건부 |
+| vae_decoder | W8A8 | 0.9827 | Marginal | 조건부 |
+| vae_decoder | W8A16 | **0.9999** | Excellent | ✅ |
+| unet_base | MIXED_PR | **0.9968** | Good | ✅ |
+| unet_lcm | MIXED_PR | 0.9875 | Marginal | 조건부 |
+| unet_lcm | W8A16 | 0.7292 | Poor | ❌ |
+| unet_base/lcm | INT8 QDQ full | — | — | ❌ compile 실패 (HTP LayerNorm INT8 미지원) |
+
+배포 가능 모델 목록: `scripts/deploy/deploy_config.json`
+
+---
+
 ## 3. 실험 환경
 
 ### 3.1 Hardware
@@ -126,8 +185,8 @@ Text Prompt → Text Encoder → Initial Noise(1,4,64,64) → Denoising Loop(UNe
 ### 3.2 Software
 
 - Android API 34
-- ONNX Runtime 1.23.x
-- QNN SDK 2.42.x
+- ONNX Runtime 1.24.3
+- QNN SDK (QAIRT) 2.42.0 — QAI Hub compile job 버전과 일치
 
 ### 3.3 통제 조건
 
@@ -271,12 +330,25 @@ adb shell dumpsys battery | Select-String "level"
 5. **Backend 비교**: CPU/GPU/NPU 간 latency-power 효율 비교
 6. **Decision Boundary**: on-device vs cloud offload 경계
 
-### 6.2 Feasibility 판정 기준(초안)
+### 6.2 Reference Point: 현재 Cloud 실행 Latency
 
-- Latency: 사용자가 수용 가능한 생성 대기 시간 이내
-- Thermal: sustained 시 throttling 급증 없음
-- Memory: foreground app 안정 운용 가능 범위
-- Quality: 사용자 인지 가능한 열화가 허용 한도 이내
+On-device feasibility 판단의 기준점으로 사용. Galaxy S26 Ultra 실측 기준.
+
+| 기능 | 해상도 | Cloud Latency | 비고 |
+|---|---|---|---|
+| Creative Studio — 이미지 생성 | 1024×1024 | ~8s | 배경화면, 텍스트 기반 |
+| Creative Studio — 스티커 생성 | 720×720 | ~9s | 1개 |
+| Creative Studio — 스티커 세트 | 720×720 × 9 | ~25s | 9개 동시 |
+| 스타일 (화풍 변환) | 원본 해상도 | ~12–20s | 네트워크 포함 |
+
+On-device가 이 수치 이하(또는 근접)를 달성한다면 on-device 전환의 기술적 근거가 된다.
+
+### 6.3 Feasibility 판정 기준(초안)
+
+- **Latency**: cloud 실행 latency(~8–25s)와 비교. on-device가 이하이면 우위, 근사하면 조건부, 초과이면 cloud 유지 권장
+- **Thermal**: sustained 10회 생성 시 throttling 급증 없음
+- **Memory**: foreground app 안정 운용 (crash-free, S23 12GB RAM 기준)
+- **Quality**: 사용자 인지 가능한 artifact 없음 (CosSim Marginal 이상)
 
 > 최종 threshold 값은 Phase 1/2 실측 결과로 확정한다.
 
