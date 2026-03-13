@@ -718,6 +718,15 @@ class BenchmarkRunner(
                         }
                     }
                 }
+
+                _lastGeneratedImage.value?.let { bitmap ->
+                    val imgFile = File(exportDir, "${baseFilename}_last.png")
+                    imgFile.outputStream().use { out ->
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                    Log.i(TAG, "Image: ${imgFile.absolutePath}")
+                }
+
                 csvFile.absolutePath
             } else null
         } catch (e: Exception) {
