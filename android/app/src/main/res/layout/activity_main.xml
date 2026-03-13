@@ -235,14 +235,14 @@
                         android:id="@+id/radioPhaseSmoke"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Quick Test (1 trial, warmup off)" />
+                        android:text="Quick Test (1 trial, warmup off)"
+                        android:checked="true" />
 
                     <RadioButton
                         android:id="@+id/radioPhase1"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Phase1: Single Generate (5 trials, cooldown)"
-                        android:checked="true" />
+                        android:text="Phase1: Single Generate (5 trials, cooldown)" />
 
                     <RadioButton
                         android:id="@+id/radioPhase2"
