@@ -559,19 +559,14 @@ class Txt2ImgPipeline(
     }
 
     fun release() {
-        // Capture refs and null them before releasing to prevent concurrent access.
-        val te = textEncoder; textEncoder = null
-        val un = unet;        unet = null
-        val vd = vaeDecoder;  vaeDecoder = null
-        // Release all 3 sessions in parallel: total time = max(individual) instead of sum.
-        // Each OrtRunner.release() blocks for ~300ms + session.close() (QNN HTP teardown).
-        runBlocking {
-            listOf(
-                async(Dispatchers.IO) { te?.release() },
-                async(Dispatchers.IO) { un?.release() },
-                async(Dispatchers.IO) { vd?.release() }
-            ).forEach { it.await() }
-        }
+        // QNN HTP driver does not support concurrent session teardown — parallel close
+        // causes a deadlock. Release sequentially to avoid the hang.
+        textEncoder?.release()
+        unet?.release()
+        vaeDecoder?.release()
+        textEncoder = null
+        unet = null
+        vaeDecoder = null
         // OrtEnvironment.getEnvironment() is a process-level singleton.
         // Closing and recreating it between experiments tears down the QNN HTP backend,
         // causing a SIGSEGV on the second session init. Leave the env alive for the process lifetime.
