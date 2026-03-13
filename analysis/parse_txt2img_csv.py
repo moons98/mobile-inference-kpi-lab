@@ -19,6 +19,53 @@ import sys
 import argparse
 
 
+# ---------------------------------------------------------------------------
+# QAI Hub on-device NPU memory lookup  (source: docs/weights_inventory.md)
+# W8A16 excluded — 실추론 성능 하락 확인으로 실험 대상 외
+# ---------------------------------------------------------------------------
+_NPU_MEM_MB = {
+    # text_encoder  (QAI Hub profile 2MB = 가중치 미계상 오류 → compile bin 크기 237MB로 대체)
+    ("text_enc", "fp32"):        237,
+    # unet — SD_V15 base  (no QAI Hub profile; assumed same as unet_lcm fp32 — same architecture)
+    ("unet_v15", "fp32"):        1793,
+    ("unet_v15", "mixed_pr"):    1151,
+    # unet — SD_LCM
+    ("unet_lcm", "fp32"):        1793,
+    ("unet_lcm", "mixed_pr"):    1150,
+    # vae_decoder
+    ("vae_dec",  "fp32"):        119,
+    ("vae_dec",  "w8a8"):        69,
+}
+
+
+def _npu_mem_mb(variant: str, component: str, precision: str):
+    """Return QAI Hub profiled NPU memory (MB) or None if unknown/excluded."""
+    v = "lcm" if "lcm" in variant.lower() else "v15"
+    p = precision.lower().replace("-", "_")
+    # fp16 → QNN compiles FP32 ONNX with FP16 activations by default;
+    # QAI Hub profiles were done on the same compiled binary → use fp32 values.
+    if p == "fp16":
+        p = "fp32"
+    comp_map = {"text_encoder": "text_enc", "unet": f"unet_{v}", "vae_decoder": "vae_dec"}
+    key = (comp_map.get(component), p)
+    return _NPU_MEM_MB.get(key)
+
+
+def _parse_pcp(bench) -> dict:
+    """Parse sd_precision_per_component → {component: precision} dict."""
+    raw = bench.metadata.get("sd_precision_per_component", "")
+    if not raw:
+        # fall back: apply global precision to all components
+        p = bench.metadata.get("sd_precision", "fp32").lower()
+        return {"text_encoder": p, "unet": p, "vae_decoder": p}
+    result = {}
+    for part in raw.split(";"):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            result[k.strip()] = v.strip().lower()
+    return result
+
+
 @dataclass
 class ParsedBenchmark:
     """Parsed benchmark result from one CSV file."""
@@ -121,103 +168,94 @@ def format_report(bench: ParsedBenchmark) -> str:
     if bench.cold_start is not None and not bench.cold_start.empty:
         cs = bench.cold_start.iloc[0]
         lines.append("")
-        lines.append("[2] Cold Start Breakdown")
+        lines.append("[2] Cold Start Breakdown  (ms)")
         lines.append(sep2)
 
-        # Phase 1: Session creation (component breakdown)
-        lines.append("  Phase 1 — Session Creation (ORT session.create + QNN HTP graph compile)")
-        lines.append(f"  {'Component':<25} {'Time (ms)':>12}")
-        lines.append(f"  {'-'*25} {'-'*12}")
-
-        components = [
-            ("Text Encoder", "text_enc_load_ms"),
-            ("UNet", "unet_load_ms"),
-            ("VAE Decoder", "vae_dec_load_ms"),
-        ]
-        for label, col in components:
-            val = cs.get(col, 0)
-            if pd.notna(val) and val > 0:
-                lines.append(f"  {label:<25} {val:>12,.0f}")
-
-        lines.append(f"  {'='*25} {'='*12}")
-        total_sum = cs.get('total_load_ms', 0)
-        lines.append(f"  {'Component sum':<25} {total_sum:>12,.0f}")
-
-        init_wc = cs.get('init_wall_clock_ms', None)
-        if pd.notna(init_wc) and init_wc > 0:
-            parallel = cs.get('parallel_init', False)
-            mode = "parallel" if parallel else "sequential"
-            lines.append(f"  {'Wall-clock (' + mode + ')':<25} {init_wc:>12,.0f}")
-            if total_sum > 0:
-                diff = init_wc - total_sum
-                if abs(diff) > 50:
-                    if parallel:
-                        pct = (total_sum - init_wc) / total_sum * 100
-                        lines.append(f"  {'  → parallel savings':<25} {total_sum - init_wc:>+12,.0f}  ({pct:.1f}% of sum)")
-                    else:
-                        pct = diff / total_sum * 100
-                        lines.append(f"  {'  → inter-session overhead':<25} {diff:>+12,.0f}  ({pct:.1f}% of sum)")
-
-        # Memory
-        idle_mem = cs.get('idle_memory_mb', 0)
-        peak_mem = cs.get('peak_memory_after_load_mb', 0)
-        if pd.notna(idle_mem) and idle_mem > 0:
-            mem_delta = cs.get('memory_delta_mb', peak_mem - idle_mem)
-            lines.append(f"  Memory: {idle_mem} MB (idle) → {peak_mem} MB (after load)  [+{mem_delta} MB models]")
-        else:
-            lines.append(f"  Memory after load: {peak_mem} MB")
-
-        # Idle conditions
-        idle_thermal = cs.get('idle_thermal_c', 0)
-        idle_power = cs.get('idle_power_mw', 0)
-        idle_info = []
-        if pd.notna(idle_thermal) and idle_thermal > 0:
-            idle_info.append(f"thermal {idle_thermal:.1f}°C")
-        if pd.notna(idle_power) and idle_power > 0:
-            idle_info.append(f"power {idle_power:.0f} mW")
-        if idle_info:
-            lines.append(f"  Idle conditions: {', '.join(idle_info)}")
-
-        # Phase 2: First (cold) inference
-        first_inf = cs.get('first_inference_wall_clock_ms', None)
+        init_wc   = cs.get('init_wall_clock_ms', 0) or 0
+        first_inf = cs.get('first_inference_wall_clock_ms', 0) or 0
+        cs_total  = cs.get('cold_start_total_ms', 0) or 0
+        total_sum = cs.get('total_load_ms', 0) or 0
+        parallel  = cs.get('parallel_init', False)
         steady_mean = None
         if bench.generate_summary is not None and not bench.generate_summary.empty:
             steady_mean = bench.generate_summary["generate_e2e_ms"].mean()
 
-        if pd.notna(first_inf) and first_inf > 0:
-            lines.append("")
-            lines.append("  Phase 2 — First Inference (pre-warmup, JIT + cache cold)")
-            delta_str = ""
-            if steady_mean:
-                delta = first_inf - steady_mean
-                delta_pct = delta / steady_mean * 100
-                delta_str = f"  (vs steady-state {steady_mean:,.0f} ms: {delta:+,.0f} ms / {delta_pct:+.1f}%)"
-            lines.append(f"  First inference:  {first_inf:,.0f} ms{delta_str}")
+        # [2a] Session Initialization
+        te_load  = cs.get('text_enc_load_ms', 0) or 0
+        un_load  = cs.get('unet_load_ms', 0) or 0
+        vd_load  = cs.get('vae_dec_load_ms', 0) or 0
+        overhead = (init_wc - total_sum) if init_wc > 0 and total_sum > 0 else None
+        par_str  = "Y" if parallel else "N"
+        lines.append("")
+        lines.append("  [2a] Session Initialization")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'TextEncLoad':>12} {'UNetLoad':>10} {'VAEDecLoad':>11} {'LoadSum':>9} {'InitWC':>9} {'Overhead':>10} {'Par':>4}")
+        lines.append(f"  {'-'*12} {'-'*10} {'-'*11} {'-'*9} {'-'*9} {'-'*10} {'-'*4}")
+        init_wc_str  = f"{init_wc:>9.0f}"  if init_wc  > 0 else f"{'--':>9}"
+        overhead_str = f"{overhead:>+10.0f}" if overhead is not None else f"{'--':>10}"
+        lines.append(f"  {te_load:>12.0f} {un_load:>10.0f} {vd_load:>11.0f} {total_sum:>9.0f} {init_wc_str} {overhead_str} {par_str:>4}")
+        lines.append("")
+        lines.append("    TextEncLoad/UNetLoad/VAEDecLoad  ORT session creation per component (NPU: includes QNN/HTP graph compile)")
+        lines.append("    LoadSum   Sum of component times")
+        lines.append("    InitWC    Actual wall-clock until all sessions ready (≥ LoadSum due to inter-session overhead)")
+        lines.append("    Overhead  InitWC − LoadSum  (inter-session scheduling cost)")
+        lines.append("    Par       Y = concurrent init; N = sequential (default, required for QNN HTP)")
 
-        # Cold start total timeline
-        cs_total = cs.get('cold_start_total_ms', 0)
-        if pd.notna(cs_total) and cs_total > 0 and pd.notna(init_wc) and init_wc > 0:
-            lines.append("")
-            lines.append("  Timeline  (app launch → first image ready)")
-            lines.append(f"  [Session load {init_wc:,.0f} ms] + [1st inference {first_inf:,.0f} ms]"
-                         f" = {cs_total:,.0f} ms total")
+        # [2b] Cold First Inference Breakdown
+        first_tok  = cs.get('first_tokenize_ms', 0) or 0
+        first_te   = cs.get('first_text_enc_ms', 0) or 0
+        first_unet = cs.get('first_unet_total_ms', 0) or 0
+        first_vae  = cs.get('first_vae_dec_ms', 0) or 0
+        first_pp   = cs.get('first_postprocess_ms', 0) or 0
+        first_e2e  = cs.get('first_generate_e2e_ms', 0) or 0
+        lines.append("")
+        lines.append("  [2b] Cold First Inference Breakdown  (1st generate() — post-load, pre-warmup, ms)")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'Tokenize':>10} {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'Postproc':>9} {'E2E':>10} {'WC':>9}")
+        lines.append(f"  {'-'*10} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*10} {'-'*9}")
+        tok_s  = f"{first_tok:>10.1f}"  if first_tok  > 0 else f"{'--':>10}"
+        te_s   = f"{first_te:>9.1f}"   if first_te   > 0 else f"{'--':>9}"
+        un_s   = f"{first_unet:>9.1f}" if first_unet > 0 else f"{'--':>9}"
+        vd_s   = f"{first_vae:>9.1f}"  if first_vae  > 0 else f"{'--':>9}"
+        pp_s   = f"{first_pp:>9.1f}"   if first_pp   > 0 else f"{'--':>9}"
+        e2e_s  = f"{first_e2e:>10.1f}" if first_e2e  > 0 else f"{'--':>10}"
+        wc_s   = f"{first_inf:>9.1f}"  if first_inf  > 0 else f"{'--':>9}"
+        lines.append(f"  {tok_s} {te_s} {un_s} {vd_s} {pp_s} {e2e_s} {wc_s}")
+        lines.append("    JIT compile + cold cache 포함 — warmup 이전 단 1회 측정")
+        lines.append("    WC: generate() wall-clock  |  E2E: component sum (WC ≥ E2E — 버퍼 할당 등 overhead 포함)")
 
-        # Warmup
+        # [2c] Cold Start E2E
+        lines.append("")
+        lines.append("  [2c] Cold Start E2E  (ms)")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'SessionInit':>12} {'1stInfer':>10} {'ColdE2E':>10}")
+        lines.append(f"  {'-'*12} {'-'*10} {'-'*10}")
+        init_s  = f"{init_wc:>12.0f}"  if init_wc  > 0 else f"{'--':>12}"
+        finf_s  = f"{first_inf:>10.0f}" if first_inf > 0 else f"{'--':>10}"
+        cold_s  = f"{cs_total:>10.0f}" if cs_total  > 0 else f"{'--':>10}"
+        lines.append(f"  {init_s} {finf_s} {cold_s}")
+        if steady_mean:
+            diff = first_inf - steady_mean
+            lines.append(f"    1stInfer vs steady-state: {steady_mean:,.0f} ms  ({diff:+,.0f} ms / {diff/steady_mean*100:+.1f}%)")
+        lines.append("    SessionInit  ORT 세션 생성 wall-clock (QNN HTP graph compile 포함)")
+        lines.append("    1stInfer     첫 번째 generate() wall-clock (JIT compile + cold cache 포함; Postproc 포함)")
+        lines.append("    ColdE2E      SessionInit + 1stInfer  (앱 최초 실행 → 첫 이미지 완성)")
+
+        # Warmup summary
         warmup_ms = cs.get('warmup_total_ms', None)
         if pd.notna(warmup_ms) and warmup_ms > 0:
-            m = bench.metadata
-            warmup_trials = 2  # default
-            per_trial = warmup_ms / warmup_trials if warmup_trials > 0 else 0
-            warmup_note = f"  (~{per_trial:,.0f} ms/trial)" if per_trial > 0 else ""
-            lines.append(f"  Warmup ({warmup_trials} trials): {warmup_ms:,.0f} ms{warmup_note}"
-                         + (f"  [steady-state established]" if steady_mean else ""))
+            warmup_trials = 2
+            per_trial = warmup_ms / warmup_trials
+            lines.append("")
+            lines.append(f"  Warmup ({warmup_trials} trials):  {warmup_ms:,.0f} ms  (~{per_trial:,.0f} ms/trial)"
+                         + ("  [steady-state established]" if steady_mean else ""))
 
     # --- [3] Generation Summary ---
     if bench.generate_summary is not None and not bench.generate_summary.empty:
         df = bench.generate_summary
         n = len(df)
         lines.append("")
-        lines.append(f"[3] Generation E2E Performance ({n} trials)")
+        lines.append(f"[3] Generation E2E Performance ({n} trials, warm)")
         lines.append(sep2)
 
         # Prompt (first trial)
@@ -225,70 +263,98 @@ def format_report(bench: ParsedBenchmark) -> str:
         if len(prompt) > 80:
             prompt = prompt[:77] + "..."
         lines.append(f"  Prompt: \"{prompt}\"")
-        lines.append("")
 
-        # Stage breakdown table
+        # [3a] Stage breakdown table (transposed: stats as rows, pipeline stages as columns)
+        lines.append("")
+        lines.append(f"  [3a] Stage Breakdown")
+        lines.append(f"  {'-'*70}")
+
         stage_cols = {
-            "tokenize_ms": "Tokenize",
-            "text_enc_ms": "Text Encoder",
-            "unet_total_ms": "UNet Total",
-            "vae_dec_ms": "VAE Decoder",
-            "generate_e2e_ms": "Generate E2E",
+            "tokenize_ms":     "Tokenize",
+            "text_enc_ms":     "Text Enc",
+            "unet_total_ms":   "UNet Total",
+            "vae_dec_ms":      "VAE Dec",
+            "postprocess_ms":  "Postproc",
+            "generate_e2e_ms": "E2E",
         }
 
         e2e_mean = df["generate_e2e_ms"].mean() if "generate_e2e_ms" in df.columns else 0
-        lines.append(f"  {'Stage':<25} {'Mean':>10} {'%E2E':>6} {'P50':>10} {'P95':>10} {'Min':>10} {'Max':>10} {'Std':>10}")
-        lines.append(f"  {'-'*25} {'-'*10} {'-'*6} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
-        for col, label in stage_cols.items():
-            if col in df.columns and df[col].mean() > 0.001:
-                s = df[col]
-                pct_str = f"{s.mean()/e2e_mean*100:5.1f}%" if e2e_mean > 0 and col != "generate_e2e_ms" else f"{'100%':>6}"
-                lines.append(f"  {label:<25} {s.mean():>10.1f} {pct_str:>6} {s.median():>10.1f} "
-                             f"{s.quantile(0.95):>10.1f} {s.min():>10.1f} {s.max():>10.1f} {s.std():>10.1f}")
+        active_stages = [(col, lbl) for col, lbl in stage_cols.items()
+                         if col in df.columns and df[col].mean() > 0.001]
+        if active_stages:
+            col_w  = max(max(len(lbl) for _, lbl in active_stages), 9) + 2
+            stat_w = 10
+            header = f"  {'Stat':<{stat_w}}"
+            for _, lbl in active_stages:
+                header += f"  {lbl:>{col_w}}"
+            lines.append(header)
+            lines.append(f"  {'-'*stat_w}" + f"  {'-'*col_w}" * len(active_stages))
+            for stat_label, func in [
+                ("Mean (ms)", lambda s: s.mean()),
+                ("P50",       lambda s: s.median()),
+                ("P95",       lambda s: s.quantile(0.95)),
+                ("Min",       lambda s: s.min()),
+                ("Max",       lambda s: s.max()),
+                ("Std",       lambda s: s.std()),
+            ]:
+                row = f"  {stat_label:<{stat_w}}"
+                for col, _ in active_stages:
+                    val = func(df[col])
+                    row += f"  {'nan':>{col_w}}" if pd.isna(val) else f"  {val:>{col_w}.2f}"
+                lines.append(row)
+            if e2e_mean > 0:
+                row = f"  {'%E2E':<{stat_w}}"
+                for col, _ in active_stages:
+                    if col == "generate_e2e_ms":
+                        row += f"  {'100%':>{col_w}}"
+                    else:
+                        pct_str = f"{df[col].mean() / e2e_mean * 100:.1f}%"
+                        row += f"  {pct_str:>{col_w}}"
+                lines.append(row)
 
-        # Sum check
-        component_cols = ["tokenize_ms", "text_enc_ms", "unet_total_ms", "vae_dec_ms"]
+        lines.append("")
+        lines.append("    Tokenize:    CLIP tokenizer — prompt text → token IDs")
+        lines.append("    Text Enc:    CLIP text encoder — token IDs → prompt embeddings")
+        lines.append("    UNet Total:  N-step denoising UNet (noise → latent)")
+        lines.append("    VAE Dec:     VAE decoder ORT session.run() — latent → float[]  (OnnxTensor → FloatArray native→Java copy 포함)")
+        lines.append("    Postproc:    float[] → Bitmap (pixel clamp + ARGB packing, CPU)")
+        lines.append("    E2E:         Tokenize + Text Enc + UNet + VAE Dec + Postproc  (component sum)")
+
+        # Diagnostic checks
+        component_cols = ["tokenize_ms", "text_enc_ms", "unet_total_ms", "vae_dec_ms", "postprocess_ms"]
         available_cols = [c for c in component_cols if c in df.columns]
         if available_cols and "generate_e2e_ms" in df.columns:
             component_sum = df[available_cols].sum(axis=1)
             gap = df["generate_e2e_ms"] - component_sum
-            lines.append(f"\n  Sum check:  E2E={df['generate_e2e_ms'].mean():.1f}  "
-                         f"Components={component_sum.mean():.1f}  "
-                         f"Gap={gap.mean():.1f}ms ({gap.mean()/df['generate_e2e_ms'].mean()*100:.1f}%)")
-
-        # Wall-clock vs component-sum gap
+            lines.append("")
+            lines.append(f"  Sum check:    E2E={df['generate_e2e_ms'].mean():.1f} ms  "
+                         f"∑components={component_sum.mean():.1f} ms  "
+                         f"gap={gap.mean():.1f} ms ({gap.mean()/df['generate_e2e_ms'].mean()*100:.1f}%)")
         if "pipeline_wall_clock_ms" in df.columns and df["pipeline_wall_clock_ms"].mean() > 0:
-            wc = df["pipeline_wall_clock_ms"]
+            wc  = df["pipeline_wall_clock_ms"]
             e2e = df["generate_e2e_ms"]
             gap = wc - e2e
-            lines.append(f"\n  Wall-clock check:  Pipeline={wc.mean():.1f}  "
-                         f"ComponentSum={e2e.mean():.1f}  "
-                         f"Overhead={gap.mean():.1f}ms ({gap.mean()/wc.mean()*100:.1f}%)")
-
+            lines.append(f"  Wall-clock:   generate()={wc.mean():.1f} ms  "
+                         f"E2E={e2e.mean():.1f} ms  "
+                         f"overhead={gap.mean():.1f} ms ({gap.mean()/wc.mean()*100:.1f}%)")
         if "trial_wall_clock_ms" in df.columns and df["trial_wall_clock_ms"].mean() > 0:
             twc = df["trial_wall_clock_ms"]
-            lines.append(f"  Trial wall-clock:  {twc.mean():.1f}ms (includes metric collection overhead)")
+            lines.append(f"  Trial clock:  {twc.mean():.1f} ms  (includes power/thermal sampling overhead)")
 
-        # UNet per-step stats
+        # [3b] UNet per-step summary
         if "unet_per_step_mean_ms" in df.columns:
             lines.append("")
-            lines.append(f"  [3b] UNet Per-Step Statistics")
+            lines.append(f"  [3b] UNet Per-Step Summary")
             lines.append(f"  {'-'*70}")
             lines.append(f"  Per-step mean:       {df['unet_per_step_mean_ms'].mean():.2f} ms")
             if "unet_per_step_p95_ms" in df.columns:
                 lines.append(f"  Per-step P95:        {df['unet_per_step_p95_ms'].mean():.2f} ms")
             if "scheduler_overhead_ms" in df.columns:
-                lines.append(f"  Scheduler overhead:  {df['scheduler_overhead_ms'].mean():.2f} ms (total across all steps)")
+                lines.append(f"  Scheduler overhead:  {df['scheduler_overhead_ms'].mean():.2f} ms  (EulerDiscrete, total across all steps)")
             steps = df["actual_steps"].iloc[0] if "actual_steps" in df.columns else int(m.get("steps", 0))
             if steps > 0:
                 unet_ms = df["unet_total_ms"].mean()
                 lines.append(f"  UNet total / steps:  {unet_ms:.1f} / {steps} = {unet_ms/steps:.1f} ms/step")
-
-        lines.append("")
-        lines.append("    Tokenize:      CLIP tokenizer (prompt -> input_ids)")
-        lines.append("    Text Encoder:  CLIP text model (input_ids -> embeddings)")
-        lines.append("    UNet Total:    N denoising steps (4ch txt2img UNet)")
-        lines.append("    VAE Decoder:   latent -> RGB 512x512 image")
 
     # --- [4] UNet Step Detail ---
     if bench.unet_step_detail is not None and not bench.unet_step_detail.empty:
@@ -326,47 +392,101 @@ def format_report(bench: ParsedBenchmark) -> str:
     if bench.generate_summary is not None and not bench.generate_summary.empty:
         df = bench.generate_summary
         has_thermal = "start_temp_c" in df.columns and df["start_temp_c"].mean() > 0
-        has_power = "avg_power_mw" in df.columns and df["avg_power_mw"].mean() > 0
-        has_memory = "peak_memory_mb" in df.columns
+        has_power   = "avg_power_mw" in df.columns and df["avg_power_mw"].mean() > 0
+        has_memory  = "peak_memory_mb" in df.columns
 
         if has_thermal or has_power or has_memory:
             lines.append("")
             lines.append("[5] System Resources")
             lines.append(sep2)
 
-            if has_thermal:
-                lines.append(f"  Thermal start:    {df['start_temp_c'].iloc[0]:.1f} C  (trial 1)")
-                lines.append(f"  Thermal end:      {df['end_temp_c'].iloc[-1]:.1f} C  (trial {len(df)})")
-                delta = df['end_temp_c'].iloc[-1] - df['start_temp_c'].iloc[0]
-                lines.append(f"  Thermal delta:    {delta:+.1f} C")
-                if len(df) > 1:
-                    lines.append(f"  Per-trial temps:  " +
-                                 "  ".join(f"T{i+1}:{r['start_temp_c']:.0f}->{r['end_temp_c']:.0f}"
-                                           for i, r in df.iterrows()))
-
-            if has_power:
-                avg_power = df['avg_power_mw'].mean()
-                lines.append(f"  Avg power:        {avg_power:.0f} mW")
-                # Idle baseline + delta power
-                idle_base_power = float(m.get('idle_baseline_power_mw', 0))
-                if idle_base_power > 0:
-                    delta_power = avg_power - idle_base_power
-                    lines.append(f"  Idle baseline:    {idle_base_power:.0f} mW  (5s median)")
-                    lines.append(f"  Delta power:      {delta_power:+.0f} mW  (inference - idle)")
-                if m.get('is_charging', '').lower() == 'true':
-                    lines.append(f"  ⚠ 충전 중 측정 — 전력 데이터 신뢰도 낮음")
-
+            # Memory (MB) — horizontal table
             if has_memory:
-                lines.append(f"  Peak VmRSS:       {df['peak_memory_mb'].max()} MB")
-            if "native_heap_mb" in df.columns and df["native_heap_mb"].max() > 0:
-                lines.append(f"  Peak Native Heap: {df['native_heap_mb'].max():.1f} MB")
-            if "pss_mb" in df.columns and df["pss_mb"].max() > 0:
-                lines.append(f"  Peak PSS:         {df['pss_mb'].max():.1f} MB")
+                lines.append("")
+                lines.append("  Memory (MB)")
+                has_cold_mem = bench.cold_start is not None and not bench.cold_start.empty
+                idle_mem = peak_load = 0
+                if has_cold_mem:
+                    cs2 = bench.cold_start.iloc[0]
+                    idle_mem  = cs2.get('idle_memory_mb', 0) or 0
+                    peak_load = cs2.get('peak_memory_after_load_mb', 0) or 0
+                nat_heap = df["native_heap_mb"].max() if "native_heap_mb" in df.columns and df["native_heap_mb"].max() > 0 else 0
+                pss      = df["pss_mb"].max()          if "pss_mb"          in df.columns and df["pss_mb"].max()          > 0 else 0
+                nat_str  = f"{nat_heap:>12.0f}" if nat_heap > 0 else f"{'--':>12}"
+                pss_str  = f"{pss:>8.0f}"       if pss      > 0 else f"{'--':>8}"
+                if has_cold_mem:
+                    idle_str      = f"{idle_mem:>8.0f}"   if idle_mem  > 0 else f"{'--':>8}"
+                    peak_load_str = f"{peak_load:>10.0f}" if peak_load > 0 else f"{'--':>10}"
+                    lines.append(f"  {'Idle':>8} {'AfterLoad':>10} {'Peak(infer)':>12} {'NativeHeap':>12} {'PSS':>8}")
+                    lines.append(f"  {'-'*8} {'-'*10} {'-'*12} {'-'*12} {'-'*8}")
+                    lines.append(f"  {idle_str} {peak_load_str} {df['peak_memory_mb'].max():>12} {nat_str} {pss_str}")
+                else:
+                    lines.append(f"  {'Peak(infer)':>12} {'NativeHeap':>12} {'PSS':>8}")
+                    lines.append(f"  {'-'*12} {'-'*12} {'-'*8}")
+                    lines.append(f"  {df['peak_memory_mb'].max():>12} {nat_str} {pss_str}")
+                lines.append("    Idle: before model load  |  AfterLoad: after session creation  |  Peak(infer): peak RSS during inference")
+                lines.append("    NativeHeap: ORT/QNN native allocations (Debug.getNativeHeapAllocatedSize)  |  PSS: proportional set size")
 
-            # Thermal zone type
-            zone_type = m.get('thermal_zone_type', '')
-            if zone_type:
-                lines.append(f"  Thermal zone:     {zone_type}")
+            # Total Peak Memory  (NPU estimate + App RSS)  — QNN_NPU only
+            if m.get("sd_backend", "").upper() == "QNN_NPU" and has_memory:
+                variant = m.get("model_variant", "")
+                pcp = _parse_pcp(bench)
+                te_mb  = _npu_mem_mb(variant, "text_encoder", pcp.get("text_encoder", "fp32"))
+                un_mb  = _npu_mem_mb(variant, "unet",         pcp.get("unet", "fp32"))
+                vd_mb  = _npu_mem_mb(variant, "vae_decoder",  pcp.get("vae_decoder", "fp32"))
+                app_mb = df["peak_memory_mb"].max()
+                all_known = all(x is not None for x in [te_mb, un_mb, vd_mb])
+                npu_sum = sum([te_mb, un_mb, vd_mb]) if all_known else None
+                total   = (npu_sum + app_mb) if npu_sum is not None else None
+                lines.append("")
+                lines.append("  Total Peak Memory  (App RSS + NPU estimate, MB)")
+                lines.append("  Source: NPU values from QAI Hub on-device profiling (docs/weights_inventory.md)")
+                lines.append(f"  {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'NPU Sum':>9} {'App RSS':>9} {'Total':>9}")
+                lines.append(f"  {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*9}")
+                te_s   = f"{te_mb:>9}"   if te_mb  is not None else f"{'--':>9}"
+                un_s   = f"{un_mb:>9}"   if un_mb  is not None else f"{'?':>9}"
+                vd_s   = f"{vd_mb:>9}"   if vd_mb  is not None else f"{'--':>9}"
+                npu_s  = f"{npu_sum:>9}" if npu_sum is not None else f"{'?':>9}"
+                tot_s  = f"{total:>9.0f}" if total  is not None else f"{'?':>9}"
+                lines.append(f"  {te_s} {un_s} {vd_s} {npu_s} {app_mb:>9.0f} {tot_s}")
+                lines.append("    TextEnc/UNet/VAEDec: QAI Hub on-device profiling 결과 (Snapdragon 8 Gen 2, S23)")
+                lines.append("      NPU(HTP) 메모리 = 모델 가중치가 상주하는 HTP 전용 메모리 영역")
+                lines.append("      App RSS(VmRSS)에는 미포함 — Android /proc/self/status 로 관측 불가")
+                lines.append("      실기기 on-device 직접 측정은 root 권한 + /sys/kernel/debug/ion/ 접근 필요 (stock Android SELinux 차단)")
+                lines.append("    App RSS: peak VmRSS during inference (ORT runtime, Java heap, shared libs; NPU 제외)")
+                lines.append("    Total: NPU Sum + App RSS  (추정치)")
+                lines.append("    ?: no QAI Hub profile available for this component/precision combination")
+
+            # Power (mW) — horizontal table
+            if has_power:
+                avg_power       = df['avg_power_mw'].mean()
+                idle_base_power = float(m.get('idle_baseline_power_mw', 0))
+                delta_power     = avg_power - idle_base_power if idle_base_power > 0 else 0
+                idle_str        = f"{idle_base_power:>10.0f}" if idle_base_power > 0 else f"{'--':>10}"
+                delta_str       = f"{delta_power:>+10.0f}"    if idle_base_power > 0 else f"{'--':>10}"
+                lines.append("")
+                lines.append("  Power (mW)")
+                lines.append(f"  {'Idle':>10} {'AvgInfer':>10} {'Delta':>10}")
+                lines.append(f"  {'-'*10} {'-'*10} {'-'*10}")
+                lines.append(f"  {idle_str} {avg_power:>10.0f} {delta_str}")
+                lines.append("    Idle: 5s median before model load  |  AvgInfer: mean during inference  |  Delta = AvgInfer − Idle (net inference power)")
+                lines.append("    ⚠ BatteryManager.BATTERY_PROPERTY_CURRENT_NOW 기반 — 폰 전체 시스템 소비 전력 (SoC+디스플레이+라디오 포함)")
+                lines.append("      앱 단독 / NPU 단독 전력 분리는 Snapdragon Profiler 또는 PMU 카운터 접근 필요")
+                if m.get('is_charging', '').lower() == 'true':
+                    lines.append("    ⚠ 충전 중 측정 — 전력 데이터 신뢰도 낮음")
+
+            # Thermal (°C) — horizontal table
+            if has_thermal:
+                t_start = df["start_temp_c"].iloc[0]
+                t_end   = df["end_temp_c"].iloc[-1]
+                delta   = t_end - t_start
+                zone_type = m.get('thermal_zone_type', '')
+                lines.append("")
+                lines.append(f"  Thermal (°C){'  zone: ' + zone_type if zone_type else ''}")
+                lines.append(f"  {'Start':>8} {'End':>8} {'Delta':>8}")
+                lines.append(f"  {'-'*8} {'-'*8} {'-'*8}")
+                lines.append(f"  {t_start:>8.1f} {t_end:>8.1f} {delta:>+8.1f}")
+                lines.append("    Start: SoC temp at start of trial 1  |  End: after last trial  |  Delta: total rise across all trials")
 
     # --- [6] Graph Partitioning ---
     ort_total = int(m.get('ort_total_nodes', 0))
@@ -451,14 +571,34 @@ def _append_methodology_notes(lines):
 
 
 def _append_stat_table(lines, df, col_map):
-    """Append a statistics table (Mean/P50/P95/Min/Max/Std)."""
-    lines.append(f"  {'Metric':<25} {'Mean':>10} {'P50':>10} {'P95':>10} {'Min':>10} {'Max':>10} {'Std':>10}")
-    lines.append(f"  {'-'*25} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
-    for col, label in col_map.items():
-        if col in df.columns and df[col].mean() > 0.001:
-            s = df[col]
-            lines.append(f"  {label:<25} {s.mean():>10.2f} {s.median():>10.2f} "
-                         f"{s.quantile(0.95):>10.2f} {s.min():>10.2f} {s.max():>10.2f} {s.std():>10.2f}")
+    """Transposed stat table: stats (Mean/P50/…) as rows, metrics as columns (pipeline time order)."""
+    active = [(col, label) for col, label in col_map.items()
+              if col in df.columns and df[col].mean() > 0.001]
+    if not active:
+        return
+
+    col_w = max(max(len(lbl) for _, lbl in active), 9) + 2
+    stat_w = 10
+
+    header = f"  {'Stat':<{stat_w}}"
+    for _, lbl in active:
+        header += f"  {lbl:>{col_w}}"
+    lines.append(header)
+    lines.append(f"  {'-'*stat_w}" + f"  {'-'*col_w}" * len(active))
+
+    for stat_label, func in [
+        ("Mean (ms)", lambda s: s.mean()),
+        ("P50",       lambda s: s.median()),
+        ("P95",       lambda s: s.quantile(0.95)),
+        ("Min",       lambda s: s.min()),
+        ("Max",       lambda s: s.max()),
+        ("Std",       lambda s: s.std()),
+    ]:
+        row = f"  {stat_label:<{stat_w}}"
+        for col, _ in active:
+            val = func(df[col])
+            row += f"  {'nan':>{col_w}}" if pd.isna(val) else f"  {val:>{col_w}.2f}"
+        lines.append(row)
 
 
 # ---------------------------------------------------------------------------
@@ -494,101 +634,247 @@ def format_comparison(benchmarks: list) -> str:
         for i, b in mixed_entries:
             lines.append(f"    #{i}: {b.metadata['sd_precision_per_component']}")
 
-    # --- [2] Generation E2E Comparison ---
     gen_benchmarks = [b for b in benchmarks if b.generate_summary is not None and not b.generate_summary.empty]
+    cold_benchmarks = [b for b in benchmarks if b.cold_start is not None and not b.cold_start.empty]
+
+    # --- [2] Cold Start Breakdown ---
+    if cold_benchmarks:
+        lines.append("")
+        lines.append("[2] Cold Start Breakdown  (ms)")
+        lines.append(sep2)
+
+        # [2a] Session Initialization
+        lines.append("")
+        lines.append("  [2a] Session Initialization")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'#':<4} {'File':<40} {'TextEncLoad':>12} {'UNetLoad':>10} {'VAEDecLoad':>11} "
+                     f"{'LoadSum':>9} {'InitWC':>9} {'Overhead':>10} {'Par':>4}")
+        lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*10} {'-'*11} {'-'*9} {'-'*9} {'-'*10} {'-'*4}")
+        for i, b in enumerate(cold_benchmarks, 1):
+            cs = b.cold_start.iloc[0]
+            name = Path(b.filepath).stem[:39]
+            text_enc_load = cs.get('text_enc_load_ms', 0) or 0
+            unet_load     = cs.get('unet_load_ms', 0) or 0
+            vae_dec_load  = cs.get('vae_dec_load_ms', 0) or 0
+            load_sum      = cs.get('total_load_ms', 0) or 0
+            init_wc       = cs.get('init_wall_clock_ms', 0)
+            parallel      = cs.get('parallel_init', False)
+            init_wc_str   = f"{init_wc:>9.0f}"  if pd.notna(init_wc) and init_wc > 0 else f"{'--':>9}"
+            overhead      = (init_wc - load_sum) if (pd.notna(init_wc) and init_wc > 0 and load_sum > 0) else None
+            overhead_str  = f"{overhead:>+10.0f}" if overhead is not None else f"{'--':>10}"
+            par_str       = f"{'Y':>4}" if parallel else f"{'N':>4}"
+            lines.append(f"  {i:<4} {name:<40} "
+                         f"{text_enc_load:>12.0f} {unet_load:>10.0f} {vae_dec_load:>11.0f} "
+                         f"{load_sum:>9.0f} {init_wc_str} {overhead_str} {par_str}")
+        lines.append("")
+        lines.append("    TextEncLoad/UNetLoad/VAEDecLoad  ORT session creation per component (NPU: includes QNN/HTP graph compile)")
+        lines.append("    LoadSum   Sum of component times")
+        lines.append("    InitWC    Actual wall-clock until all sessions ready (≥ LoadSum due to inter-session overhead)")
+        lines.append("    Overhead  InitWC − LoadSum  (inter-session scheduling cost)")
+        lines.append("    Par       Y = concurrent init; N = sequential (default, required for QNN HTP)")
+
+        # [2b] Cold First Inference Component Breakdown
+        lines.append("")
+        lines.append("  [2b] Cold First Inference Breakdown  (1st generate() — post-load, pre-warmup, ms)")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'#':<4} {'File':<40} {'Tokenize':>10} {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'Postproc':>9} {'E2E':>10} {'WC':>9}")
+        lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*10} {'-'*9}")
+        for i, b in enumerate(cold_benchmarks, 1):
+            cs   = b.cold_start.iloc[0]
+            name = Path(b.filepath).stem[:39]
+            tok     = cs.get('first_tokenize_ms', 0) or 0
+            textenc = cs.get('first_text_enc_ms', 0) or 0
+            unet    = cs.get('first_unet_total_ms', 0) or 0
+            vaedec  = cs.get('first_vae_dec_ms', 0) or 0
+            postproc= cs.get('first_postprocess_ms', 0) or 0
+            e2e     = cs.get('first_generate_e2e_ms', 0) or 0
+            wc      = cs.get('first_inference_wall_clock_ms', 0) or 0
+            tok_str     = f"{tok:>10.1f}"     if tok     > 0 else f"{'--':>10}"
+            textenc_str = f"{textenc:>9.1f}"  if textenc > 0 else f"{'--':>9}"
+            unet_str    = f"{unet:>9.1f}"     if unet    > 0 else f"{'--':>9}"
+            vaedec_str  = f"{vaedec:>9.1f}"   if vaedec  > 0 else f"{'--':>9}"
+            pp_str      = f"{postproc:>9.1f}" if postproc > 0 else f"{'--':>9}"
+            e2e_str     = f"{e2e:>10.1f}"     if e2e     > 0 else f"{'--':>10}"
+            wc_str      = f"{wc:>9.1f}"       if wc      > 0 else f"{'--':>9}"
+            lines.append(f"  {i:<4} {name:<40} {tok_str} {textenc_str} {unet_str} {vaedec_str} {pp_str} {e2e_str} {wc_str}")
+        lines.append("    JIT compile + cold cache 포함 — warmup 이전 단 1회 측정")
+        lines.append("    WC: generate() wall-clock  |  E2E: component sum (WC ≥ E2E — 버퍼 할당 등 overhead 포함)")
+
+        # [2c] Cold Start E2E Summary
+        lines.append("")
+        lines.append("  [2c] Cold Start E2E  (ms)")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'#':<4} {'File':<40} {'SessionInit':>12} {'1stInfer':>10} {'ColdE2E':>10}")
+        lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*10} {'-'*10}")
+        for i, b in enumerate(cold_benchmarks, 1):
+            cs   = b.cold_start.iloc[0]
+            name = Path(b.filepath).stem[:39]
+            init_wc    = cs.get('init_wall_clock_ms', 0)
+            first_inf  = cs.get('first_inference_wall_clock_ms', 0)
+            cold_total = cs.get('cold_start_total_ms', 0)
+            init_str   = f"{init_wc:>12.0f}"   if pd.notna(init_wc)    and init_wc    > 0 else f"{'--':>12}"
+            first_str  = f"{first_inf:>10.0f}"  if pd.notna(first_inf)  and first_inf  > 0 else f"{'--':>10}"
+            cold_str   = f"{cold_total:>10.0f}" if pd.notna(cold_total) and cold_total > 0 else f"{'--':>10}"
+            lines.append(f"  {i:<4} {name:<40} {init_str} {first_str} {cold_str}")
+        lines.append("    SessionInit  ORT 세션 생성 wall-clock (QNN HTP graph compile 포함)")
+        lines.append("    1stInfer     첫 번째 generate() wall-clock (JIT compile + cold cache 포함; Postproc 포함)")
+        lines.append("    ColdE2E      SessionInit + 1stInfer  (앱 최초 실행 → 첫 이미지 완성)")
+
+    # --- [3] Generation Latency ---
     if gen_benchmarks:
         lines.append("")
-        lines.append("[2] Generation Latency (mean, ms)")
+        lines.append("[3] Generation Latency  (warm, post-warmup mean, ms)")
         lines.append(sep2)
-        lines.append(f"  {'#':<4} {'File':<40} {'E2E':>10} {'WallClk':>10} {'Tokenize':>10} {'TextEnc':>10} "
-                     f"{'UNet':>10} {'VAEDec':>10} {'Steps':>6}")
-        lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*6}")
 
+        # [3a] Stage breakdown
+        lines.append(f"  [3a] Stage Breakdown")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'#':<4} {'File':<40} {'Steps':>6} {'Tokenize':>10} {'TextEnc':>10} "
+                     f"{'UNet':>10} {'VAEDec':>10} {'Postproc':>10} {'E2E':>10} {'WallClk':>10}")
+        lines.append(f"  {'-'*4} {'-'*40} {'-'*6} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
         for i, b in enumerate(gen_benchmarks, 1):
             df = b.generate_summary
             name = Path(b.filepath).stem[:39]
-            e2e = df["generate_e2e_ms"].mean()
-            wc = df["pipeline_wall_clock_ms"].mean() if "pipeline_wall_clock_ms" in df.columns and df["pipeline_wall_clock_ms"].mean() > 0 else 0
-            tok = df["tokenize_ms"].mean() if "tokenize_ms" in df.columns else 0
-            textenc = df["text_enc_ms"].mean() if "text_enc_ms" in df.columns else 0
-            unet = df["unet_total_ms"].mean() if "unet_total_ms" in df.columns else 0
-            vaedec = df["vae_dec_ms"].mean() if "vae_dec_ms" in df.columns else 0
-            steps = df["actual_steps"].iloc[0] if "actual_steps" in df.columns else "?"
-            wc_str = f"{wc:>10.1f}" if wc > 0 else f"{'--':>10}"
-            lines.append(f"  {i:<4} {name:<40} {e2e:>10.1f} {wc_str} {tok:>10.1f} {textenc:>10.1f} "
-                         f"{unet:>10.1f} {vaedec:>10.1f} {steps:>6}")
+            e2e        = df["generate_e2e_ms"].mean()
+            wc         = df["pipeline_wall_clock_ms"].mean() if "pipeline_wall_clock_ms" in df.columns and df["pipeline_wall_clock_ms"].mean() > 0 else 0
+            tok        = df["tokenize_ms"].mean() if "tokenize_ms" in df.columns else 0
+            textenc    = df["text_enc_ms"].mean() if "text_enc_ms" in df.columns else 0
+            unet       = df["unet_total_ms"].mean() if "unet_total_ms" in df.columns else 0
+            vaedec     = df["vae_dec_ms"].mean() if "vae_dec_ms" in df.columns else 0
+            postproc   = df["postprocess_ms"].mean() if "postprocess_ms" in df.columns and df["postprocess_ms"].mean() > 0 else 0
+            steps      = df["actual_steps"].iloc[0] if "actual_steps" in df.columns else "?"
+            wc_str     = f"{wc:>10.1f}" if wc > 0 else f"{'--':>10}"
+            pp_str     = f"{postproc:>10.1f}" if postproc > 0 else f"{'--':>10}"
+            lines.append(f"  {i:<4} {name:<40} {steps:>6} {tok:>10.1f} {textenc:>10.1f} "
+                         f"{unet:>10.1f} {vaedec:>10.1f} {pp_str} {e2e:>10.1f} {wc_str}")
+        lines.append("    E2E = Tokenize + TextEnc + UNet + VAEDec + Postproc  |  WallClk: generate() wall-clock")
 
-        # UNet per-step comparison
+        # [3b] UNet per-step comparison
         lines.append("")
-        lines.append("[2b] UNet Per-Step Comparison")
-        lines.append(sep2)
-        lines.append(f"  {'#':<4} {'File':<40} {'PerStep':>10} {'P95':>10} {'SchedOH':>10}")
+        lines.append(f"  [3b] UNet Per-Step  (ms/step)")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'#':<4} {'File':<40} {'Mean':>10} {'P95':>10} {'SchedOH':>10}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*10} {'-'*10}")
         for i, b in enumerate(gen_benchmarks, 1):
             df = b.generate_summary
             name = Path(b.filepath).stem[:39]
             ps_mean = df["unet_per_step_mean_ms"].mean() if "unet_per_step_mean_ms" in df.columns else 0
-            ps_p95 = df["unet_per_step_p95_ms"].mean() if "unet_per_step_p95_ms" in df.columns else 0
-            sched = df["scheduler_overhead_ms"].mean() if "scheduler_overhead_ms" in df.columns else 0
+            ps_p95  = df["unet_per_step_p95_ms"].mean()  if "unet_per_step_p95_ms"  in df.columns else 0
+            sched   = df["scheduler_overhead_ms"].mean()  if "scheduler_overhead_ms"  in df.columns else 0
             lines.append(f"  {i:<4} {name:<40} {ps_mean:>10.2f} {ps_p95:>10.2f} {sched:>10.2f}")
-
-    # --- [3] Cold Start Comparison ---
-    cold_benchmarks = [b for b in benchmarks if b.cold_start is not None and not b.cold_start.empty]
-    if cold_benchmarks:
-        lines.append("")
-        lines.append("[3] Cold Start Breakdown (ms)")
-        lines.append(sep2)
-        lines.append(f"  {'#':<4} {'File':<40} {'TextEnc':>10} {'UNet':>10} {'VAEDec':>10} "
-                     f"{'LoadSum':>10} {'InitWC':>10} {'Par':>4} {'1stInfer':>10} {'ColdTotal':>10}")
-        lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*4} {'-'*10} {'-'*10}")
-        for i, b in enumerate(cold_benchmarks, 1):
-            cs = b.cold_start.iloc[0]
-            name = Path(b.filepath).stem[:39]
-            init_wc = cs.get('init_wall_clock_ms', 0)
-            init_wc_str = f"{init_wc:>10.0f}" if pd.notna(init_wc) and init_wc > 0 else f"{'--':>10}"
-            parallel = cs.get('parallel_init', False)
-            par_str = f"{'Y':>4}" if parallel else f"{'N':>4}"
-            first_inf = cs.get('first_inference_wall_clock_ms', 0)
-            first_inf_str = f"{first_inf:>10.0f}" if pd.notna(first_inf) and first_inf > 0 else f"{'--':>10}"
-            cold_total = cs.get('cold_start_total_ms', 0)
-            cold_total_str = f"{cold_total:>10.0f}" if pd.notna(cold_total) and cold_total > 0 else f"{'--':>10}"
-            lines.append(f"  {i:<4} {name:<40} "
-                         f"{cs.get('text_enc_load_ms',0):>10.0f} {cs.get('unet_load_ms',0):>10.0f} "
-                         f"{cs.get('vae_dec_load_ms',0):>10.0f} {cs.get('total_load_ms',0):>10.0f} "
-                         f"{init_wc_str} {par_str} {first_inf_str} {cold_total_str}")
-
-        lines.append("")
-        lines.append("    LoadSum: 컴포넌트별 시간 합산 | InitWC: 실제 초기화 wall-clock | Par: 병렬 초기화 여부")
-        lines.append("    TextEnc~VAEDec: 각 컴포넌트 세션 생성 시간 (QNN EP = HTP 그래프 컴파일 포함)")
+        lines.append("    PerStep: mean ORT session.run() per denoising step  |  P95: 95th-percentile step time  |  SchedOH: EulerDiscrete scheduler overhead (total)")
 
     # --- [4] System Resources ---
     if gen_benchmarks:
         lines.append("")
         lines.append("[4] System Resources")
         lines.append(sep2)
-        lines.append(f"  {'#':<4} {'File':<40} {'TempStart':>10} {'TempEnd':>10} {'Delta':>8} "
-                     f"{'Power':>10} {'IdlePwr':>10} {'DeltaPwr':>10} {'VmRSS':>8} {'NatHeap':>8} {'PSS':>8}")
-        lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*10} {'-'*8} "
-                     f"{'-'*10} {'-'*10} {'-'*10} {'-'*8} {'-'*8} {'-'*8}")
+
+        # [4a] Memory (MB)
+        lines.append("")
+        lines.append("  Memory (MB)")
+        has_cold_mem = any(b.cold_start is not None and not b.cold_start.empty for b in gen_benchmarks)
+        if has_cold_mem:
+            lines.append(f"  {'#':<4} {'File':<40} {'Idle':>8} {'AfterLoad':>10} {'Peak(infer)':>12} {'NativeHeap':>12} {'PSS':>8}")
+            lines.append(f"  {'-'*4} {'-'*40} {'-'*8} {'-'*10} {'-'*12} {'-'*12} {'-'*8}")
+        else:
+            lines.append(f"  {'#':<4} {'File':<40} {'Peak(infer)':>12} {'NativeHeap':>12} {'PSS':>8}")
+            lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*12} {'-'*8}")
         for i, b in enumerate(gen_benchmarks, 1):
-            df = b.generate_summary
-            bm = b.metadata
+            df   = b.generate_summary
             name = Path(b.filepath).stem[:39]
-            t_start = df["start_temp_c"].iloc[0] if "start_temp_c" in df.columns else 0
-            t_end = df["end_temp_c"].iloc[-1] if "end_temp_c" in df.columns else 0
-            delta = t_end - t_start
-            power = df["avg_power_mw"].mean() if "avg_power_mw" in df.columns else 0
-            idle_pwr = float(bm.get('idle_baseline_power_mw', 0))
-            delta_pwr = power - idle_pwr if idle_pwr > 0 else 0
-            mem = df["peak_memory_mb"].max() if "peak_memory_mb" in df.columns else 0
+            mem      = df["peak_memory_mb"].max() if "peak_memory_mb" in df.columns else 0
             nat_heap = df["native_heap_mb"].max() if "native_heap_mb" in df.columns and df["native_heap_mb"].max() > 0 else 0
-            pss = df["pss_mb"].max() if "pss_mb" in df.columns and df["pss_mb"].max() > 0 else 0
-            idle_str = f"{idle_pwr:>10.0f}" if idle_pwr > 0 else f"{'--':>10}"
-            delta_pwr_str = f"{delta_pwr:>+10.0f}" if idle_pwr > 0 else f"{'--':>10}"
-            nat_str = f"{nat_heap:>8.0f}" if nat_heap > 0 else f"{'--':>8}"
-            pss_str = f"{pss:>8.0f}" if pss > 0 else f"{'--':>8}"
-            lines.append(f"  {i:<4} {name:<40} {t_start:>10.1f} {t_end:>10.1f} {delta:>+8.1f} "
-                         f"{power:>10.0f} {idle_str} {delta_pwr_str} {mem:>8} {nat_str} {pss_str}")
+            pss      = df["pss_mb"].max()          if "pss_mb"          in df.columns and df["pss_mb"].max()          > 0 else 0
+            nat_str  = f"{nat_heap:>12.0f}" if nat_heap > 0 else f"{'--':>12}"
+            pss_str  = f"{pss:>8.0f}"       if pss      > 0 else f"{'--':>8}"
+            if has_cold_mem:
+                idle_mem = peak_load = 0
+                if b.cold_start is not None and not b.cold_start.empty:
+                    cs = b.cold_start.iloc[0]
+                    idle_mem  = cs.get('idle_memory_mb', 0) or 0
+                    peak_load = cs.get('peak_memory_after_load_mb', 0) or 0
+                idle_str      = f"{idle_mem:>8.0f}"   if idle_mem  > 0 else f"{'--':>8}"
+                peak_load_str = f"{peak_load:>10.0f}" if peak_load > 0 else f"{'--':>10}"
+                lines.append(f"  {i:<4} {name:<40} {idle_str} {peak_load_str} {mem:>12} {nat_str} {pss_str}")
+            else:
+                lines.append(f"  {i:<4} {name:<40} {mem:>12} {nat_str} {pss_str}")
+        lines.append("    Idle: before model load  |  AfterLoad: after session creation  |  Peak(infer): peak RSS during inference")
+        lines.append("    NativeHeap: ORT/QNN native allocations (Debug.getNativeHeapAllocatedSize)  |  PSS: proportional set size")
+
+        # [4a-2] Total Peak Memory  (App + NPU estimate)
+        npu_benchmarks = [b for b in gen_benchmarks if b.metadata.get("sd_backend", "").upper() == "QNN_NPU"]
+        if npu_benchmarks:
+            lines.append("")
+            lines.append("  Total Peak Memory  (App RSS + NPU estimate, MB)")
+            lines.append("  Source: NPU values from QAI Hub on-device profiling (docs/weights_inventory.md)")
+            lines.append(f"  {'#':<4} {'File':<40} {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'NPU Sum':>9} {'App RSS':>9} {'Total':>9}")
+            lines.append(f"  {'-'*4} {'-'*40} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*9}")
+            for i, b in enumerate(npu_benchmarks, 1):
+                df   = b.generate_summary
+                name = Path(b.filepath).stem[:39]
+                variant = b.metadata.get("model_variant", "")
+                pcp = _parse_pcp(b)
+                te_mb  = _npu_mem_mb(variant, "text_encoder", pcp.get("text_encoder", "fp32"))
+                un_mb  = _npu_mem_mb(variant, "unet",         pcp.get("unet", "fp32"))
+                vd_mb  = _npu_mem_mb(variant, "vae_decoder",  pcp.get("vae_decoder", "fp32"))
+                app_mb = df["peak_memory_mb"].max() if "peak_memory_mb" in df.columns else 0
+                te_str  = f"{te_mb:>9}"   if te_mb  is not None else f"{'--':>9}"
+                un_str  = f"{un_mb:>9}"   if un_mb  is not None else f"{'?':>9}"
+                vd_str  = f"{vd_mb:>9}"   if vd_mb  is not None else f"{'--':>9}"
+                all_known = all(x is not None for x in [te_mb, un_mb, vd_mb])
+                npu_sum = sum([te_mb, un_mb, vd_mb]) if all_known else None
+                npu_str = f"{npu_sum:>9}" if npu_sum is not None else f"{'?':>9}"
+                total   = (npu_sum + app_mb) if (npu_sum is not None and app_mb > 0) else None
+                tot_str = f"{total:>9.0f}" if total is not None else f"{'?':>9}"
+                app_str = f"{app_mb:>9.0f}" if app_mb > 0 else f"{'--':>9}"
+                lines.append(f"  {i:<4} {name:<40} {te_str} {un_str} {vd_str} {npu_str} {app_str} {tot_str}")
+            lines.append("    TextEnc/UNet/VAEDec: QAI Hub on-device profiling 결과 (Snapdragon 8 Gen 2, S23)")
+            lines.append("      NPU(HTP) 메모리 = 모델 가중치가 상주하는 HTP 전용 메모리 영역")
+            lines.append("      App RSS(VmRSS)에는 미포함 — Android /proc/self/status 로 관측 불가")
+            lines.append("      실기기 on-device 직접 측정은 root 권한 + /sys/kernel/debug/ion/ 접근 필요 (stock Android SELinux 차단)")
+            lines.append("    App RSS: peak VmRSS during inference (ORT runtime, Java heap, shared libs; NPU 제외)")
+            lines.append("    Total: NPU Sum + App RSS  (추정치)")
+            lines.append("    ?: no QAI Hub profile available for this component/precision combination")
+
+        # [4b] Power (mW)
+        has_power = any("avg_power_mw" in b.generate_summary.columns
+                        and b.generate_summary["avg_power_mw"].mean() > 0 for b in gen_benchmarks)
+        if has_power:
+            lines.append("")
+            lines.append("  Power (mW)")
+            lines.append(f"  {'#':<4} {'File':<40} {'Idle':>10} {'AvgInfer':>10} {'Delta':>10}")
+            lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*10} {'-'*10}")
+            for i, b in enumerate(gen_benchmarks, 1):
+                df   = b.generate_summary
+                bm   = b.metadata
+                name = Path(b.filepath).stem[:39]
+                power    = df["avg_power_mw"].mean() if "avg_power_mw" in df.columns else 0
+                idle_pwr = float(bm.get('idle_baseline_power_mw', 0))
+                delta_pwr = power - idle_pwr if idle_pwr > 0 else 0
+                idle_str      = f"{idle_pwr:>10.0f}"  if idle_pwr > 0 else f"{'--':>10}"
+                delta_pwr_str = f"{delta_pwr:>+10.0f}" if idle_pwr > 0 else f"{'--':>10}"
+                lines.append(f"  {i:<4} {name:<40} {idle_str} {power:>10.0f} {delta_pwr_str}")
+            lines.append("    Idle: 5s median before model load  |  AvgInfer: mean during inference  |  Delta = AvgInfer − Idle (net inference power)")
+            lines.append("    ⚠ BatteryManager.BATTERY_PROPERTY_CURRENT_NOW 기반 — 폰 전체 시스템 소비 전력 (SoC+디스플레이+라디오 포함)")
+            lines.append("      앱 단독 / NPU 단독 전력 분리는 Snapdragon Profiler 또는 PMU 카운터 접근 필요")
+
+        # [4c] Thermal (°C)
+        has_thermal = any("start_temp_c" in b.generate_summary.columns
+                          and b.generate_summary["start_temp_c"].mean() > 0 for b in gen_benchmarks)
+        if has_thermal:
+            lines.append("")
+            lines.append("  Thermal (°C)")
+            lines.append(f"  {'#':<4} {'File':<40} {'Start':>8} {'End':>8} {'Delta':>8}")
+            lines.append(f"  {'-'*4} {'-'*40} {'-'*8} {'-'*8} {'-'*8}")
+            for i, b in enumerate(gen_benchmarks, 1):
+                df   = b.generate_summary
+                name = Path(b.filepath).stem[:39]
+                t_start = df["start_temp_c"].iloc[0]  if "start_temp_c" in df.columns else 0
+                t_end   = df["end_temp_c"].iloc[-1]   if "end_temp_c"   in df.columns else 0
+                delta   = t_end - t_start
+                lines.append(f"  {i:<4} {name:<40} {t_start:>8.1f} {t_end:>8.1f} {delta:>+8.1f}")
+            lines.append("    Start: SoC temp at start of trial 1  |  End: after last trial  |  Delta: total rise across all trials")
 
     # --- [5] Graph Partitioning ---
     ort_benchmarks = [b for b in benchmarks if int(b.metadata.get('ort_total_nodes', 0)) > 0]
