@@ -25,8 +25,16 @@
 
 | 대상 실험 | base image | 목적 | 상태 |
 |---|---|---|---|
-| A1, A2, A3, A4 | A1 출력 | Precision 열화 확인 (SD) | ⬜ |
-| A5, A6 | A5 출력 | Precision 열화 확인 (LCM) | ⬜ |
+| A1, A2, A3, A4 | A1 출력 | Precision 열화 확인 (SD) | ✅ |
+| A5, A6 | A5 출력 | Precision 열화 확인 (LCM) | ✅ |
+
+결과 파일: `outputs/exp/quality_phase1_20260313_203830.txt`
+
+**Best Precision 선정:**
+- SD v1.5: **A4** (unet mixed_pr + vae w8a8) — E2E -22%, NPU mem -32%, 전력 -19%, CLIP score 유지 (+0.21)
+- LCM: **A6** (vae w8a8) — E2E -16%, 전력 -12%, LPIPS 0.03 (사실상 동일)
+
+→ Phase 2 기준 precision: SD = mixed_pr + w8a8 / LCM = vae w8a8
 
 ---
 
@@ -34,15 +42,15 @@
 
 목적: step-quality tradeoff 곡선 도출
 설정: best precision 고정, 5 trials, 2 warmup, cooldown 있음
-> best precision은 Phase 1 결과 후 결정
+> best precision: SD = unet mixed_pr + vae w8a8 (A4), LCM = vae w8a8 (A6)
 
 | ID | Model | Steps | Precision | Backend | 상태 | 실제 파일 |
 |---|---|---|---|---|---|---|
-| A1 | SD v1.5 | 20 | (Phase 1 공유) | QNN NPU | ⬜ | |
-| B1 | SD v1.5 | 30 | best precision | QNN NPU | ⬜ | |
-| B2 | SD v1.5 | 50 | best precision | QNN NPU | ⬜ | |
-| A5 | LCM | 4 | (Phase 1 공유) | QNN NPU | ⬜ | |
-| B3 | LCM | 8 | best precision | QNN NPU | ⬜ | |
+| A1 | SD v1.5 | 20 | (Phase 1 공유) | QNN NPU | ✅ | txt2img_sd15_fp16_qnn_npu_s20_single_20260313_184651.csv |
+| B1 | SD v1.5 | 30 | unet mixed_pr + vae w8a8 | QNN NPU | ⬜ | |
+| B2 | SD v1.5 | 50 | unet mixed_pr + vae w8a8 | QNN NPU | ⬜ | |
+| A5 | LCM | 4 | (Phase 1 공유) | QNN NPU | ✅ | txt2img_lcm_fp16_qnn_npu_s4_single_20260313_195823.csv |
+| B3 | LCM | 8 | vae w8a8 | QNN NPU | ⬜ | |
 
 품질 평가 (Phase 2 완료 후):
 
@@ -63,8 +71,8 @@
 
 | ID | Model | Steps | Precision | Perf Mode | 상태 | 실제 파일 |
 |---|---|---|---|---|---|---|
-| C1 | SD v1.5 | best step | best precision | balanced | ⬜ | |
-| C2 | LCM | best step | best precision | balanced | ⬜ | |
+| C1 | SD v1.5 | best step (Phase 2 결과) | unet mixed_pr + vae w8a8 | balanced | ⬜ | |
+| C2 | LCM | best step (Phase 2 결과) | vae w8a8 | balanced | ⬜ | |
 
 ---
 
