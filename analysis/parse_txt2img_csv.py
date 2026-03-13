@@ -180,14 +180,32 @@ def format_report(bench: ParsedBenchmark) -> str:
         if bench.generate_summary is not None and not bench.generate_summary.empty:
             steady_mean = bench.generate_summary["generate_e2e_ms"].mean()
 
-        # [2a] Session Initialization
+        # [2a] Idle Baseline
+        idle_thermal = cs.get('idle_thermal_c', 0) or 0
+        idle_power   = cs.get('idle_power_mw', 0) or 0
+        if idle_power <= 0:
+            idle_power = float(m.get('idle_baseline_power_mw', 0) or 0)
+        idle_mem_b   = cs.get('idle_memory_mb', 0) or 0
+        if idle_thermal > 0 or idle_power > 0 or idle_mem_b > 0:
+            lines.append("")
+            lines.append("  [2a] Idle Baseline  (pre-load, 5s 10-sample median)")
+            lines.append(f"  {'-'*70}")
+            lines.append(f"  {'Thermal (°C)':>12} {'Power (mW)':>12} {'Memory (MB)':>12}")
+            lines.append(f"  {'-'*12} {'-'*12} {'-'*12}")
+            t_str = f"{idle_thermal:>12.1f}" if idle_thermal > 0 else f"{'--':>12}"
+            p_str = f"{idle_power:>12.0f}"   if idle_power   > 0 else f"{'--':>12}"
+            m_str = f"{idle_mem_b:>12.0f}"   if idle_mem_b   > 0 else f"{'--':>12}"
+            lines.append(f"  {t_str} {p_str} {m_str}")
+            lines.append("    Thermal: SoC temp before model load  |  Power: system-wide idle  |  Memory: VmRSS before model load")
+
+        # [2b] Session Initialization
         te_load  = cs.get('text_enc_load_ms', 0) or 0
         un_load  = cs.get('unet_load_ms', 0) or 0
         vd_load  = cs.get('vae_dec_load_ms', 0) or 0
         overhead = (init_wc - total_sum) if init_wc > 0 and total_sum > 0 else None
         par_str  = "Y" if parallel else "N"
         lines.append("")
-        lines.append("  [2a] Session Initialization")
+        lines.append("  [2b] Session Initialization")
         lines.append(f"  {'-'*70}")
         lines.append(f"  {'TextEncLoad':>12} {'UNetLoad':>10} {'VAEDecLoad':>11} {'LoadSum':>9} {'InitWC':>9} {'Overhead':>10} {'Par':>4}")
         lines.append(f"  {'-'*12} {'-'*10} {'-'*11} {'-'*9} {'-'*9} {'-'*10} {'-'*4}")
@@ -201,7 +219,7 @@ def format_report(bench: ParsedBenchmark) -> str:
         lines.append("    Overhead  InitWC − LoadSum  (inter-session scheduling cost)")
         lines.append("    Par       Y = concurrent init; N = sequential (default, required for QNN HTP)")
 
-        # [2b] Cold First Inference Breakdown
+        # [2c] Cold First Inference Breakdown
         first_tok  = cs.get('first_tokenize_ms', 0) or 0
         first_te   = cs.get('first_text_enc_ms', 0) or 0
         first_unet = cs.get('first_unet_total_ms', 0) or 0
@@ -209,7 +227,7 @@ def format_report(bench: ParsedBenchmark) -> str:
         first_pp   = cs.get('first_postprocess_ms', 0) or 0
         first_e2e  = cs.get('first_generate_e2e_ms', 0) or 0
         lines.append("")
-        lines.append("  [2b] Cold First Inference Breakdown  (1st generate() — post-load, pre-warmup, ms)")
+        lines.append("  [2c] Cold First Inference Breakdown  (1st generate() — post-load, pre-warmup, ms)")
         lines.append(f"  {'-'*70}")
         lines.append(f"  {'Tokenize':>10} {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'Postproc':>9} {'E2E':>10} {'WC':>9}")
         lines.append(f"  {'-'*10} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*10} {'-'*9}")
@@ -224,9 +242,9 @@ def format_report(bench: ParsedBenchmark) -> str:
         lines.append("    JIT compile + cold cache 포함 — warmup 이전 단 1회 측정")
         lines.append("    WC: generate() wall-clock  |  E2E: component sum (WC ≥ E2E — 버퍼 할당 등 overhead 포함)")
 
-        # [2c] Cold Start E2E
+        # [2d] Cold Start E2E
         lines.append("")
-        lines.append("  [2c] Cold Start E2E  (ms)")
+        lines.append("  [2d] Cold Start E2E  (ms)")
         lines.append(f"  {'-'*70}")
         lines.append(f"  {'SessionInit':>12} {'1stInfer':>10} {'ColdE2E':>10}")
         lines.append(f"  {'-'*12} {'-'*10} {'-'*10}")
@@ -240,24 +258,6 @@ def format_report(bench: ParsedBenchmark) -> str:
         lines.append("    SessionInit  ORT 세션 생성 wall-clock (QNN HTP graph compile 포함)")
         lines.append("    1stInfer     첫 번째 generate() wall-clock (JIT compile + cold cache 포함; Postproc 포함)")
         lines.append("    ColdE2E      SessionInit + 1stInfer  (앱 최초 실행 → 첫 이미지 완성)")
-
-        # [2d] Idle Baseline
-        idle_thermal = cs.get('idle_thermal_c', 0) or 0
-        idle_power   = cs.get('idle_power_mw', 0) or 0
-        if idle_power <= 0:
-            idle_power = float(m.get('idle_baseline_power_mw', 0) or 0)
-        idle_mem_b   = cs.get('idle_memory_mb', 0) or 0
-        if idle_thermal > 0 or idle_power > 0 or idle_mem_b > 0:
-            lines.append("")
-            lines.append("  [2d] Idle Baseline  (pre-load, 5s 10-sample median)")
-            lines.append(f"  {'-'*70}")
-            lines.append(f"  {'Thermal (°C)':>12} {'Power (mW)':>12} {'Memory (MB)':>12}")
-            lines.append(f"  {'-'*12} {'-'*12} {'-'*12}")
-            t_str = f"{idle_thermal:>12.1f}" if idle_thermal > 0 else f"{'--':>12}"
-            p_str = f"{idle_power:>12.0f}"   if idle_power   > 0 else f"{'--':>12}"
-            m_str = f"{idle_mem_b:>12.0f}"   if idle_mem_b   > 0 else f"{'--':>12}"
-            lines.append(f"  {t_str} {p_str} {m_str}")
-            lines.append("    Thermal: SoC temp before model load  |  Power: system-wide idle  |  Memory: VmRSS before model load")
 
         # [2e] Cold Start Thermal Progression
         post_init_t  = cs.get('post_init_thermal_c', 0) or 0
@@ -683,9 +683,29 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("[2] Cold Start Breakdown  (ms)")
         lines.append(sep2)
 
-        # [2a] Session Initialization
+        # [2a] Idle Baseline
         lines.append("")
-        lines.append("  [2a] Session Initialization")
+        lines.append("  [2a] Idle Baseline  (pre-load, 5s 10-sample median)")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'#':<4} {'File':<40} {'Thermal (°C)':>12} {'Power (mW)':>12} {'Memory (MB)':>12}")
+        lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*12} {'-'*12}")
+        for i, b in enumerate(cold_benchmarks, 1):
+            cs   = b.cold_start.iloc[0]
+            name = Path(b.filepath).stem[:39]
+            idle_t = cs.get('idle_thermal_c', 0) or 0
+            idle_p = cs.get('idle_power_mw', 0) or 0
+            if idle_p <= 0:
+                idle_p = float(b.metadata.get('idle_baseline_power_mw', 0) or 0)
+            idle_m = cs.get('idle_memory_mb', 0) or 0
+            t_str = f"{idle_t:>12.1f}" if idle_t > 0 else f"{'--':>12}"
+            p_str = f"{idle_p:>12.0f}" if idle_p > 0 else f"{'--':>12}"
+            m_str = f"{idle_m:>12.0f}" if idle_m > 0 else f"{'--':>12}"
+            lines.append(f"  {i:<4} {name:<40} {t_str} {p_str} {m_str}")
+        lines.append("    Thermal: SoC temp before model load  |  Power: system-wide idle  |  Memory: VmRSS before model load")
+
+        # [2b] Session Initialization
+        lines.append("")
+        lines.append("  [2b] Session Initialization")
         lines.append(f"  {'-'*70}")
         lines.append(f"  {'#':<4} {'File':<40} {'TextEncLoad':>12} {'UNetLoad':>10} {'VAEDecLoad':>11} "
                      f"{'LoadSum':>9} {'InitWC':>9} {'Overhead':>10} {'Par':>4}")
@@ -713,9 +733,9 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("    Overhead  InitWC − LoadSum  (inter-session scheduling cost)")
         lines.append("    Par       Y = concurrent init; N = sequential (default, required for QNN HTP)")
 
-        # [2b] Cold First Inference Component Breakdown
+        # [2c] Cold First Inference Breakdown
         lines.append("")
-        lines.append("  [2b] Cold First Inference Breakdown  (1st generate() — post-load, pre-warmup, ms)")
+        lines.append("  [2c] Cold First Inference Breakdown  (1st generate() — post-load, pre-warmup, ms)")
         lines.append(f"  {'-'*70}")
         lines.append(f"  {'#':<4} {'File':<40} {'Tokenize':>10} {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'Postproc':>9} {'E2E':>10} {'WC':>9}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*10} {'-'*9}")
@@ -740,9 +760,9 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("    JIT compile + cold cache 포함 — warmup 이전 단 1회 측정")
         lines.append("    WC: generate() wall-clock  |  E2E: component sum (WC ≥ E2E — 버퍼 할당 등 overhead 포함)")
 
-        # [2c] Cold Start E2E Summary
+        # [2d] Cold Start E2E Summary
         lines.append("")
-        lines.append("  [2c] Cold Start E2E  (ms)")
+        lines.append("  [2d] Cold Start E2E  (ms)")
         lines.append(f"  {'-'*70}")
         lines.append(f"  {'#':<4} {'File':<40} {'SessionInit':>12} {'1stInfer':>10} {'ColdE2E':>10}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*10} {'-'*10}")
@@ -759,26 +779,6 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("    SessionInit  ORT 세션 생성 wall-clock (QNN HTP graph compile 포함)")
         lines.append("    1stInfer     첫 번째 generate() wall-clock (JIT compile + cold cache 포함; Postproc 포함)")
         lines.append("    ColdE2E      SessionInit + 1stInfer  (앱 최초 실행 → 첫 이미지 완성)")
-
-        # [2d] Idle Baseline
-        lines.append("")
-        lines.append("  [2d] Idle Baseline  (pre-load, 5s 10-sample median)")
-        lines.append(f"  {'-'*70}")
-        lines.append(f"  {'#':<4} {'File':<40} {'Thermal (°C)':>12} {'Power (mW)':>12} {'Memory (MB)':>12}")
-        lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*12} {'-'*12}")
-        for i, b in enumerate(cold_benchmarks, 1):
-            cs   = b.cold_start.iloc[0]
-            name = Path(b.filepath).stem[:39]
-            idle_t = cs.get('idle_thermal_c', 0) or 0
-            idle_p = cs.get('idle_power_mw', 0) or 0
-            if idle_p <= 0:
-                idle_p = float(b.metadata.get('idle_baseline_power_mw', 0) or 0)
-            idle_m = cs.get('idle_memory_mb', 0) or 0
-            t_str = f"{idle_t:>12.1f}" if idle_t > 0 else f"{'--':>12}"
-            p_str = f"{idle_p:>12.0f}" if idle_p > 0 else f"{'--':>12}"
-            m_str = f"{idle_m:>12.0f}" if idle_m > 0 else f"{'--':>12}"
-            lines.append(f"  {i:<4} {name:<40} {t_str} {p_str} {m_str}")
-        lines.append("    Thermal: SoC temp before model load  |  Power: system-wide idle  |  Memory: VmRSS before model load")
 
         # [2e] Cold Start Thermal Progression
         lines.append("")
