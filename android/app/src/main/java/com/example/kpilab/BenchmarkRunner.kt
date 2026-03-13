@@ -77,10 +77,10 @@ class BenchmarkRunner(
     private val generateSummaries = mutableListOf<GenerateSummaryRecord>()
     private val unetStepDetails = mutableListOf<UnetStepRecord>()
     private var coldStartRecord: ColdStartRecord? = null
-    private var lastSystemThermal: Float = 0f
-    private var lastSystemPower: Float = 0f
-    private var lastSystemMemory: Int = 0
-    private var lastSystemNativeHeapMb: Float = 0f
+    @Volatile private var lastSystemThermal: Float = 0f
+    @Volatile private var lastSystemPower: Float = 0f
+    @Volatile private var lastSystemMemory: Int = 0
+    @Volatile private var lastSystemNativeHeapMb: Float = 0f
 
     // Logcat capture
     private val logcatCapture = LogcatCapture()
@@ -154,13 +154,12 @@ class BenchmarkRunner(
         val idleMemoryMb: Int,
         val peakMemoryAfterLoadMb: Int,
         val idleThermalC: Float,
-        val idlePowerMw: Float,
+        val idlePowerMw: Float,          // 5s 10-sample median (load 전 baseline)
         val firstInferenceWallClockMs: Float = 0f,
         val coldStartTotalMs: Float = 0f,
         val warmupTotalMs: Long = 0,
         val thermalZoneType: String = "unknown",
-        val isCharging: Boolean = false,
-        val idleBaselinePowerMw: Float = -1f
+        val isCharging: Boolean = false
     )
 
     // --- Benchmark Control ---
@@ -308,12 +307,11 @@ class BenchmarkRunner(
                 idleMemoryMb = idleMetrics.memoryMb,
                 peakMemoryAfterLoadMb = memAfterLoad,
                 idleThermalC = idleBaselineThermalC,
-                idlePowerMw = idleMetrics.powerMw,
+                idlePowerMw = idleBaselinePowerMw,   // 10-sample median
                 firstInferenceWallClockMs = firstInferenceWallClockMs,
                 coldStartTotalMs = cs.initWallClockMs.toFloat() + firstInferenceWallClockMs,
                 thermalZoneType = thermalZoneType,
-                isCharging = isCharging,
-                idleBaselinePowerMw = idleBaselinePowerMw
+                isCharging = isCharging
             )
         }
 
@@ -368,6 +366,13 @@ class BenchmarkRunner(
 
     // --- Single Trial ---
 
+    private data class StepMetricSnapshot(
+        val thermalC: Float,
+        val powerMw: Float,
+        val memoryMb: Int,
+        val nativeHeapMb: Float
+    )
+
     private data class GenerateTrialResult(
         val generateResult: Txt2ImgPipeline.GenerateResult,
         val startTempC: Float,
@@ -376,7 +381,8 @@ class BenchmarkRunner(
         val peakMemoryMb: Int,
         val trialWallClockMs: Float = 0f,
         val peakNativeHeapMb: Float = 0f,
-        val peakPssMb: Float = -1f
+        val peakPssMb: Float = -1f,
+        val stepSnapshots: List<StepMetricSnapshot> = emptyList()
     )
 
     private suspend fun runGenerateTrial(pipe: Txt2ImgPipeline): GenerateTrialResult? {
@@ -385,6 +391,7 @@ class BenchmarkRunner(
         val powerSamples = mutableListOf<Float>()
         var peakMemory = lastSystemMemory
         var peakNativeHeap = lastSystemNativeHeapMb
+        val stepSnapshots = mutableListOf<StepMetricSnapshot>()
 
         val listener = object : Txt2ImgPipeline.ProgressListener {
             override fun onStageStart(stage: String) {
@@ -398,11 +405,13 @@ class BenchmarkRunner(
             }
             override fun onUnetStep(step: Int, totalSteps: Int) {
                 _progress.update { it.copy(currentStep = step + 1, totalSteps = totalSteps) }
+                val thermal = lastSystemThermal
                 val power = lastSystemPower
-                if (power > 0) powerSamples.add(power)
                 val mem = lastSystemMemory
-                if (mem > peakMemory) peakMemory = mem
                 val nativeHeap = lastSystemNativeHeapMb
+                stepSnapshots.add(StepMetricSnapshot(thermal, power, mem, nativeHeap))
+                if (power > 0) powerSamples.add(power)
+                if (mem > peakMemory) peakMemory = mem
                 if (nativeHeap > peakNativeHeap) peakNativeHeap = nativeHeap
             }
         }
@@ -425,7 +434,8 @@ class BenchmarkRunner(
             peakMemoryMb = peakMemory,
             trialWallClockMs = trialWallClockMs,
             peakNativeHeapMb = peakNativeHeap,
-            peakPssMb = peakPss
+            peakPssMb = peakPss,
+            stepSnapshots = stepSnapshots
         )
     }
 
@@ -467,7 +477,8 @@ class BenchmarkRunner(
             pssMb = trial.peakPssMb
         ))
 
-        for (detail in result.stepDetails) {
+        for ((i, detail) in result.stepDetails.withIndex()) {
+            val snap = trial.stepSnapshots.getOrNull(i)
             unetStepDetails.add(UnetStepRecord(
                 trialId = trialId,
                 stepIndex = detail.stepIndex,
@@ -476,10 +487,10 @@ class BenchmarkRunner(
                 outputCopyMs = detail.outputCopyMs,
                 schedulerStepMs = detail.schedulerStepMs,
                 stepTotalMs = detail.stepTotalMs,
-                thermalC = lastSystemThermal,
-                powerMw = lastSystemPower,
-                memoryMb = lastSystemMemory,
-                nativeHeapMb = lastSystemNativeHeapMb
+                thermalC = snap?.thermalC ?: lastSystemThermal,
+                powerMw = snap?.powerMw ?: lastSystemPower,
+                memoryMb = snap?.memoryMb ?: lastSystemMemory,
+                nativeHeapMb = snap?.nativeHeapMb ?: lastSystemNativeHeapMb
             ))
         }
 
@@ -565,7 +576,7 @@ class BenchmarkRunner(
         coldStartRecord?.let { cs ->
             sb.appendLine("# thermal_zone_type,${cs.thermalZoneType}")
             sb.appendLine("# is_charging,${cs.isCharging}")
-            sb.appendLine("# idle_baseline_power_mw,${"%.1f".format(cs.idleBaselinePowerMw)}")
+            sb.appendLine("# idle_baseline_power_mw,${"%.1f".format(cs.idlePowerMw)}")
         }
 
         // ORT graph partitioning metadata
@@ -589,7 +600,8 @@ class BenchmarkRunner(
                 "peak_memory_mb,start_temp_c,end_temp_c,avg_power_mw," +
                 "pipeline_wall_clock_ms,trial_wall_clock_ms,native_heap_mb,pss_mb")
         for (r in generateSummaries) {
-            sb.appendLine("${r.trialId},${r.modelVariant},${r.prompt},${r.steps},${r.actualSteps},${r.guidanceScale}," +
+            val escapedPrompt = "\"${r.prompt.replace("\"", "\"\"")}\""
+            sb.appendLine("${r.trialId},${r.modelVariant},$escapedPrompt,${r.steps},${r.actualSteps},${r.guidanceScale}," +
                     "${r.backendSd},${r.precisionSd}," +
                     "${"%.2f".format(r.generateE2eMs)},${"%.2f".format(r.tokenizeMs)},${"%.2f".format(r.textEncMs)}," +
                     "${"%.2f".format(r.unetTotalMs)},${"%.2f".format(r.vaeDecMs)}," +
@@ -623,7 +635,7 @@ class BenchmarkRunner(
                 "idle_memory_mb,peak_memory_after_load_mb,memory_delta_mb," +
                 "idle_thermal_c,idle_power_mw," +
                 "first_inference_wall_clock_ms,cold_start_total_ms,warmup_total_ms," +
-                "thermal_zone_type,is_charging,idle_baseline_power_mw")
+                "thermal_zone_type,is_charging")
         coldStartRecord?.let { r ->
             val memDelta = r.peakMemoryAfterLoadMb - r.idleMemoryMb
             sb.appendLine("${r.startType},${r.textEncLoadMs}," +
@@ -632,7 +644,7 @@ class BenchmarkRunner(
                     "${r.idleMemoryMb},${r.peakMemoryAfterLoadMb},${memDelta}," +
                     "${"%.1f".format(r.idleThermalC)},${"%.1f".format(r.idlePowerMw)}," +
                     "${"%.2f".format(r.firstInferenceWallClockMs)},${"%.2f".format(r.coldStartTotalMs)},${r.warmupTotalMs}," +
-                    "${r.thermalZoneType},${r.isCharging},${"%.1f".format(r.idleBaselinePowerMw)}")
+                    "${r.thermalZoneType},${r.isCharging}")
         }
 
         return sb.toString()
@@ -740,7 +752,7 @@ class BenchmarkRunner(
                         onExperimentComplete(csvPath)
                     }
 
-                    if (csvPath != null && index < experimentSet.experiments.size - 1 && isActive) {
+                    if (index < experimentSet.experiments.size - 1 && isActive) {
                         cooldown()
                     }
                 }
@@ -782,8 +794,7 @@ class BenchmarkRunner(
     }
 
     fun release() {
-        stopBatch()
-        stop()
+        stopBatch()  // internally calls stop()
         if (logcatCapture.isCapturing()) logcatCapture.stopCapture()
         pipeline?.release()
         pipeline = null
