@@ -82,8 +82,8 @@ Text Prompt → Text Encoder → Initial Noise(1,4,64,64) → Denoising Loop(UNe
 ### 1.4 측정 단위
 
 - **Inference Trial**: 이미지 생성 1회
-- **Cold Start Trial**: session load + first run
-- **Sustained Trial**: 연속 실행(thermal/power drift 관찰)
+- **Cold Start Trial**: session load + first inference (HTP JIT 포함)
+- **Sustained Trial**: 연속 실행(thermal/power drift 관찰, cooldown 없음)
 
 ---
 
@@ -134,8 +134,48 @@ Text Prompt → Text Encoder → Initial Noise(1,4,64,64) → Denoising Loop(UNe
 - Airplane mode
 - 고정 brightness
 - 고정 governor/perf profile
-- trial 간 cooldown 규칙
+- Trial 간 cooldown: 최소 60s → 온도 35°C 도달 시 완료, 최대 180s
+- Phase 2(Sustained)는 cooldown 없이 연속 실행
 - 고정 seed / 고정 입력셋
+
+---
+
+## 3.4 실험 전 체크리스트
+
+실험 시작 전 아래 항목을 순서대로 확인한다.
+
+### 필수 (측정값 신뢰성 직결)
+
+| 항목 | 이유 |
+|------|------|
+| **충전기 분리** | 충전 전류가 전력 측정값을 오염. 앱이 `is_charging` 플래그로 감지하나, 근본적으로 분리 필요 |
+| **Airplane mode ON** | 셀룰러/Wi-Fi 트래픽이 CPU 및 전력에 영향 |
+| **화면 밝기 고정** | 디스플레이 소비전력을 일정하게 유지 (화면은 꺼지지 않음 — 앱이 `FLAG_KEEP_SCREEN_ON` 적용) |
+| **백그라운드 앱 종료** | 메모리/CPU 경합 제거. 설정 → 앱 → 최근 앱 모두 닫기 |
+| **배터리 잔량 40% 이상** | 저배터리 시 기기가 자체 throttling |
+| **디바이스 온도 ≤ 35°C 확인 후 시작** | 이미 thermal throttle 상태에서 시작하면 Trial 1부터 왜곡 |
+
+### 권장
+
+| 항목 | 이유 |
+|------|------|
+| Do Not Disturb ON | 알림 인터럽트 차단 |
+| Developer options → "Stay awake (while charging)" OFF | 충전 없이도 화면 유지는 앱이 처리 |
+| ADB 연결은 USB가 아닌 Wi-Fi ADB 사용 (or 분리) | USB 연결 시 충전 전류 유입 가능성 |
+| 실험 직전 재부팅 (선택) | 메모리 파편화 초기화, 재현성 향상 |
+
+### 확인 명령 (adb)
+
+```bash
+# 온도 확인 (head -5 대신 Select-Object)
+adb shell cat /sys/class/thermal/thermal_zone*/temp | Select-Object -First 5
+
+# 충전 상태 확인 (grep 대신 Select-String)
+adb shell dumpsys battery | Select-String "status"
+
+# 배터리 잔량
+adb shell dumpsys battery | Select-String "level"
+```
 
 ---
 
@@ -144,39 +184,62 @@ Text Prompt → Text Encoder → Initial Noise(1,4,64,64) → Denoising Loop(UNe
 ### 4.1 Phase 1 — Single-Run Feasibility
 
 목적: 조건별 latency/memory/quality baseline 확보
+공통 설정: 5 trials, 2 warmup, burst mode, trial 간 cooldown 적용
 
-#### Experiment 1: Model Variant 비교
+#### P1-1: Model Variant 비교
 
-- SD v1.5 vs LCM-LoRA
-- 동일 backend/precision에서 비교
-- SD v1.5: 20 steps, LCM-LoRA: 4 steps (각 default)
+- SD v1.5 (20 steps) vs LCM-LoRA (4 steps, guidance=1.0)
+- 동일 backend/precision(QNN NPU FP16)에서 비교
 
-#### Experiment 2: Step Sweep
+#### P1-2: Step Sweep — SD v1.5
 
-- SD v1.5: 20 / 30 / 50 steps
-- LCM-LoRA: 2 / 4 / 6 / 8 steps
-- step 변화에 따른 latency-quality tradeoff 곡선 도출
+- 20 / 30 / 50 steps
+- step 증가에 따른 latency-quality tradeoff 곡선
 
-#### Experiment 3: Precision/Backend Sweep
+#### P1-3: Step Sweep — LCM-LoRA
 
-- FP16 vs W8A8(mixed 포함)
-- CPU / GPU / NPU 비교
-- 컴포넌트별 개별 precision 조합 (Text Enc, UNet, VAE Dec)
+- 2 / 4 / 8 steps
+- few-step feasibility 하한 탐색
+
+#### P1-4: Backend × Precision Sweep
+
+- Backend: CPU(FP32) / GPU / NPU
+- Precision: FP16 vs W8A8
+- CPU는 시간상 1 trial
+
+#### P1-5: Mixed Precision (컴포넌트별 조합)
+
+- FP16 full / W8A8 full
+- FP16 + UNet W8A8 / W8A8 + VAE FP16
+- 컴포넌트별 precision이 KPI에 미치는 영향
+
+#### P1-6: Parallel Init (Cold Start 최적화)
+
+- Sequential init (baseline) vs Parallel init
+- 3개 ORT 세션(Text Enc, UNet, VAE Dec)의 순차/병렬 초기화 비교
+- 각 세션 로드 시간 + 전체 cold start 비교
 
 ### 4.2 Phase 2 — Sustained Feasibility
 
 목적: 실제 사용 패턴에서 열/전력/성능 안정성 검증
+공통 설정: 10 trials, cooldown 없음, sustained_high mode
 
-- Phase 1에서 상위 2~3개 config 선정
-- 연속 N회 실행 (cooldown 없음)
-- Trial 1 vs Trial N drift 비교
+#### P2-1: Sustained — SD v1.5
+
+- QNN NPU FP16 vs W8A8
+- 연속 10회 생성, Trial 1 vs Trial N drift 비교
+
+#### P2-2: Sustained — LCM-LoRA
+
+- QNN NPU FP16 vs W8A8, 4 steps
+- 연속 10회 생성
 
 수집 항목:
 
-- Inference drift
+- Inference drift (trial별 latency 변화)
 - UNet per-step drift
-- Thermal slope
-- Energy per generation
+- Thermal slope (°C/trial)
+- Energy per generation (idle baseline delta)
 - Memory stability
 
 ---
@@ -237,19 +300,24 @@ Text Prompt → Text Encoder → Initial Noise(1,4,64,64) → Denoising Loop(UNe
 trial_id, model_variant, steps, precision, backend,
 latency_e2e_ms, text_enc_ms, unet_total_ms, unet_step_mean_ms, vae_dec_ms,
 peak_memory_mb, avg_power_mw, thermal_start_c, thermal_end_c,
+pipeline_wall_clock_ms, trial_wall_clock_ms,
+native_heap_mb, pss_mb,
 quality_notes
 
 ### Record 2 — UNet Step Detail
 
 trial_id, step_index, input_create_ms, session_run_ms,
 output_copy_ms, scheduler_ms, step_total_ms,
-thermal_c, power_mw
+thermal_c, power_mw,
+memory_mb, native_heap_mb
 
 ### Record 3 — Cold Start
 
 trial_id, model_variant, backend, precision,
-session_load_ms, first_inference_ms, total_cold_ms,
-peak_memory_after_load_mb
+session_load_ms (text_enc / unet / vae_dec 개별 포함),
+first_inference_ms, cold_start_total_ms, warmup_total_ms,
+peak_memory_after_load_mb,
+thermal_zone_type, is_charging, idle_baseline_power_mw
 
 ---
 
