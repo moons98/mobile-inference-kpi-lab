@@ -9,6 +9,8 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
@@ -184,25 +186,36 @@ class Txt2ImgPipeline(
         ep: ExecutionProvider, fp16: Boolean, perf: String,
         modelDir: String, enableProfiling: Boolean, env: OrtEnvironment
     ): Boolean {
+        // QNN HTP EP is NOT thread-safe for concurrent session creation.
+        // Serialize the OrtSession.create() call via mutex while still allowing
+        // coroutine scheduling to overlap other work between awaits.
+        val sessionCreateMutex = Mutex()
+
         return runBlocking(Dispatchers.IO) {
             val dTextEnc = async {
                 val runner = OrtRunner(context)
                 val prec = config.sdPrecisionFor(SdComponent.TEXT_ENCODER)
                 val path = resolveModelPath(modelDir, SdComponent.TEXT_ENCODER, prec)
-                if (runner.initialize(path, ep, fp16, true, perf, false, env)) runner else null
+                sessionCreateMutex.withLock {
+                    if (runner.initialize(path, ep, fp16, true, perf, false, env)) runner else null
+                }
             }
             val dUnet = async {
                 val runner = OrtRunner(context)
                 val prec = config.sdPrecisionFor(SdComponent.UNET)
                 val unetBase = config.modelVariant.unetPrefix
                 val path = resolveModelPath(modelDir, SdComponent.UNET, prec, unetBase)
-                if (runner.initialize(path, ep, fp16, true, perf, enableProfiling, env)) runner else null
+                sessionCreateMutex.withLock {
+                    if (runner.initialize(path, ep, fp16, true, perf, enableProfiling, env)) runner else null
+                }
             }
             val dVae = async {
                 val runner = OrtRunner(context)
                 val prec = config.sdPrecisionFor(SdComponent.VAE_DECODER)
                 val path = resolveModelPath(modelDir, SdComponent.VAE_DECODER, prec)
-                if (runner.initialize(path, ep, fp16, true, perf, false, env)) runner else null
+                sessionCreateMutex.withLock {
+                    if (runner.initialize(path, ep, fp16, true, perf, false, env)) runner else null
+                }
             }
 
             val te = dTextEnc.await()
