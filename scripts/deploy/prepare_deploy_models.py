@@ -37,7 +37,8 @@ def deploy_compiled(force: bool = False):
         job_dir = QAI_OUTPUTS_DIR / entry["job_dir"]
         precision = entry.get("precision", "")
 
-        stub_src = job_dir / "model.onnx"
+        modified_stub = job_dir / "model.modified.onnx"
+        stub_src = modified_stub if modified_stub.exists() else job_dir / "model.onnx"
         bin_src = job_dir / "model.bin"
 
         dst_onnx = DEPLOY_DIR / f"{deploy_name}.onnx"
@@ -46,6 +47,7 @@ def deploy_compiled(force: bool = False):
         if not job_dir.exists():
             print(f"  [MISS] {deploy_name}: job_dir not found: {job_dir}")
             continue
+        stub_label = "model.modified.onnx" if modified_stub.exists() else "model.onnx"
         if not stub_src.exists():
             print(f"  [MISS] {deploy_name}: model.onnx not found in {job_dir}")
             continue
@@ -60,7 +62,7 @@ def deploy_compiled(force: bool = False):
         stub_size = stub_src.stat().st_size
         bin_size_mb = bin_src.stat().st_size / 1024 / 1024
 
-        print(f"  [COPY] {deploy_name}.onnx ({stub_size:,d} B stub) + .bin ({bin_size_mb:.1f} MB)  [{precision}]")
+        print(f"  [COPY] {deploy_name}.onnx ({stub_size:,d} B stub, src={stub_label}) + .bin ({bin_size_mb:.1f} MB)  [{precision}]")
 
         # Patch ep_cache_context in stub to point to renamed .bin
         model = onnx.load(str(stub_src))
