@@ -485,15 +485,19 @@ class Txt2ImgPipeline(
             ShortBuffer.wrap(ShortArray(currentLatent.size) { Half.toHalf(currentLatent[it]) })
         else
             FloatBuffer.wrap(currentLatent)
-        Log.i(TAG, "VAE Decoder input: $vaeInputName(${vaeDec.inputTypes[vaeInputName]}), fp16IO=$vaeUseFp16")
+        // output shape으로 HWC vs CHW 감지: qai-hub-models W8A16 = [1,H,W,3] → dim[1] != 3
+        val vaeOutShape = vaeDec.outputShapes.values.firstOrNull() ?: longArrayOf(1, 3, 512, 512)
+        val vaeIsHwc = vaeOutShape.size >= 4 && vaeOutShape[1] != 3L
+        Log.i(TAG, "VAE Decoder: input=$vaeInputName(${vaeDec.inputTypes[vaeInputName]}), fp16IO=$vaeUseFp16, hwc=$vaeIsHwc")
         val decResult = vaeDec.runMixed(
             mapOf(vaeInputName to Pair(vaeInputBuf, vaeLatentShape))
         ) ?: run { Log.e(TAG, "generate: vaeDecoder.run returned null"); return null }
-        // W8A16 (FP16 I/O) binary has /Div+/Clip baked in → [0,1]. All others → [-1,1].
+        // HWC (qai-hub-models W8A16) → /Div+/Clip baked in → [0,1]. CHW (standard) → [-1,1].
         val outputImage = ImagePreprocessor.postprocess(
             decResult.outputs.values.first() as FloatArray,
             config.resolution, config.resolution,
-            normalized = vaeUseFp16  // session metadata 기반, config 하드코딩 제거
+            normalized = vaeIsHwc,
+            hwc = vaeIsHwc
         )
         val vaeDecMs = nsToMs(System.nanoTime() - vaeDecStart)
 
