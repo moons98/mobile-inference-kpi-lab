@@ -241,6 +241,24 @@ def format_report(bench: ParsedBenchmark) -> str:
         lines.append("    1stInfer     첫 번째 generate() wall-clock (JIT compile + cold cache 포함; Postproc 포함)")
         lines.append("    ColdE2E      SessionInit + 1stInfer  (앱 최초 실행 → 첫 이미지 완성)")
 
+        # [2d] Idle Baseline
+        idle_thermal = cs.get('idle_thermal_c', 0) or 0
+        idle_power   = cs.get('idle_power_mw', 0) or 0
+        if idle_power <= 0:
+            idle_power = float(m.get('idle_baseline_power_mw', 0) or 0)
+        idle_mem_b   = cs.get('idle_memory_mb', 0) or 0
+        if idle_thermal > 0 or idle_power > 0 or idle_mem_b > 0:
+            lines.append("")
+            lines.append("  [2d] Idle Baseline  (pre-load, 5s 10-sample median)")
+            lines.append(f"  {'-'*70}")
+            lines.append(f"  {'Thermal (°C)':>12} {'Power (mW)':>12} {'Memory (MB)':>12}")
+            lines.append(f"  {'-'*12} {'-'*12} {'-'*12}")
+            t_str = f"{idle_thermal:>12.1f}" if idle_thermal > 0 else f"{'--':>12}"
+            p_str = f"{idle_power:>12.0f}"   if idle_power   > 0 else f"{'--':>12}"
+            m_str = f"{idle_mem_b:>12.0f}"   if idle_mem_b   > 0 else f"{'--':>12}"
+            lines.append(f"  {t_str} {p_str} {m_str}")
+            lines.append("    Thermal: SoC temp before model load  |  Power: system-wide idle  |  Memory: VmRSS before model load")
+
         # Warmup summary
         warmup_ms = cs.get('warmup_total_ms', None)
         if pd.notna(warmup_ms) and warmup_ms > 0:
@@ -719,6 +737,26 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("    SessionInit  ORT 세션 생성 wall-clock (QNN HTP graph compile 포함)")
         lines.append("    1stInfer     첫 번째 generate() wall-clock (JIT compile + cold cache 포함; Postproc 포함)")
         lines.append("    ColdE2E      SessionInit + 1stInfer  (앱 최초 실행 → 첫 이미지 완성)")
+
+        # [2d] Idle Baseline
+        lines.append("")
+        lines.append("  [2d] Idle Baseline  (pre-load, 5s 10-sample median)")
+        lines.append(f"  {'-'*70}")
+        lines.append(f"  {'#':<4} {'File':<40} {'Thermal (°C)':>12} {'Power (mW)':>12} {'Memory (MB)':>12}")
+        lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*12} {'-'*12}")
+        for i, b in enumerate(cold_benchmarks, 1):
+            cs   = b.cold_start.iloc[0]
+            name = Path(b.filepath).stem[:39]
+            idle_t = cs.get('idle_thermal_c', 0) or 0
+            idle_p = cs.get('idle_power_mw', 0) or 0
+            if idle_p <= 0:
+                idle_p = float(b.metadata.get('idle_baseline_power_mw', 0) or 0)
+            idle_m = cs.get('idle_memory_mb', 0) or 0
+            t_str = f"{idle_t:>12.1f}" if idle_t > 0 else f"{'--':>12}"
+            p_str = f"{idle_p:>12.0f}" if idle_p > 0 else f"{'--':>12}"
+            m_str = f"{idle_m:>12.0f}" if idle_m > 0 else f"{'--':>12}"
+            lines.append(f"  {i:<4} {name:<40} {t_str} {p_str} {m_str}")
+        lines.append("    Thermal: SoC temp before model load  |  Power: system-wide idle  |  Memory: VmRSS before model load")
 
     # --- [3] Generation Latency ---
     if gen_benchmarks:
