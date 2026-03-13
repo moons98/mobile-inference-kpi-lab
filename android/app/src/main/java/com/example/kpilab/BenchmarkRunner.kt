@@ -160,6 +160,8 @@ class BenchmarkRunner(
         val peakMemoryAfterLoadMb: Int,
         val idleThermalC: Float,
         val idlePowerMw: Float,          // 5s 10-sample median (load 전 baseline)
+        val postInitThermalC: Float = 0f,     // session init 직후, 1st inference 전
+        val firstInferEndThermalC: Float = 0f, // 1st inference 완료 직후
         val firstInferenceWallClockMs: Float = 0f,
         val coldStartTotalMs: Float = 0f,
         val firstTokenizeMs: Float = 0f,
@@ -317,12 +319,18 @@ class BenchmarkRunner(
         }
         pipeline = pipe
 
+        val postInitThermalC = kpiCollector.readThermal()  // session init 직후, 1st inference 전
+
         // First inference timing (post-load, pre-warmup — captures cold inference cost)
         val firstInfStart = System.nanoTime()
         val firstInfResult = withContext(Dispatchers.IO) { pipe.generate() }
         val firstInferenceWallClockMs = nsToMs(System.nanoTime() - firstInfStart)
         firstInfResult?.outputImage?.recycle()
-        Log.i(TAG, "First inference wall-clock: ${firstInferenceWallClockMs}ms")
+
+        val firstInferEndThermalC = kpiCollector.readThermal()  // 1st inference 완료 직후
+        Log.i(TAG, "First inference wall-clock: ${firstInferenceWallClockMs}ms, " +
+                "thermal: ${postInitThermalC}→${firstInferEndThermalC}°C " +
+                "(Δ${"%.1f".format(firstInferEndThermalC - postInitThermalC)}°C)")
 
         // Cold start record (with idle baseline + first inference)
         pipe.coldStartTiming?.let { cs ->
@@ -339,6 +347,8 @@ class BenchmarkRunner(
                 peakMemoryAfterLoadMb = memAfterLoad,
                 idleThermalC = idleBaselineThermalC,
                 idlePowerMw = idleBaselinePowerMw,   // 10-sample median
+                postInitThermalC = postInitThermalC,
+                firstInferEndThermalC = firstInferEndThermalC,
                 firstInferenceWallClockMs = firstInferenceWallClockMs,
                 coldStartTotalMs = cs.initWallClockMs.toFloat() + firstInferenceWallClockMs,
                 firstTokenizeMs = firstInfResult?.stageTiming?.tokenizeMs ?: 0f,
@@ -675,6 +685,7 @@ class BenchmarkRunner(
                 "unet_load_ms,vae_dec_load_ms,total_load_ms,init_wall_clock_ms,parallel_init," +
                 "idle_memory_mb,peak_memory_after_load_mb,memory_delta_mb," +
                 "idle_thermal_c,idle_power_mw," +
+                "post_init_thermal_c,first_infer_end_thermal_c," +
                 "first_inference_wall_clock_ms,cold_start_total_ms,warmup_total_ms," +
                 "first_tokenize_ms,first_text_enc_ms,first_unet_total_ms," +
                 "first_vae_dec_ms,first_postprocess_ms,first_generate_e2e_ms," +
@@ -686,6 +697,7 @@ class BenchmarkRunner(
                     "${r.totalLoadMs},${r.initWallClockMs},${r.parallelInit}," +
                     "${r.idleMemoryMb},${r.peakMemoryAfterLoadMb},${memDelta}," +
                     "${"%.1f".format(r.idleThermalC)},${"%.1f".format(r.idlePowerMw)}," +
+                    "${"%.1f".format(r.postInitThermalC)},${"%.1f".format(r.firstInferEndThermalC)}," +
                     "${"%.2f".format(r.firstInferenceWallClockMs)},${"%.2f".format(r.coldStartTotalMs)},${r.warmupTotalMs}," +
                     "${"%.2f".format(r.firstTokenizeMs)},${"%.2f".format(r.firstTextEncMs)},${"%.2f".format(r.firstUnetTotalMs)}," +
                     "${"%.2f".format(r.firstVaeDecMs)},${"%.2f".format(r.firstPostprocessMs)},${"%.2f".format(r.firstGenerateE2eMs)}," +
