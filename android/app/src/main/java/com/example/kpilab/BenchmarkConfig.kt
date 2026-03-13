@@ -97,7 +97,7 @@ data class BenchmarkConfig(
             ModelVariant.LCM_LORA -> "lcm"
         }
         val precStr = if (isMixedPrecision) {
-            "mixed_" + sdPrecisionMap.entries.joinToString("_") { "${it.key.baseName[0]}${it.value.dirSuffix}" }
+            "mixed_" + sdPrecisionMap.entries.joinToString("_") { "${it.key.baseName[0]}${it.value.dirSuffix.replace('_', '-')}" }
         } else {
             sdPrecision.dirSuffix
         }

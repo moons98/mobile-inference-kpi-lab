@@ -695,7 +695,7 @@ class BenchmarkRunner(
             }
             val precTag = if (cfg.isMixedPrecision) {
                 "mixed_" + SdComponent.values().joinToString("_") {
-                    "${it.baseName[0]}${cfg.sdPrecisionFor(it).dirSuffix}"
+                    "${it.baseName[0]}${cfg.sdPrecisionFor(it).dirSuffix.replace('_', '-')}"
                 }
             } else {
                 cfg.sdPrecision.dirSuffix
