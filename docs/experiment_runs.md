@@ -46,19 +46,44 @@
 
 | ID | Model | Steps | Precision | Backend | 상태 | 실제 파일 |
 |---|---|---|---|---|---|---|
-| A1 | SD v1.5 | 20 | (Phase 1 공유) | QNN NPU | ✅ | txt2img_sd15_fp16_qnn_npu_s20_single_20260313_184651.csv |
-| B1 | SD v1.5 | 30 | unet mixed_pr + vae w8a8 | QNN NPU | ⬜ | |
-| B2 | SD v1.5 | 50 | unet mixed_pr + vae w8a8 | QNN NPU | ⬜ | |
-| A5 | LCM | 4 | (Phase 1 공유) | QNN NPU | ✅ | txt2img_lcm_fp16_qnn_npu_s4_single_20260313_195823.csv |
-| B3 | LCM | 8 | vae w8a8 | QNN NPU | ⬜ | |
+| A4 | SD v1.5 | 20 | unet mixed_pr + vae w8a8 (Phase 1 공유) | QNN NPU | ✅ | txt2img_sd15_mixed_tfp16_umixed-pr_vw8a8_qnn_npu_s20_single_20260313_195034.csv |
+| B1 | SD v1.5 | 30 | unet mixed_pr + vae w8a8 | QNN NPU | ✅ | txt2img_sd15_mixed_tfp16_umixed-pr_vw8a8_qnn_npu_s30_single_20260313_210149.csv |
+| B2 | SD v1.5 | 50 | unet mixed_pr + vae w8a8 | QNN NPU | ✅ | txt2img_sd15_mixed_tfp16_umixed-pr_vw8a8_qnn_npu_s50_single_20260313_211043.csv |
+| A5 | LCM | 4 | fp16 (Phase 1 공유) | QNN NPU | ✅ | txt2img_lcm_fp16_qnn_npu_s4_single_20260313_195823.csv |
+| B3 | LCM | 8 | vae w8a8 | QNN NPU | ✅ | txt2img_lcm_mixed_tfp16_ufp16_vw8a8_qnn_npu_s8_single_20260313_212940.csv |
+
+> SD s20 기준점: precision 통일을 위해 A1(fp16) 대신 A4(mixed_pr+w8a8) 이미지 사용.
 
 품질 평가 (Phase 2 완료 후):
 
 | 대상 실험 | base image | 목적 | 상태 |
 |---|---|---|---|
-| A1, B1, B2 | B2 출력 | SD step sweep quality | ⬜ |
-| A5, B3 | B2 출력 | LCM step sweep quality | ⬜ |
-| A1 vs A5 | B2 출력 | SD vs LCM 직접 비교 | ⬜ |
+| A4, B1, B2 | B2 출력 | SD step sweep quality | ✅ |
+| A5, B3 | B2 출력 | LCM step sweep quality | ✅ |
+| A4 vs A5 | B2 출력 | SD vs LCM 직접 비교 | ✅ |
+
+결과 파일: `outputs/exp/quality_phase2_20260313_213141.txt` / `outputs/exp/txt2img_comparison_20260313_213247.txt`
+
+**Phase 2 결과 요약:**
+
+SD step sweep (precision 고정: mixed_pr + vae w8a8):
+- E2E: A4(s20) 11,286ms / B1(s30) 16,535ms / B2(s50) 27,441ms — step당 ~540ms 선형 증가
+- CLIP: A4=35.97, B1=34.06, B2=35.69 — 모두 >33(양호), 유의미한 차이 없음
+- → **s20이 품질 유지하면서 가장 빠름**
+
+LCM step sweep:
+- E2E: A5(s4 fp16) 2,023ms / B3(s8 vae w8a8) 3,040ms (+1,017ms)
+- CLIP: A5=30.13, B3=30.91 — 차이 0.78 (±2 이내, 유의미하지 않음)
+- VAEDec: A5 468ms → B3 127ms (vae w8a8 효과)
+- → **s4가 s8 대비 절반 latency에 품질 동등**
+
+SD vs LCM 비교 (B2 기준 LPIPS):
+- LCM 전체가 LPIPS >0.70 (완전히 다른 이미지) — 모델·scheduler 차이로 trajectory 분기
+- CLIP: SD 35~36 vs LCM 30~31 — SD가 prompt 반영도 높음, LCM은 "보통(27~33)" 수준
+
+**Best Config 선정 (Phase 2):**
+- SD: **A4** (s20, mixed_pr + vae w8a8) — step 늘려도 품질 이득 없음
+- LCM: **A6** (s4, vae w8a8) — s8 대비 절반 latency, 품질 동등
 
 ---
 
@@ -71,8 +96,53 @@
 
 | ID | Model | Steps | Precision | Perf Mode | 상태 | 실제 파일 |
 |---|---|---|---|---|---|---|
-| C1 | SD v1.5 | best step (Phase 2 결과) | unet mixed_pr + vae w8a8 | balanced | ⬜ | |
-| C2 | LCM | best step (Phase 2 결과) | vae w8a8 | balanced | ⬜ | |
+| C1 | SD v1.5 | 20 | unet mixed_pr + vae w8a8 | balanced | ✅ | txt2img_sd15_mixed_tfp16_umixed-pr_vw8a8_qnn_npu_s20_single_20260313_214205.csv |
+| C2 | LCM | 4 | vae w8a8 | balanced | ✅ | txt2img_lcm_mixed_tfp16_ufp16_vw8a8_qnn_npu_s4_single_20260313_214749.csv |
+
+결과 파일: `outputs/exp/txt2img_comparison_20260313_214943.txt`
+
+**Phase 3 결과 — Burst vs Balanced 비교:**
+
+SD v1.5 s20 mixed_pr+w8a8 (A4 burst → C1 balanced):
+- E2E: 11,286ms → 12,789ms (+13%)
+- UNet/step: 546.7ms → 618.5ms (+13%)
+- 전력 delta: +4,031mW → +2,929mW (−27%)
+- 온도 end: 46.5°C → 45.0°C (−1.5°C)
+
+LCM s4 vae w8a8 (A6 burst → C2 balanced):
+- E2E: 1,693ms → 1,931ms (+14%)
+- UNet/step: 341.0ms → 395.1ms (+16%)
+- 전력 delta: +3,389mW → +2,482mW (−27%)
+- 온도 end: 37.5°C → 37.9°C (거의 동일)
+
+→ **balanced mode: latency +13~14% 증가, 전력 −27% 절감. background 추론 시나리오에서 trade-off 유효.**
+
+---
+
+## Phase 4 — Sustained Stability
+
+목적: best config(LCM/SD)를 burst 모드로 쿨다운 없이 10회 연속 실행해 latency 안정성과 thermal drift 측정
+설정: trials=10, cooldown 없음, burst mode
+
+| ID | Model | Steps | Precision | Perf Mode | 상태 | 실제 파일 |
+|---|---|---|---|---|---|---|
+| D1 | LCM | 4 | vae w8a8 | burst | ✅ | txt2img_lcm_mixed_tfp16_ufp16_vw8a8_qnn_npu_s4_sustained_20260313_222148.csv |
+| D2 | SD v1.5 | 20 | unet mixed_pr + vae w8a8 | burst | ✅ | txt2img_sd15_mixed_tfp16_umixed-pr_vw8a8_qnn_npu_s20_sustained_20260313_221930.csv |
+
+결과 파일: `outputs/exp/sustained_phase4_20260313_222755.txt`
+
+**Phase 4 결과 — Sustained 10회 Drift:**
+
+LCM s4 vae_w8a8 burst (D1):
+- E2E: trial1=1,637.6ms → trial10=1,672.9ms (drift=+2.15%, +35ms)
+- UNet/step: 339ms → 343ms (+1.2%) — HTP burst clock 미세 감소
+- 온도: 44.6°C → 54.0°C (+9.4°C)
+
+SD s20 mixed_pr+w8a8 burst (D2):
+- E2E: trial1=11,108.2ms → trial10=11,116.0ms (drift=+0.07%, +8ms) — 사실상 flat
+- 온도: 45.0°C → 53.2°C (+8.2°C)
+
+→ **두 config 모두 10회 연속 burst 추론에서 full thermal throttling 없이 실용적 latency 유지.**
 
 ---
 
@@ -96,29 +166,35 @@ conda run -n mobile python analysis/parse_txt2img_csv.py \
 
 ### Phase 2 — Step Sweep 비교
 
-> B1~B3 파일은 실험 완료 후 채워넣기
-
-**SD v1.5 step sweep (A1, B1, B2)**
+**SD v1.5 step sweep (A4, B1, B2)**
 ```bash
 conda run -n mobile python analysis/parse_txt2img_csv.py \
-  logs/phase1/txt2img_sd15_fp16_qnn_npu_s20_single_20260313_184651.csv \
-  logs/phase2/<B1_파일명>.csv \
-  logs/phase2/<B2_파일명>.csv \
-  --labels A1 B1 B2 --compare
+  logs/phase1/txt2img_sd15_mixed_tfp16_umixed-pr_vw8a8_qnn_npu_s20_single_20260313_195034.csv \
+  logs/phase2/txt2img_sd15_mixed_tfp16_umixed-pr_vw8a8_qnn_npu_s30_single_20260313_210149.csv \
+  logs/phase2/txt2img_sd15_mixed_tfp16_umixed-pr_vw8a8_qnn_npu_s50_single_20260313_211043.csv \
+  --labels A4 B1 B2 --compare
 ```
 
-**LCM step sweep (A5, B3)**
+**LCM step sweep (A6, B3)**
 ```bash
 conda run -n mobile python analysis/parse_txt2img_csv.py \
-  logs/phase1/txt2img_lcm_fp16_qnn_npu_s4_single_20260313_195823.csv \
-  logs/phase2/<B3_파일명>.csv \
-  --labels A5 B3 --compare
+  logs/phase1/txt2img_lcm_mixed_tfp16_ufp16_vw8a8_qnn_npu_s4_single_20260313_200423.csv \
+  logs/phase2/txt2img_lcm_mixed_tfp16_ufp16_vw8a8_qnn_npu_s8_single_20260313_212940.csv \
+  --labels A6 B3 --compare
 ```
 
-**SD vs LCM 직접 비교 (A1 vs A5)**
+**SD vs LCM 직접 비교 (A4 vs A6)**
 ```bash
 conda run -n mobile python analysis/parse_txt2img_csv.py \
-  logs/phase1/txt2img_sd15_fp16_qnn_npu_s20_single_20260313_184651.csv \
-  logs/phase1/txt2img_lcm_fp16_qnn_npu_s4_single_20260313_195823.csv \
-  --labels A1 A5 --compare
+  logs/phase1/txt2img_sd15_mixed_tfp16_umixed-pr_vw8a8_qnn_npu_s20_single_20260313_195034.csv \
+  logs/phase1/txt2img_lcm_mixed_tfp16_ufp16_vw8a8_qnn_npu_s4_single_20260313_200423.csv \
+  --labels A4 A6 --compare
+```
+
+---
+
+### Phase 4 — Sustained Stability 분석
+
+```bash
+conda run -n mobile python analysis/parse_phase4_sustained.py
 ```

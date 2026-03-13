@@ -46,6 +46,30 @@
       "experiments": [
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "LCM_LORA", "steps": 8, "guidanceScale": 1.0 }
       ]
+    },
+    {
+      "id": "phase4_sustained_lcm",
+      "name": "[Phase4] Sustained — LCM s4 best config (D1)",
+      "experiments": [
+        {
+          "sdBackend": "QNN_NPU", "sdPrecision": "FP16",
+          "modelVariant": "LCM_LORA", "steps": 4, "guidanceScale": 1.0,
+          "precVaeDec": "W8A8",
+          "phase": "SUSTAINED", "trials": 10, "htpPerformanceMode": "burst"
+        }
+      ]
+    },
+    {
+      "id": "phase4_sustained_sd",
+      "name": "[Phase4] Sustained — SD s20 best config (D2)",
+      "experiments": [
+        {
+          "sdBackend": "QNN_NPU", "sdPrecision": "FP16",
+          "steps": 20,
+          "precUnet": "MIXED_PR", "precVaeDec": "W8A8",
+          "phase": "SUSTAINED", "trials": 10, "htpPerformanceMode": "burst"
+        }
+      ]
     }
   ]
 }
