@@ -206,7 +206,7 @@ class OrtRunner(private val context: Context) {
             for (i in outputNames.indices) {
                 val name = outputNames[i]
                 val tensor = results.get(i) as OnnxTensor
-                val arr = if ((tensor.info as? TensorInfo)?.type == OnnxJavaType.FLOAT16) {
+                val arr = if (tensor.info.type == OnnxJavaType.FLOAT16) {
                     val sb = tensor.shortBuffer
                     FloatArray(sb.remaining()) { android.util.Half.toFloat(sb.get()) }
                 } else {
