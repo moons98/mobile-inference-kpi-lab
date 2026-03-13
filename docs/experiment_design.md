@@ -122,11 +122,43 @@ Text Prompt → Text Encoder → Initial Noise(1,4,64,64) → Denoising Loop(UNe
 
 ### 2.3 품질 KPI
 
-- Perceptual: FID, CLIP Score (가능한 범위에서)
+- Perceptual: LPIPS, CLIP Score
 - Visual: artifact 빈도, prompt 부합도
 - Human panel(optional): A/B blind preference
 
 > SD v1.5와 LCM-LoRA 간 품질 비교는 동일 prompt set에서 수행하며, step 수 변화에 따른 품질-속도 tradeoff를 중심으로 해석한다.
+
+#### 품질 지표 선정 이유 — 평가 단계별 지표가 다른 이유
+
+품질 평가는 두 단계에서 서로 다른 지표를 사용한다. 각 단계의 목적과 측정 대상이 다르기 때문이다.
+
+**[단계 1] 양자화 스크리닝 — CosSim · PSNR · RMSE** (`outputs/quantization/sd_quant_quality.txt`)
+
+| 지표 | 의미 | 선정 이유 |
+|---|---|---|
+| CosSim | FP32 출력 텐서와 양자화 출력 텐서의 방향 유사도 | 고차원 벡터(임베딩, feature map) 간 전역적 왜곡 감지에 적합 |
+| PSNR | 신호 대 잡음비. 값이 높을수록 FP32에 가까움 | 압축·양자화 품질의 표준 지표. 텐서 단위 수치 오차 파악 |
+| RMSE | 출력 텐서의 평균 제곱근 오차 | 절대적 오차 크기를 직접 확인 |
+
+- **측정 대상**: 파이프라인 전체가 아닌 **컴포넌트 단위** (text encoder, unet, vae decoder 각각)
+- **목적**: 최종 이미지를 만들기 전에, 양자화가 각 컴포넌트의 출력 텐서를 얼마나 망가뜨리는지 빠르게 스크리닝
+- **한계**: 텐서 유사도가 높아도 파이프라인 전체를 돌린 최종 이미지 품질을 보장하지는 않음 → 다음 단계 필요
+
+**[단계 2] 실험 품질 평가 — LPIPS · CLIP Score** (`outputs/exp/quality_phase1_*.txt`)
+
+| 지표 | 의미 | 선정 이유 |
+|---|---|---|
+| LPIPS | AlexNet feature 기반 지각적 거리. 낮을수록 base와 유사 | 사람 시지각에 가까운 유사도. PSNR은 픽셀 단위 오차만 보지만 LPIPS는 구조·텍스처 차이를 반영 |
+| CLIP Score | 이미지-텍스트 정렬도 (logit scale). 높을수록 프롬프트를 잘 반영 | UNet 양자화처럼 trajectory가 바뀌어 LPIPS가 높아도, CLIP이 유지되면 '품질은 동등'으로 판단 가능 |
+
+- **측정 대상**: **end-to-end 파이프라인 출력 이미지** (전체 pipeline 실행 후 최종 RGB 이미지)
+- **목적**: 사용자가 실제로 보는 이미지 품질 + 프롬프트 반영도를 정량화
+- **LPIPS를 쓰는 전제**: 모든 실험이 동일한 seed(=42)에서 출발 → 초기 noise z_T 동일 → 이미지 차이가 순전히 모델(양자화)의 영향
+
+**두 단계를 함께 쓰는 이유**
+
+CosSim이 높아도 파이프라인 최종 품질을 보장하지 않고, LPIPS/CLIP만으로는 어느 컴포넌트가 문제인지 알 수 없다.
+두 단계를 직렬로 쓰면 "컴포넌트 이상 없음(CosSim 통과) + 최종 이미지도 품질 유지(LPIPS/CLIP 통과)"를 함께 확인할 수 있다.
 
 ---
 
