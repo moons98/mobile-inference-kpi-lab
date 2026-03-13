@@ -23,8 +23,8 @@ SD v1.5 base와 LCM 모두 동일한 VAE Encoder/Decoder 및 Text Encoder를 사
 
 | 파일 | 크기 | 생성 방법 | 상태 | compile | profile | 품질 |
 |---|---|---|---|---|---|---|
-| `text_encoder_fp32.onnx` | 470MB | `scripts/sd/export_sd_to_onnx.py` | ✅ | `jp2mnxjm5` (237MB) | `jgz7k28kp` **5.9ms** / 2MB | — |
-| `text_encoder_w8a16.onnx` | 470MB | qai-hub-models SD v1.5 export (AIMET W8A16) | ✅ | `j561l217p` (156MB) | `jp18x2v2g` **3.3ms** / 2MB | CosSim 0.9849 [Marginal] |
+| `text_encoder_fp32.onnx` | 470MB | `scripts/sd/export_sd_to_onnx.py` | ✅ | `jp2mnxjm5` (237MB) | `jgz7k28kp` **5.9ms** / ❌ 2MB (가중치 미계상) → **237MB 추정** (compile bin 크기 사용) | — |
+| `text_encoder_w8a16.onnx` | 470MB | qai-hub-models SD v1.5 export (AIMET W8A16) | ❌ (실추론 성능 하락) | `j561l217p` (156MB) | ❌ profile 오류 (2MB — 가중치 미계상) | CosSim 0.9849 [Marginal] |
 
 ### VAE Decoder
 
@@ -32,7 +32,7 @@ SD v1.5 base와 LCM 모두 동일한 VAE Encoder/Decoder 및 Text Encoder를 사
 |---|---|---|---|---|---|---|
 | `vae_decoder_fp32.onnx` | 189MB | `scripts/sd/export_sd_to_onnx.py` | ✅ | `j5q2o0wm5` (109MB) | `j5w9nw16p` **440ms** / 119MB | — |
 | `vae_decoder_qai_int8.onnx` | 189MB | QAI Hub W8A8 quantize (`jg94e08v5`) | ✅ | `j561l2d0p` (57MB) | `jgjl4dwxp` **111ms** / 69MB | CosSim 0.9827 [Marginal] |
-| `vae_decoder_w8a16.onnx` | 189MB | qai-hub-models SD v1.5 export (AIMET W8A16) | ✅ | `jpev3ov05` (62MB) | `j57d327l5` **270ms** / 3MB | CosSim 0.9999 [Excellent] |
+| `vae_decoder_w8a16.onnx` | 189MB | qai-hub-models SD v1.5 export (AIMET W8A16) | ❌ (실추론 성능 하락) | `jpev3ov05` (62MB) | ❌ profile 오류 (3MB — 가중치 미계상) | CosSim 0.9999 [Excellent] |
 
 ### Calibration Data (`weights/sd_v1.5/calib_data/`)
 
@@ -55,8 +55,8 @@ SD v1.5 base와 LCM 모두 동일한 VAE Encoder/Decoder 및 Text Encoder를 사
 
 | 파일 | 크기 | 생성 방법 | 상태 | compile | profile | 품질 |
 |---|---|---|---|---|---|---|
-| `unet_base_fp32.onnx` + `.data` | 0.8MB + 3.3GB | `export_sd_lcm_unet.py --export base` | ✅ | `jpryj609g` (1,651MB) |  | — |
-| `unet_base_w8a16.onnx` + `.data` | 1.7MB + 3.3GB | qai-hub-models SD v1.5 export (AIMET W8A16) | ✅ | `jgjl4dl8p` (842MB) | `jgdvlnzeg` **113ms** / 2MB | ⚠️ 평가 불가 (S23 inference OOM) |
+| `unet_base_fp32.onnx` + `.data` | 0.8MB + 3.3GB | `export_sd_lcm_unet.py --export base` | ✅ | `jpryj609g` (1,651MB) | 프로파일 없음 → **1,793MB 추정** (unet_lcm_fp32 동일 아키텍처 가정) | — |
+| `unet_base_w8a16.onnx` + `.data` | 1.7MB + 3.3GB | qai-hub-models SD v1.5 export (AIMET W8A16) | ❌ (실추론 성능 하락) | `jgjl4dl8p` (842MB) | ❌ profile 오류 (2MB — 가중치 미계상) | ⚠️ 평가 불가 (S23 inference OOM) |
 | `unet_base_int8_qdq.onnx` + `.data` | 3.1MB + 820MB | `quant_runpod.py` full INT8 QDQ (MinMax, 8 samples) | ❌ compile 실패 | `j5w9nq4jp` ❌ FAILED |  | CosSim 0.9884 [Marginal] |
 | `unet_base_mixed_pr.onnx` + `.data` | 1.9MB + 821MB | `quant_runpod.py` mixed PR (Conv/MatMul/Gemm INT8) | ✅ | `jg94ewdv5` ✅ | `jpvwxwrzg` **265ms** / 1,151MB | CosSim 0.9968 [Good] |
 
@@ -67,10 +67,10 @@ LCM-LoRA (`latent-consistency/lcm-lora-sdv1-5`, 67.5M params) 를 base UNet에 f
 
 | 파일 | 크기 | 생성 방법 | 상태 | compile | profile | 품질 |
 |---|---|---|---|---|---|---|
-| `unet_lcm_fp32.onnx` + `.data` | 0.8MB + 3.3GB | `export_sd_lcm_unet.py --export lcm` | ✅ | `jp87vq9q5` (1,651MB) | `jp2mnx0x5` **333ms** / 1,793MB | — |
+| `unet_lcm_fp32.onnx` + `.data` | 0.8MB + 3.3GB | `export_sd_lcm_unet.py --export lcm` | ✅ | `jp87vq9q5` (1,651MB) | `jp2mnx0x5` **333ms** / 1,793MB | - |
 | `unet_lcm_w8a16.onnx` + `.data` | 0.8MB + 3.3GB | `export_sd_lcm_unet_w8a16.py` (AIMET W8A16) | ❌ 사용 불가 | `jgz7k21xp` (834MB) | `jp3m2nkng` **214ms** / 902MB | CosSim 0.7292 [**Poor**] — 배포 불가 |
 | `unet_lcm_int8_qdq.onnx` + `.data` | 3.1MB + 820MB | `quant_runpod.py` full INT8 QDQ (MinMax, 8 samples) | ❌ compile 실패 | `jp18xe6lg` ❌ FAILED |  | CosSim 0.9658 [Marginal] |
-| `unet_lcm_mixed_pr.onnx` + `.data` | 1.9MB + 821MB | `quant_runpod.py` mixed PR (Conv/MatMul/Gemm INT8) | ✅ | `jgdvlo2lg` ✅ | `jgjl4l21p` **264ms** / 1,150MB | CosSim 0.9875 [Marginal] |
+| `unet_lcm_mixed_pr.onnx` + `.data` | 1.9MB + 821MB | `quant_runpod.py` mixed PR (Conv/MatMul/Gemm INT8) | ❌ (실추론 성능 하락) | `jgdvlo2lg` ✅ | `jgjl4l21p` **264ms** / 1,150MB | CosSim 0.9875 [Marginal] |
 
 ---
 
@@ -81,23 +81,24 @@ LCM-LoRA (`latent-consistency/lcm-lora-sdv1-5`, 67.5M params) 를 base UNet에 f
 - W8A16: QAI Hub on-device NPU 추론 (Galaxy S23, Snapdragon 8 Gen 2)
 - 상세 리포트: `exp_outputs/quantization/sd_quant_quality.txt`
 
-| Component | Variant | CosSim | RMSE | Grade | 배포 |
-|---|---|---|---|---|---|
-| vae_encoder | W8A8 (QAI Hub INT8) | 0.9810 | 0.163 | Marginal | 조건부 |
-| text_encoder | W8A16 (AIMET) | 0.9849 | 0.178 | Marginal | 조건부 |
-| vae_decoder | W8A8 (QAI Hub INT8) | 0.9827 | 0.136 | Marginal | 조건부 |
-| vae_decoder | W8A16 (AIMET) | **0.9999** | 0.005 | **Excellent** | ✅ |
-| unet_base | INT8 QDQ | 0.9884 | 0.145 | Marginal | ❌ compile 실패 |
-| unet_base | Mixed Precision | **0.9968** | 0.075 | **Good** | ✅ |
-| unet_lcm | INT8 QDQ | 0.9658 | 0.233 | Marginal | ❌ compile 실패 |
-| unet_lcm | Mixed Precision | 0.9875 | 0.143 | Marginal | 조건부 |
-| unet_lcm | W8A16 (AIMET) | **0.7292** | 0.729 | **Poor** | ❌ 사용 불가 |
-| unet_base | W8A16 (AIMET) | — | — | — | ⚠️ 평가 불가 (S23 OOM) |
+| Component | Variant | CosSim | RMSE | Grade | 배포 | 비고 |
+|---|---|---|---|---|---|---|
+| vae_encoder | W8A8 (QAI Hub INT8) | 0.9810 | 0.163 | Marginal | 조건부 | |
+| text_encoder | W8A16 (AIMET) | 0.9849 | 0.178 | Marginal | ❌ 실추론 성능 하락 | CosSim은 합격이나 실제 on-device 추론 시 품질 저하 확인 |
+| vae_decoder | W8A8 (QAI Hub INT8) | 0.9827 | 0.136 | Marginal | 조건부 | |
+| vae_decoder | W8A16 (AIMET) | **0.9999** | 0.005 | **Excellent** | ❌ 실추론 성능 하락 | CosSim은 우수하나 실제 on-device 추론 시 품질 저하 확인 |
+| unet_base | INT8 QDQ | 0.9884 | 0.145 | Marginal | ❌ compile 실패 | |
+| unet_base | Mixed Precision | **0.9968** | 0.075 | **Good** | ✅ | |
+| unet_base | W8A16 (AIMET) | — | — | — | ❌ 실추론 성능 하락 | S23 평가 OOM; on-device 추론 시 품질 저하 확인 |
+| unet_lcm | INT8 QDQ | 0.9658 | 0.233 | Marginal | ❌ compile 실패 | |
+| unet_lcm | Mixed Precision | 0.9875 | 0.143 | Marginal | ❌ 실추론 성능 하락 | CosSim은 합격이나 실제 on-device 추론 시 품질 저하 확인 |
+| unet_lcm | W8A16 (AIMET) | **0.7292** | 0.729 | **Poor** | ❌ 사용 불가 | AIMET W8A16 calibration → on-device QNN 실행 시 심각한 품질 저하 |
 
 > **UNet base/LCM full INT8 QDQ compile 실패**: HTP의 `LayerNormalization` op이 full INT8 input/output 조합 미지원.
 > `Unsupported input/output datatypes for HTP Op 'LayerNorm'` → Conv/MatMul/Gemm만 INT8, activation은 FP32로 유지한 mixed_pr로 compile 성공.
 >
-> **unet_lcm W8A16 Poor 원인**: AIMET W8A16 calibration 결과 on-device QNN 실행 시 심각한 품질 저하. mixed_pr (CosSim 0.9875)이 현실적 대안.
+> **W8A16 계열 실추론 성능 하락**: CosSim/RMSE 평가(component-level, 4 samples)는 합격이나, 실제 파이프라인 on-device 추론 시 가시적 품질 저하 확인. W8A16 실험 전면 중단.
+> unet_lcm W8A16은 CosSim 0.7292로 평가 단계부터 Poor — 배포 불가.
 
 ---
 
