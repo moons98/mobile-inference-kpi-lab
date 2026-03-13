@@ -363,9 +363,10 @@ class Txt2ImgPipeline(
         val condName = unetNames.firstOrNull { it.contains("encoder") || it.contains("hidden") || it.contains("text_emb") }
             ?: "encoder_hidden_states"
         val timestepType = unetRunner.inputTypes[timestepName] ?: OnnxJavaType.FLOAT
-        // W8A16 binary compiled with FP16 activations → all I/O is FLOAT16; shape [1,1] for timestep
-        val unetUseFp16 = timestepType == OnnxJavaType.FLOAT16
-        val timestepShape = if (unetUseFp16) longArrayOf(1, 1) else longArrayOf(1)
+        // [2] latent input type이 FLOAT16이면 W8A16 binary (activation FP16) → 모든 I/O가 FLOAT16
+        val unetUseFp16 = unetRunner.inputTypes[sampleName] == OnnxJavaType.FLOAT16
+        // [1] timestep shape를 session 메타데이터에서 직접 읽음 (규칙 추론 제거)
+        val timestepShape = unetRunner.inputShapes[timestepName] ?: longArrayOf(1)
         Log.i(TAG, "UNet inputs: sample=$sampleName, timestep=$timestepName($timestepType${timestepShape.contentToString()}), cond=$condName, fp16IO=$unetUseFp16")
 
         val timestepFloatBuf = if (!unetUseFp16 && timestepType == OnnxJavaType.FLOAT) FloatBuffer.allocate(1) else null
@@ -476,16 +477,23 @@ class Txt2ImgPipeline(
         // === Stage: VAE Decode ===
         listener?.onStageStart("vae_decode")
         val vaeDecStart = System.nanoTime()
-        val decResult = vaeDec.run(
-            FloatBuffer.wrap(currentLatent),
-            longArrayOf(1, LATENT_CHANNELS.toLong(), latentSize.toLong(), latentSize.toLong())
+        // [3] VAE input precision을 session 메타데이터에서 감지
+        val vaeInputName = vaeDec.inputNames.firstOrNull() ?: "latent_sample"
+        val vaeUseFp16 = vaeDec.inputTypes[vaeInputName] == OnnxJavaType.FLOAT16
+        val vaeLatentShape = longArrayOf(1, LATENT_CHANNELS.toLong(), latentSize.toLong(), latentSize.toLong())
+        val vaeInputBuf: Any = if (vaeUseFp16)
+            ShortBuffer.wrap(ShortArray(currentLatent.size) { Half.toHalf(currentLatent[it]) })
+        else
+            FloatBuffer.wrap(currentLatent)
+        Log.i(TAG, "VAE Decoder input: $vaeInputName(${vaeDec.inputTypes[vaeInputName]}), fp16IO=$vaeUseFp16")
+        val decResult = vaeDec.runMixed(
+            mapOf(vaeInputName to Pair(vaeInputBuf, vaeLatentShape))
         ) ?: run { Log.e(TAG, "generate: vaeDecoder.run returned null"); return null }
-        // W8A16 compiled model has /Div+/Clip baked in → [0,1] output. All others → [-1,1].
-        val vaePrec = config.sdPrecisionFor(SdComponent.VAE_DECODER)
+        // W8A16 (FP16 I/O) binary has /Div+/Clip baked in → [0,1]. All others → [-1,1].
         val outputImage = ImagePreprocessor.postprocess(
             decResult.outputs.values.first() as FloatArray,
             config.resolution, config.resolution,
-            normalized = (vaePrec == SdPrecision.W8A16)
+            normalized = vaeUseFp16  // session metadata 기반, config 하드코딩 제거
         )
         val vaeDecMs = nsToMs(System.nanoTime() - vaeDecStart)
 
