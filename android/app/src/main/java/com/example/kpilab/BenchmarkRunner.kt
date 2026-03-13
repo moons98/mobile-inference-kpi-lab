@@ -228,20 +228,23 @@ class BenchmarkRunner(
         } finally {
             systemMetricsJob?.cancel()
             systemMetricsJob = null
-            logcatCapture.stopCapture()
-            lastOrtLogInfo = logcatCapture.parseOrtInfo()
-
-            val modelKey = "sd_${config.modelVariant.name.lowercase()}_${config.sdPrecision.dirSuffix}_${config.sdBackend.name.lowercase()}"
-            val info = lastOrtLogInfo
-            if (info != null && info.hasData()) {
-                OrtLogInfo.saveForModel(context, modelKey, info)
-                Log.i(TAG, "Saved partition info for $modelKey")
-            } else {
-                val cached = OrtLogInfo.loadForModel(context, modelKey)
-                if (cached != null) {
-                    lastOrtLogInfo = cached
-                    Log.i(TAG, "Loaded cached partition info for $modelKey: QNN=${cached.qnnNodes} CPU=${cached.cpuNodes}")
+            try { logcatCapture.stopCapture() } catch (e: Exception) { Log.w(TAG, "logcatCapture.stopCapture failed: ${e.message}") }
+            try {
+                lastOrtLogInfo = logcatCapture.parseOrtInfo()
+                val modelKey = "sd_${config.modelVariant.name.lowercase()}_${config.sdPrecision.dirSuffix}_${config.sdBackend.name.lowercase()}"
+                val info = lastOrtLogInfo
+                if (info != null && info.hasData()) {
+                    OrtLogInfo.saveForModel(context, modelKey, info)
+                    Log.i(TAG, "Saved partition info for $modelKey")
+                } else {
+                    val cached = OrtLogInfo.loadForModel(context, modelKey)
+                    if (cached != null) {
+                        lastOrtLogInfo = cached
+                        Log.i(TAG, "Loaded cached partition info for $modelKey: QNN=${cached.qnnNodes} CPU=${cached.cpuNodes}")
+                    }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "ORT log parse/save failed: ${e.message}")
             }
         }
     }

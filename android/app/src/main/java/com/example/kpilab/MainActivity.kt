@@ -426,8 +426,11 @@ class MainActivity : AppCompatActivity() {
     private fun setControlsEnabled(enabled: Boolean) {
         binding.checkBatchMode.isEnabled = enabled
         binding.spinnerExperimentSet.isEnabled = enabled
+        binding.radioPhaseSmoke.isEnabled = enabled
         binding.radioPhase1.isEnabled = enabled
         binding.radioPhase2.isEnabled = enabled
+        binding.radioHtpBurst.isEnabled = enabled
+        binding.radioHtpSustained.isEnabled = enabled
         binding.radioVariantSd15.isEnabled = enabled
         binding.radioVariantLcm.isEnabled = enabled
         for (s in precisionSpinners) { s.isEnabled = enabled }
@@ -451,6 +454,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildConfig(): BenchmarkConfig {
+        val isSmoke = binding.radioGroupPhase.checkedRadioButtonId == R.id.radioPhaseSmoke
         val phase = when (binding.radioGroupPhase.checkedRadioButtonId) {
             R.id.radioPhase2 -> BenchmarkPhase.SUSTAINED_GENERATE
             else -> BenchmarkPhase.SINGLE_GENERATE
@@ -466,6 +470,11 @@ class MainActivity : AppCompatActivity() {
             ModelVariant.SD_V15 -> 7.5f
         }
 
+        val htpPerf = when (binding.radioGroupHtpPerf.checkedRadioButtonId) {
+            R.id.radioHtpSustained -> "sustained_high"
+            else -> "burst"
+        }
+
         return BenchmarkConfig(
             modelVariant = variant,
             sdBackend = when (binding.radioGroupEp.checkedRadioButtonId) {
@@ -478,14 +487,13 @@ class MainActivity : AppCompatActivity() {
             steps = getSelectedSteps(),
             guidanceScale = guidanceScale,
             prompt = buildCombinedPrompt(),
-            trials = when (phase) {
-                BenchmarkPhase.SUSTAINED_GENERATE -> 10
-                BenchmarkPhase.SINGLE_GENERATE -> 5
+            trials = when {
+                isSmoke -> 1
+                phase == BenchmarkPhase.SUSTAINED_GENERATE -> 10
+                else -> 5
             },
-            htpPerformanceMode = when (phase) {
-                BenchmarkPhase.SUSTAINED_GENERATE -> "sustained_high"
-                else -> "burst"
-            }
+            warmupTrials = if (isSmoke) 0 else 2,
+            htpPerformanceMode = htpPerf
         )
     }
 

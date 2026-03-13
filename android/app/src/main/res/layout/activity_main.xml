@@ -232,6 +232,12 @@
                     android:layout_marginBottom="12dp">
 
                     <RadioButton
+                        android:id="@+id/radioPhaseSmoke"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Quick Test (1 trial, warmup off)" />
+
+                    <RadioButton
                         android:id="@+id/radioPhase1"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -242,7 +248,7 @@
                         android:id="@+id/radioPhase2"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Phase2: Sustained Generate (10 trials)" />
+                        android:text="Phase2: Sustained (10 trials, no cooldown)" />
 
                 </RadioGroup>
 
@@ -422,6 +428,39 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:text="CPU" />
+
+                </RadioGroup>
+
+                <!-- HTP Performance Mode -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="HTP Performance Mode"
+                    android:textSize="14sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="8dp" />
+
+                <RadioGroup
+                    android:id="@+id/radioGroupHtpPerf"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="12dp">
+
+                    <RadioButton
+                        android:id="@+id/radioHtpBurst"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Burst"
+                        android:checked="true" />
+
+                    <RadioButton
+                        android:id="@+id/radioHtpSustained"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Sustained High" />
 
                 </RadioGroup>
 

@@ -354,13 +354,14 @@ class Txt2ImgPipeline(
         val latentShape = longArrayOf(1, LATENT_CHANNELS.toLong(), latentSize.toLong(), latentSize.toLong())
         val timestepShape = longArrayOf(1)
 
-        // Detect timestep input type
+        // Detect UNet input names by content (order varies between standard vs QAI Hub compiled)
         val unetNames = unetRunner.inputNames
-        val sampleName = unetNames.getOrElse(0) { "sample" }
-        val timestepName = unetNames.getOrElse(1) { "timestep" }
-        val condName = unetNames.getOrElse(2) { "encoder_hidden_states" }
+        val sampleName = unetNames.firstOrNull { it.contains("sample") } ?: "sample"
+        val timestepName = unetNames.firstOrNull { it.contains("timestep") } ?: "timestep"
+        val condName = unetNames.firstOrNull { it.contains("encoder") || it.contains("hidden") }
+            ?: "encoder_hidden_states"
         val timestepType = unetRunner.inputTypes[timestepName] ?: OnnxJavaType.FLOAT
-        Log.i(TAG, "UNet timestep input type: $timestepType")
+        Log.i(TAG, "UNet inputs: sample=$sampleName, timestep=$timestepName($timestepType), cond=$condName")
 
         val timestepFloatBuf = if (timestepType == OnnxJavaType.FLOAT) FloatBuffer.allocate(1) else null
         val timestepIntBuf = if (timestepType == OnnxJavaType.INT32) IntBuffer.allocate(1) else null
