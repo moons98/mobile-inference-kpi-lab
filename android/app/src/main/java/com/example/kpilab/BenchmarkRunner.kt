@@ -165,7 +165,7 @@ class BenchmarkRunner(
     // --- Benchmark Control ---
 
     fun start(config: BenchmarkConfig, scope: CoroutineScope) {
-        if (isRunning || isBatchRunning || benchmarkJob?.isActive == true) return
+        if (isRunning || isBatchRunning) return
         this.config = config
         wakeLock.acquire(30 * 60 * 1000L)  // 30 min max
 
@@ -230,13 +230,16 @@ class BenchmarkRunner(
             systemMetricsJob = null
             try { logcatCapture.stopCapture() } catch (e: Exception) { Log.w(TAG, "logcatCapture.stopCapture failed: ${e.message}") }
             try {
-                lastOrtLogInfo = logcatCapture.parseOrtInfo()
                 val modelKey = "sd_${config.modelVariant.name.lowercase()}_${config.sdPrecision.dirSuffix}_${config.sdBackend.name.lowercase()}"
-                val info = lastOrtLogInfo
-                if (info != null && info.hasData()) {
-                    OrtLogInfo.saveForModel(context, modelKey, info)
-                    Log.i(TAG, "Saved partition info for $modelKey")
-                } else {
+                val parsed = withTimeoutOrNull(5000) { logcatCapture.parseOrtInfo() }
+                if (parsed != null) {
+                    lastOrtLogInfo = parsed
+                    if (parsed.hasData()) {
+                        OrtLogInfo.saveForModel(context, modelKey, parsed)
+                        Log.i(TAG, "Saved partition info for $modelKey")
+                    }
+                }
+                if (lastOrtLogInfo == null || !lastOrtLogInfo!!.hasData()) {
                     val cached = OrtLogInfo.loadForModel(context, modelKey)
                     if (cached != null) {
                         lastOrtLogInfo = cached

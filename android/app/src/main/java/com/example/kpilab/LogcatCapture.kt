@@ -157,9 +157,20 @@ class LogcatCapture {
         var qnnSetupFailed = false
         var qnnErrorMessage: String? = null
 
+        // Partition info appears only during model load (before first inference).
+        // After finding a "nodes placed on" or "GetCapability" summary line,
+        // we scan at most TAIL_LINES more lines to catch any trailing fallback ops,
+        // then stop — avoiding scanning millions of verbose inference-step log lines.
+        var partitionFound = false
+        var tailLinesRemaining = -1
+        val TAIL_LINES = 500
+
         for (line in logs.lines()) {
+            if (partitionFound) {
+                if (tailLinesRemaining-- <= 0) break
+            }
+
             // Check for QNN setup failure
-            // Example: "QNN SetupBackend failed"
             if (line.contains("SetupBackend failed", ignoreCase = true) ||
                 line.contains("QNN_DEVICE_ERROR", ignoreCase = true) ||
                 line.contains("QNN_COMMON_ERROR", ignoreCase = true)) {
@@ -167,6 +178,7 @@ class LogcatCapture {
                 qnnErrorMessage = line.substringAfter("Error:").trim().ifEmpty { null }
                     ?: line.substringAfter("failed").trim().ifEmpty { null }
                 partitionInfo.add(line.trim())
+                if (!partitionFound) { partitionFound = true; tailLinesRemaining = TAIL_LINES }
             }
 
             // Parse node placement info from ORT
@@ -175,12 +187,12 @@ class LogcatCapture {
                 partitionInfo.add(line.trim())
                 val nodeCountMatch = Regex("Number of nodes:\\s*(\\d+)").find(line)
                 val nodeCount = nodeCountMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
-
                 when {
                     line.contains("QNNExecutionProvider") -> qnnNodes += nodeCount
                     line.contains("CPUExecutionProvider") -> cpuNodes += nodeCount
                 }
                 totalNodes += nodeCount
+                if (!partitionFound) { partitionFound = true; tailLinesRemaining = TAIL_LINES }
             }
 
             // Format B (ORT 1.x): "GetCapability] Number of partitions supported by QNN EP: 1,
@@ -196,11 +208,13 @@ class LogcatCapture {
                 totalNodes = graphCount
                 qnnNodes = qnnCount
                 cpuNodes = graphCount - qnnCount
+                // Don't break yet — GetCapability fires multiple times; keep updating until tail ends
+                if (!partitionFound) { partitionFound = true; tailLinesRemaining = TAIL_LINES }
+                else tailLinesRemaining = TAIL_LINES  // reset window on each GetCapability hit
             }
 
             // Parse fallback ops
             // Example: "Op [Softmax] is not supported by QNN"
-            // Example: "Falling back to CPU for node: Softmax_123"
             if (line.contains("not supported", ignoreCase = true)) {
                 val opMatch = Regex("\\[([^\\]]+)\\]").find(line)
                     ?: Regex("Op\\s+(\\w+)").find(line)
