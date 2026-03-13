@@ -322,17 +322,34 @@ class OrtRunner(private val context: Context) {
         val session = ortSession
         ortSession = null
 
-        // ORT 1.24.3 + QNN EP: session.close() can trigger SIGABRT if QNN internal
-        // async ops are still in progress (pthread_mutex_lock on destroyed mutex).
-        // A brief delay lets QNN drain before the native session teardown begins.
+        // ORT 1.24.3 + QNN EP: session.close() can hang indefinitely (QNN HTP driver
+        // waiting for async NPU ops that never drain). Run on a daemon thread with a
+        // hard timeout so cleanup() always terminates.
+        // The 300ms pre-close sleep reduces the chance of SIGABRT from a close that
+        // races with an in-flight HTP dispatch.
         if (session != null) {
+            val closeThread = Thread {
+                try {
+                    Thread.sleep(300)
+                    session.close()
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Session close error (ignored): ${t.message}")
+                }
+            }.also {
+                it.isDaemon = true
+                it.name = "ort-session-close"
+                it.start()
+            }
             try {
-                Thread.sleep(300)
-                session.close()
+                closeThread.join(8000)
+                if (closeThread.isAlive) {
+                    Log.w(TAG, "session.close() timed out after 8s — QNN HTP hang, abandoning")
+                    closeThread.interrupt()
+                }
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
-            } catch (t: Throwable) {
-                Log.w(TAG, "Session close error (ignored): ${t.message}")
             }
         }
 

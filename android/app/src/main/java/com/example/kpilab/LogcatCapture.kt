@@ -123,7 +123,9 @@ class LogcatCapture {
             capturedLogs.toString()
         }
 
-        Log.i(TAG, "Captured ${logs.lines().size} log lines")
+        // Avoid logs.lines().size — creates a full List<String> from potentially large log.
+        val lineCount = logs.count { it == '\n' }
+        Log.i(TAG, "Captured ~$lineCount log lines (${logs.length / 1024} KB)")
         return logs
     }
 
