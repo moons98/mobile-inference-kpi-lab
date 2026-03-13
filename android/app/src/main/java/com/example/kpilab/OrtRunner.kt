@@ -10,6 +10,7 @@ import java.io.FileReader
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
 import java.nio.LongBuffer
+import java.nio.ShortBuffer
 
 /**
  * Single ORT session wrapper for one SD component.
@@ -185,6 +186,7 @@ class OrtRunner(private val context: Context) {
                     is FloatBuffer -> OnnxTensor.createTensor(env, buffer, shape)
                     is IntBuffer -> OnnxTensor.createTensor(env, buffer, shape)
                     is LongBuffer -> OnnxTensor.createTensor(env, buffer, shape)
+                    is ShortBuffer -> OnnxTensor.createTensor(env, buffer, shape, OnnxJavaType.FLOAT16)
                     else -> throw IllegalArgumentException("Unsupported buffer type: ${buffer::class}")
                 }
                 name to tensor
@@ -202,9 +204,13 @@ class OrtRunner(private val context: Context) {
             for (i in outputNames.indices) {
                 val name = outputNames[i]
                 val tensor = results.get(i) as OnnxTensor
-                val buf = tensor.floatBuffer
-                val arr = FloatArray(buf.remaining())
-                buf.get(arr)
+                val arr = if ((tensor.info as? TensorInfo)?.type == OnnxJavaType.FLOAT16) {
+                    val sb = tensor.shortBuffer
+                    FloatArray(sb.remaining()) { android.util.Half.toFloat(sb.get()) }
+                } else {
+                    val buf = tensor.floatBuffer
+                    FloatArray(buf.remaining()).also { buf.get(it) }
+                }
                 outputMap[name] = arr
             }
             val outputCopyMs = ((System.nanoTime() - outputCopyStart) / 1_000_000.0).toFloat()

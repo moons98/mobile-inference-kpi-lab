@@ -5,6 +5,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtLoggingLevel
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Half
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -14,6 +15,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
+import java.nio.ShortBuffer
 
 /**
  * SD v1.5 / LCM-LoRA text-to-image pipeline with 4ch UNet.
@@ -349,22 +351,33 @@ class Txt2ImgPipeline(
 
         // Prepare reusable buffers
         val textEmbShape = longArrayOf(1, 77, 768)
-        val textEmbBuffer = FloatBuffer.wrap(textEmbeddings)
-        val uncondEmbBuffer = if (useCfg && uncondEmbeddings != null) FloatBuffer.wrap(uncondEmbeddings) else null
         val latentShape = longArrayOf(1, LATENT_CHANNELS.toLong(), latentSize.toLong(), latentSize.toLong())
-        val timestepShape = longArrayOf(1)
 
         // Detect UNet input names by content (order varies between standard vs QAI Hub compiled)
         val unetNames = unetRunner.inputNames
-        val sampleName = unetNames.firstOrNull { it.contains("sample") } ?: "sample"
+        // Name detection covers multiple export conventions:
+        //   standard diffusers export:   sample / timestep / encoder_hidden_states / output_0
+        //   qai-hub-models W8A16 export: latent / timestep / text_emb / output_latent
+        val sampleName = unetNames.firstOrNull { it.contains("sample") || it == "latent" } ?: "sample"
         val timestepName = unetNames.firstOrNull { it.contains("timestep") } ?: "timestep"
-        val condName = unetNames.firstOrNull { it.contains("encoder") || it.contains("hidden") }
+        val condName = unetNames.firstOrNull { it.contains("encoder") || it.contains("hidden") || it.contains("text_emb") }
             ?: "encoder_hidden_states"
         val timestepType = unetRunner.inputTypes[timestepName] ?: OnnxJavaType.FLOAT
-        Log.i(TAG, "UNet inputs: sample=$sampleName, timestep=$timestepName($timestepType), cond=$condName")
+        // W8A16 binary compiled with FP16 activations → all I/O is FLOAT16; shape [1,1] for timestep
+        val unetUseFp16 = timestepType == OnnxJavaType.FLOAT16
+        val timestepShape = if (unetUseFp16) longArrayOf(1, 1) else longArrayOf(1)
+        Log.i(TAG, "UNet inputs: sample=$sampleName, timestep=$timestepName($timestepType${timestepShape.contentToString()}), cond=$condName, fp16IO=$unetUseFp16")
 
-        val timestepFloatBuf = if (timestepType == OnnxJavaType.FLOAT) FloatBuffer.allocate(1) else null
+        val timestepFloatBuf = if (!unetUseFp16 && timestepType == OnnxJavaType.FLOAT) FloatBuffer.allocate(1) else null
         val timestepIntBuf = if (timestepType == OnnxJavaType.INT32) IntBuffer.allocate(1) else null
+
+        // Pre-convert text embeddings to FP16 once if UNet expects FLOAT16 I/O
+        val textEmbFp16: ShortArray? = if (unetUseFp16) ShortArray(textEmbeddings.size) { Half.toHalf(textEmbeddings[it]) } else null
+        val uncondEmbFp16: ShortArray? = if (unetUseFp16 && uncondEmbeddings != null) ShortArray(uncondEmbeddings.size) { Half.toHalf(uncondEmbeddings[it]) } else null
+
+        // FP32 buffers for non-FP16 path
+        val textEmbBuffer = if (!unetUseFp16) FloatBuffer.wrap(textEmbeddings) else null
+        val uncondEmbBuffer = if (!unetUseFp16 && useCfg && uncondEmbeddings != null) FloatBuffer.wrap(uncondEmbeddings) else null
 
         for (step in 0 until actualSteps) {
             listener?.onUnetStep(step, actualSteps)
@@ -372,11 +385,13 @@ class Txt2ImgPipeline(
 
             // Scale input
             val scaledLatent = sched.scaleModelInput(currentLatent)
-            val latentBuffer = FloatBuffer.wrap(scaledLatent)
+            val latentFp16: ShortArray? = if (unetUseFp16) ShortArray(scaledLatent.size) { Half.toHalf(scaledLatent[it]) } else null
+            val latentBuffer: Any = if (unetUseFp16) ShortBuffer.wrap(latentFp16!!) else FloatBuffer.wrap(scaledLatent)
 
             // Set timestep
             val timestepValue = sched.getCurrentTimestep()
-            val timestepPair: Pair<Any, LongArray> = when {
+            var timestepPair: Pair<Any, LongArray> = when {
+                unetUseFp16 -> Pair(ShortBuffer.wrap(shortArrayOf(Half.toHalf(timestepValue.toFloat()))), timestepShape)
                 timestepIntBuf != null -> {
                     timestepIntBuf.put(0, timestepValue.toInt())
                     Pair(timestepIntBuf, timestepShape)
@@ -389,31 +404,33 @@ class Txt2ImgPipeline(
 
             val modelOutput: FloatArray
 
-            if (useCfg && uncondEmbBuffer != null) {
+            val uncondEmbAvailable = (unetUseFp16 && uncondEmbFp16 != null) || (!unetUseFp16 && uncondEmbBuffer != null)
+            if (useCfg && uncondEmbAvailable) {
                 // CFG: run UNet twice (unconditional + conditional)
                 // Unconditional pass
-                uncondEmbBuffer.rewind()
+                val uncondEmbBuf: Any = if (unetUseFp16) ShortBuffer.wrap(uncondEmbFp16!!) else uncondEmbBuffer!!.also { it.rewind() }
                 val uncondInputs = mapOf(
-                    sampleName to Pair(latentBuffer as Any, latentShape),
+                    sampleName to Pair(latentBuffer, latentShape),
                     timestepName to timestepPair,
-                    condName to Pair(uncondEmbBuffer as Any, textEmbShape)
+                    condName to Pair(uncondEmbBuf, textEmbShape)
                 )
                 val uncondResult = unetRunner.runMixed(uncondInputs)
                     ?: run { Log.e(TAG, "generate: uncond unet.run returned null at step $step"); return null }
                 val uncondOutput = uncondResult.outputs.values.first() as FloatArray
 
                 // Conditional pass
-                val condLatentBuffer = FloatBuffer.wrap(scaledLatent)
-                textEmbBuffer.rewind()
-                // Re-set timestep (buffer was consumed)
+                val condLatentBuf: Any = if (unetUseFp16) ShortBuffer.wrap(latentFp16!!) else FloatBuffer.wrap(scaledLatent)
+                val condTextEmbBuf: Any = if (unetUseFp16) ShortBuffer.wrap(textEmbFp16!!) else textEmbBuffer!!.also { it.rewind() }
+                // Re-set timestep
                 when {
+                    unetUseFp16 -> timestepPair = Pair(ShortBuffer.wrap(shortArrayOf(Half.toHalf(timestepValue.toFloat()))), timestepShape)
                     timestepIntBuf != null -> timestepIntBuf.put(0, timestepValue.toInt())
                     else -> timestepFloatBuf!!.put(0, timestepValue.toFloat())
                 }
                 val condInputs = mapOf(
-                    sampleName to Pair(condLatentBuffer as Any, latentShape),
+                    sampleName to Pair(condLatentBuf, latentShape),
                     timestepName to timestepPair,
-                    condName to Pair(textEmbBuffer as Any, textEmbShape)
+                    condName to Pair(condTextEmbBuf, textEmbShape)
                 )
                 val condResult = unetRunner.runMixed(condInputs)
                     ?: run { Log.e(TAG, "generate: cond unet.run returned null at step $step"); return null }
@@ -427,11 +444,11 @@ class Txt2ImgPipeline(
                 }
             } else {
                 // No CFG: single UNet pass
-                textEmbBuffer.rewind()
+                val singleTextEmbBuf: Any = if (unetUseFp16) ShortBuffer.wrap(textEmbFp16!!) else textEmbBuffer!!.also { it.rewind() }
                 val unetInputs = mapOf(
-                    sampleName to Pair(latentBuffer as Any, latentShape),
+                    sampleName to Pair(latentBuffer, latentShape),
                     timestepName to timestepPair,
-                    condName to Pair(textEmbBuffer as Any, textEmbShape)
+                    condName to Pair(singleTextEmbBuf, textEmbShape)
                 )
                 val unetResult = unetRunner.runMixed(unetInputs)
                     ?: run { Log.e(TAG, "generate: unet.run returned null at step $step"); return null }
