@@ -593,6 +593,7 @@ class BenchmarkRunner(
         if (cfg.isMixedPrecision) {
             sb.appendLine("# sd_precision_per_component,${SdComponent.values().joinToString(";") { "${it.baseName}=${cfg.sdPrecisionFor(it).dirSuffix}" }}")
         }
+        sb.appendLine("# prompt,\"${cfg.prompt.replace("\"", "\"\"")}\"")
         sb.appendLine("# steps,${cfg.steps}")
         sb.appendLine("# guidance_scale,${cfg.guidanceScale}")
         sb.appendLine("# phase,${cfg.phase.name}")
@@ -726,6 +727,10 @@ class BenchmarkRunner(
                     }
                     Log.i(TAG, "Image: ${imgFile.absolutePath}")
                 }
+
+                val promptFile = File(exportDir, "${baseFilename}_prompt.txt")
+                promptFile.writeText(cfg.prompt)
+                Log.i(TAG, "Prompt: ${promptFile.absolutePath}")
 
                 csvFile.absolutePath
             } else null
