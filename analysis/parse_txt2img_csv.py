@@ -259,28 +259,6 @@ def format_report(bench: ParsedBenchmark) -> str:
         lines.append("    1stInfer     첫 번째 generate() wall-clock (JIT compile + cold cache 포함; Postproc 포함)")
         lines.append("    ColdE2E      SessionInit + 1stInfer  (앱 최초 실행 → 첫 이미지 완성)")
 
-        # [2e] Cold Start Thermal Progression
-        post_init_t  = cs.get('post_init_thermal_c', 0) or 0
-        post_infer_t = cs.get('first_infer_end_thermal_c', 0) or 0
-        if idle_thermal > 0 or post_init_t > 0 or post_infer_t > 0:
-            init_delta  = (post_init_t  - idle_thermal) if idle_thermal > 0 and post_init_t  > 0 else None
-            infer_delta = (post_infer_t - post_init_t)  if post_init_t  > 0 and post_infer_t > 0 else None
-            total_delta = (post_infer_t - idle_thermal) if idle_thermal > 0 and post_infer_t > 0 else None
-            lines.append("")
-            lines.append("  [2e] Cold Start Thermal Progression  (°C)")
-            lines.append(f"  {'-'*70}")
-            lines.append(f"  {'Idle':>8} {'PostInit':>9} {'Post1stInf':>11} {'InitΔ':>7} {'InferΔ':>7} {'TotalΔ':>7}")
-            lines.append(f"  {'-'*8} {'-'*9} {'-'*11} {'-'*7} {'-'*7} {'-'*7}")
-            idle_s    = f"{idle_thermal:>8.1f}" if idle_thermal > 0 else f"{'--':>8}"
-            pinit_s   = f"{post_init_t:>9.1f}"  if post_init_t  > 0 else f"{'--':>9}"
-            pinfer_s  = f"{post_infer_t:>11.1f}" if post_infer_t > 0 else f"{'--':>11}"
-            id_s      = f"{init_delta:>+7.1f}"  if init_delta  is not None else f"{'--':>7}"
-            inf_s     = f"{infer_delta:>+7.1f}" if infer_delta is not None else f"{'--':>7}"
-            tot_s     = f"{total_delta:>+7.1f}" if total_delta is not None else f"{'--':>7}"
-            lines.append(f"  {idle_s} {pinit_s} {pinfer_s} {id_s} {inf_s} {tot_s}")
-            lines.append("    Idle: before model load  |  PostInit: after session creation (QNN HTP compile 포함)  |  Post1stInf: after first inference")
-            lines.append("    InitΔ: thermal rise during session init  |  InferΔ: rise during first inference  |  TotalΔ: total cold start rise")
-
         # Warmup summary
         warmup_ms = cs.get('warmup_total_ms', None)
         if pd.notna(warmup_ms) and warmup_ms > 0:
@@ -517,16 +495,19 @@ def format_report(bench: ParsedBenchmark) -> str:
 
             # Thermal (°C) — horizontal table
             if has_thermal:
-                t_start = df["start_temp_c"].iloc[0]
+                cs_row = bench.cold_start.iloc[0] if bench.cold_start is not None and not bench.cold_start.empty else {}
+                idle_t      = cs_row.get('idle_thermal_c', 0) or 0
+                post_infer_t = cs_row.get('first_infer_end_thermal_c', 0) or 0
                 t_end   = df["end_temp_c"].iloc[-1]
-                delta   = t_end - t_start
                 zone_type = m.get('thermal_zone_type', '')
                 lines.append("")
                 lines.append(f"  Thermal (°C){'  zone: ' + zone_type if zone_type else ''}")
-                lines.append(f"  {'Start':>8} {'End':>8} {'Delta':>8}")
-                lines.append(f"  {'-'*8} {'-'*8} {'-'*8}")
-                lines.append(f"  {t_start:>8.1f} {t_end:>8.1f} {delta:>+8.1f}")
-                lines.append("    Start: SoC temp at start of trial 1  |  End: after last trial  |  Delta: total rise across all trials")
+                lines.append(f"  {'Idle':>8} {'Post1stInf':>11} {'End':>8}")
+                lines.append(f"  {'-'*8} {'-'*11} {'-'*8}")
+                idle_s   = f"{idle_t:>8.1f}"      if idle_t      > 0 else f"{'--':>8}"
+                pinf_s   = f"{post_infer_t:>11.1f}" if post_infer_t > 0 else f"{'--':>11}"
+                lines.append(f"  {idle_s} {pinf_s} {t_end:>8.1f}")
+                lines.append("    Idle: before model load  |  Post1stInf: after cold first inference  |  End: after last warm trial")
 
     # --- [6] Graph Partitioning ---
     ort_total = int(m.get('ort_total_nodes', 0))
@@ -780,31 +761,6 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("    1stInfer     첫 번째 generate() wall-clock (JIT compile + cold cache 포함; Postproc 포함)")
         lines.append("    ColdE2E      SessionInit + 1stInfer  (앱 최초 실행 → 첫 이미지 완성)")
 
-        # [2e] Cold Start Thermal Progression
-        lines.append("")
-        lines.append("  [2e] Cold Start Thermal Progression  (°C)")
-        lines.append(f"  {'-'*70}")
-        lines.append(f"  {'#':<4} {'File':<40} {'Idle':>8} {'PostInit':>9} {'Post1stInf':>11} {'InitΔ':>7} {'InferΔ':>7} {'TotalΔ':>7}")
-        lines.append(f"  {'-'*4} {'-'*40} {'-'*8} {'-'*9} {'-'*11} {'-'*7} {'-'*7} {'-'*7}")
-        for i, b in enumerate(cold_benchmarks, 1):
-            cs   = b.cold_start.iloc[0]
-            name = Path(b.filepath).stem[:39]
-            idle_t    = cs.get('idle_thermal_c', 0) or 0
-            post_init = cs.get('post_init_thermal_c', 0) or 0
-            post_inf  = cs.get('first_infer_end_thermal_c', 0) or 0
-            id_d  = (post_init - idle_t)  if idle_t > 0 and post_init > 0 else None
-            inf_d = (post_inf  - post_init) if post_init > 0 and post_inf > 0 else None
-            tot_d = (post_inf  - idle_t)   if idle_t > 0 and post_inf  > 0 else None
-            idle_s   = f"{idle_t:>8.1f}"   if idle_t   > 0 else f"{'--':>8}"
-            pinit_s  = f"{post_init:>9.1f}" if post_init > 0 else f"{'--':>9}"
-            pinfer_s = f"{post_inf:>11.1f}" if post_inf  > 0 else f"{'--':>11}"
-            id_s     = f"{id_d:>+7.1f}"    if id_d  is not None else f"{'--':>7}"
-            inf_s    = f"{inf_d:>+7.1f}"   if inf_d is not None else f"{'--':>7}"
-            tot_s    = f"{tot_d:>+7.1f}"   if tot_d is not None else f"{'--':>7}"
-            lines.append(f"  {i:<4} {name:<40} {idle_s} {pinit_s} {pinfer_s} {id_s} {inf_s} {tot_s}")
-        lines.append("    Idle: before model load  |  PostInit: after session creation (QNN HTP compile 포함)  |  Post1stInf: after first inference")
-        lines.append("    InitΔ: thermal rise during session init  |  InferΔ: rise during first inference  |  TotalΔ: total cold start rise")
-
     # --- [3] Generation Latency ---
     if gen_benchmarks:
         lines.append("")
@@ -945,21 +901,25 @@ def format_comparison(benchmarks: list) -> str:
             lines.append("      앱 단독 / NPU 단독 전력 분리는 Snapdragon Profiler 또는 PMU 카운터 접근 필요")
 
         # [4c] Thermal (°C)
-        has_thermal = any("start_temp_c" in b.generate_summary.columns
-                          and b.generate_summary["start_temp_c"].mean() > 0 for b in gen_benchmarks)
+        has_thermal = any("end_temp_c" in b.generate_summary.columns
+                          and b.generate_summary["end_temp_c"].mean() > 0 for b in gen_benchmarks)
         if has_thermal:
             lines.append("")
             lines.append("  Thermal (°C)")
-            lines.append(f"  {'#':<4} {'File':<40} {'Start':>8} {'End':>8} {'Delta':>8}")
-            lines.append(f"  {'-'*4} {'-'*40} {'-'*8} {'-'*8} {'-'*8}")
+            lines.append(f"  {'#':<4} {'File':<40} {'Idle':>8} {'Post1stInf':>11} {'End':>8}")
+            lines.append(f"  {'-'*4} {'-'*40} {'-'*8} {'-'*11} {'-'*8}")
             for i, b in enumerate(gen_benchmarks, 1):
                 df   = b.generate_summary
                 name = Path(b.filepath).stem[:39]
-                t_start = df["start_temp_c"].iloc[0]  if "start_temp_c" in df.columns else 0
-                t_end   = df["end_temp_c"].iloc[-1]   if "end_temp_c"   in df.columns else 0
-                delta   = t_end - t_start
-                lines.append(f"  {i:<4} {name:<40} {t_start:>8.1f} {t_end:>8.1f} {delta:>+8.1f}")
-            lines.append("    Start: SoC temp at start of trial 1  |  End: after last trial  |  Delta: total rise across all trials")
+                cs_row = b.cold_start.iloc[0] if b.cold_start is not None and not b.cold_start.empty else {}
+                idle_t      = cs_row.get('idle_thermal_c', 0) or 0
+                post_infer_t = cs_row.get('first_infer_end_thermal_c', 0) or 0
+                t_end       = df["end_temp_c"].iloc[-1] if "end_temp_c" in df.columns else 0
+                idle_s  = f"{idle_t:>8.1f}"       if idle_t      > 0 else f"{'--':>8}"
+                pinf_s  = f"{post_infer_t:>11.1f}" if post_infer_t > 0 else f"{'--':>11}"
+                end_s   = f"{t_end:>8.1f}"         if t_end       > 0 else f"{'--':>8}"
+                lines.append(f"  {i:<4} {name:<40} {idle_s} {pinf_s} {end_s}")
+            lines.append("    Idle: before model load  |  Post1stInf: after cold first inference  |  End: after last warm trial")
 
     # --- [5] Graph Partitioning ---
     ort_benchmarks = [b for b in benchmarks if int(b.metadata.get('ort_total_nodes', 0)) > 0]
