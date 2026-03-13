@@ -118,6 +118,7 @@ class BenchmarkRunner(
         val textEncMs: Float,
         val unetTotalMs: Float,
         val vaeDecMs: Float,
+        val postprocessMs: Float = 0f,
         val unetPerStepMeanMs: Float,
         val unetPerStepP95Ms: Float,
         val schedulerOverheadMs: Float,
@@ -161,6 +162,12 @@ class BenchmarkRunner(
         val idlePowerMw: Float,          // 5s 10-sample median (load 전 baseline)
         val firstInferenceWallClockMs: Float = 0f,
         val coldStartTotalMs: Float = 0f,
+        val firstTokenizeMs: Float = 0f,
+        val firstTextEncMs: Float = 0f,
+        val firstUnetTotalMs: Float = 0f,
+        val firstVaeDecMs: Float = 0f,
+        val firstPostprocessMs: Float = 0f,
+        val firstGenerateE2eMs: Float = 0f,
         val warmupTotalMs: Long = 0,
         val thermalZoneType: String = "unknown",
         val isCharging: Boolean = false
@@ -312,8 +319,9 @@ class BenchmarkRunner(
 
         // First inference timing (post-load, pre-warmup — captures cold inference cost)
         val firstInfStart = System.nanoTime()
-        withContext(Dispatchers.IO) { pipe.generate()?.outputImage?.recycle() }
+        val firstInfResult = withContext(Dispatchers.IO) { pipe.generate() }
         val firstInferenceWallClockMs = nsToMs(System.nanoTime() - firstInfStart)
+        firstInfResult?.outputImage?.recycle()
         Log.i(TAG, "First inference wall-clock: ${firstInferenceWallClockMs}ms")
 
         // Cold start record (with idle baseline + first inference)
@@ -333,6 +341,12 @@ class BenchmarkRunner(
                 idlePowerMw = idleBaselinePowerMw,   // 10-sample median
                 firstInferenceWallClockMs = firstInferenceWallClockMs,
                 coldStartTotalMs = cs.initWallClockMs.toFloat() + firstInferenceWallClockMs,
+                firstTokenizeMs = firstInfResult?.stageTiming?.tokenizeMs ?: 0f,
+                firstTextEncMs = firstInfResult?.stageTiming?.textEncMs ?: 0f,
+                firstUnetTotalMs = firstInfResult?.stageTiming?.unetTotalMs ?: 0f,
+                firstVaeDecMs = firstInfResult?.stageTiming?.vaeDecMs ?: 0f,
+                firstPostprocessMs = firstInfResult?.stageTiming?.postprocessMs ?: 0f,
+                firstGenerateE2eMs = firstInfResult?.stageTiming?.generateE2eMs ?: 0f,
                 thermalZoneType = thermalZoneType,
                 isCharging = isCharging
             )
@@ -489,6 +503,7 @@ class BenchmarkRunner(
             textEncMs = staging.textEncMs,
             unetTotalMs = staging.unetTotalMs,
             vaeDecMs = staging.vaeDecMs,
+            postprocessMs = staging.postprocessMs,
             unetPerStepMeanMs = if (stepRunTimes.isNotEmpty()) stepRunTimes.average().toFloat() else 0f,
             unetPerStepP95Ms = if (sortedTimes.isNotEmpty()) sortedTimes[p95Index] else 0f,
             schedulerOverheadMs = staging.schedulerOverheadMs,
@@ -621,7 +636,7 @@ class BenchmarkRunner(
         sb.appendLine("trial_id,model_variant,prompt,steps,actual_steps,guidance_scale," +
                 "backend_sd,precision_sd," +
                 "generate_e2e_ms,tokenize_ms,text_enc_ms," +
-                "unet_total_ms,vae_dec_ms," +
+                "unet_total_ms,vae_dec_ms,postprocess_ms," +
                 "unet_per_step_mean_ms,unet_per_step_p95_ms,scheduler_overhead_ms," +
                 "peak_memory_mb,start_temp_c,end_temp_c,avg_power_mw," +
                 "pipeline_wall_clock_ms,trial_wall_clock_ms,native_heap_mb,pss_mb")
@@ -630,7 +645,7 @@ class BenchmarkRunner(
             sb.appendLine("${r.trialId},${r.modelVariant},$escapedPrompt,${r.steps},${r.actualSteps},${r.guidanceScale}," +
                     "${r.backendSd},${r.precisionSd}," +
                     "${"%.2f".format(r.generateE2eMs)},${"%.2f".format(r.tokenizeMs)},${"%.2f".format(r.textEncMs)}," +
-                    "${"%.2f".format(r.unetTotalMs)},${"%.2f".format(r.vaeDecMs)}," +
+                    "${"%.2f".format(r.unetTotalMs)},${"%.2f".format(r.vaeDecMs)},${"%.2f".format(r.postprocessMs)}," +
                     "${"%.2f".format(r.unetPerStepMeanMs)},${"%.2f".format(r.unetPerStepP95Ms)}," +
                     "${"%.2f".format(r.schedulerOverheadMs)}," +
                     "${r.peakMemoryMb},${"%.1f".format(r.startTempC)},${"%.1f".format(r.endTempC)},${"%.1f".format(r.avgPowerMw)}," +
@@ -661,6 +676,8 @@ class BenchmarkRunner(
                 "idle_memory_mb,peak_memory_after_load_mb,memory_delta_mb," +
                 "idle_thermal_c,idle_power_mw," +
                 "first_inference_wall_clock_ms,cold_start_total_ms,warmup_total_ms," +
+                "first_tokenize_ms,first_text_enc_ms,first_unet_total_ms," +
+                "first_vae_dec_ms,first_postprocess_ms,first_generate_e2e_ms," +
                 "thermal_zone_type,is_charging")
         coldStartRecord?.let { r ->
             val memDelta = r.peakMemoryAfterLoadMb - r.idleMemoryMb
@@ -670,6 +687,8 @@ class BenchmarkRunner(
                     "${r.idleMemoryMb},${r.peakMemoryAfterLoadMb},${memDelta}," +
                     "${"%.1f".format(r.idleThermalC)},${"%.1f".format(r.idlePowerMw)}," +
                     "${"%.2f".format(r.firstInferenceWallClockMs)},${"%.2f".format(r.coldStartTotalMs)},${r.warmupTotalMs}," +
+                    "${"%.2f".format(r.firstTokenizeMs)},${"%.2f".format(r.firstTextEncMs)},${"%.2f".format(r.firstUnetTotalMs)}," +
+                    "${"%.2f".format(r.firstVaeDecMs)},${"%.2f".format(r.firstPostprocessMs)},${"%.2f".format(r.firstGenerateE2eMs)}," +
                     "${r.thermalZoneType},${r.isCharging}")
         }
 

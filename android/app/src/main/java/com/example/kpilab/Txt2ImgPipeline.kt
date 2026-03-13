@@ -71,11 +71,12 @@ class Txt2ImgPipeline(
         val noiseGenMs: Float = 0f,
         val unetTotalMs: Float = 0f,
         val vaeDecMs: Float = 0f,
+        val postprocessMs: Float = 0f,
         val schedulerOverheadMs: Float = 0f,
         val pipelineWallClockMs: Float = 0f
     ) {
         val generateE2eMs: Float
-            get() = tokenizeMs + textEncMs + noiseGenMs + unetTotalMs + vaeDecMs
+            get() = tokenizeMs + textEncMs + noiseGenMs + unetTotalMs + vaeDecMs + postprocessMs
     }
 
     /** Per UNet step detail */
@@ -503,6 +504,10 @@ class Txt2ImgPipeline(
         val decResult = vaeDec.runMixed(
             mapOf(vaeInputName to Pair(vaeInputBuf, vaeLatentShape))
         ) ?: run { Log.e(TAG, "generate: vaeDecoder.run returned null"); return null }
+        val vaeDecMs = nsToMs(System.nanoTime() - vaeDecStart)
+
+        // === Stage: Postprocess (float[] → Bitmap) ===
+        val postprocessStart = System.nanoTime()
         // HWC (qai-hub-models W8A16) → /Div+/Clip baked in → [0,1]. CHW (standard) → [-1,1].
         val outputImage = ImagePreprocessor.postprocess(
             decResult.outputs.values.first() as FloatArray,
@@ -510,7 +515,7 @@ class Txt2ImgPipeline(
             normalized = vaeIsHwc,
             hwc = vaeIsHwc
         )
-        val vaeDecMs = nsToMs(System.nanoTime() - vaeDecStart)
+        val postprocessMs = nsToMs(System.nanoTime() - postprocessStart)
 
         val schedulerOverheadMs = stepDetails.sumOf { it.schedulerStepMs.toDouble() }.toFloat()
         val pipelineWallClockMs = nsToMs(System.nanoTime() - wallClockStart)
@@ -521,6 +526,7 @@ class Txt2ImgPipeline(
             noiseGenMs = noiseGenMs,
             unetTotalMs = unetTotalMs,
             vaeDecMs = vaeDecMs,
+            postprocessMs = postprocessMs,
             schedulerOverheadMs = schedulerOverheadMs,
             pipelineWallClockMs = pipelineWallClockMs
         )
