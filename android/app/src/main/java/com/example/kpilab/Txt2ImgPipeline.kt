@@ -129,7 +129,7 @@ class Txt2ImgPipeline(
         val perf = config.htpPerformanceMode
         val modelDir = config.modelDir
 
-        val enableProfiling = config.phase == BenchmarkPhase.SINGLE_GENERATE
+        val enableProfiling = config.phase == BenchmarkPhase.SINGLE_GENERATE || config.phase == BenchmarkPhase.SUSTAINED
 
         val env = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE)
         ortEnv = env

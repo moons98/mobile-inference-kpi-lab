@@ -240,66 +240,56 @@ adb shell dumpsys battery | Select-String "level"
 
 ## 4. 실험 설계
 
-### 4.1 Phase 1 — Single-Run Feasibility
+실행 순서: Phase 1 → (best precision 선정) → Phase 2 → Phase 3
+상세 실험 목록 및 진행 상태: `docs/experiment_runs.md` 참조
 
-목적: 조건별 latency/memory/quality baseline 확보
-공통 설정: 5 trials, 2 warmup, burst mode, trial 간 cooldown 적용
+### 4.1 Phase 1 — Precision Burst
 
-#### P1-1: Model Variant 비교
+목적: best precision config 선정
+공통 설정: steps 고정 (SD 20 / LCM 4), 5 trials, 2 warmup, burst mode, trial 간 cooldown 적용
+사용 가능한 precision 옵션: fp16 (baseline) / unet mixed_pr / vae w8a8 / 조합
 
-- SD v1.5 (20 steps) vs LCM-LoRA (4 steps, guidance=1.0)
-- 동일 backend/precision(QNN NPU FP16)에서 비교
+| ID | Model | Steps | Precision | 목적 |
+|---|---|---|---|---|
+| A1 | SD v1.5 | 20 | fp16 | baseline |
+| A2 | SD v1.5 | 20 | unet mixed_pr | UNet 양자화 효과 |
+| A3 | SD v1.5 | 20 | vae w8a8 | VAE 양자화 효과 |
+| A4 | SD v1.5 | 20 | unet mixed_pr + vae w8a8 | 조합 효과 |
+| A5 | LCM | 4 | fp16 | LCM baseline |
+| A6 | LCM | 4 | vae w8a8 | LCM VAE 양자화 효과 |
 
-#### P1-2: Step Sweep — SD v1.5
+Phase 1 완료 후: CLIP Score + LPIPS로 precision 열화 확인 → best precision 선정
 
-- 20 / 30 / 50 steps
-- step 증가에 따른 latency-quality tradeoff 곡선
+> **W8A16 전면 제외**: component-level CosSim은 합격이나 실제 파이프라인 on-device 추론 시 가시적 품질 저하 확인.
+> **unet_lcm mixed_pr 제외**: 실제 추론 결과 품질 저하 확인.
 
-#### P1-3: Step Sweep — LCM-LoRA
+### 4.2 Phase 2 — Step Sweep Burst
 
-- 2 / 4 / 8 steps
-- few-step feasibility 하한 탐색
+목적: step-quality tradeoff 곡선 도출 (SD 20/30/50, LCM 4/8)
+공통 설정: best precision 고정 (Phase 1 결과 후 결정), 5 trials, 2 warmup, burst mode, trial 간 cooldown 적용
 
-#### P1-4: Backend × Precision Sweep
+| ID | Model | Steps | 목적 |
+|---|---|---|---|
+| A1 | SD v1.5 | 20 | 기준점 (Phase 1 공유) |
+| B1 | SD v1.5 | 30 | step sweep |
+| B2 | SD v1.5 | 50 | step sweep (품질 상한 기준) |
+| A5 | LCM | 4 | 기준점 (Phase 1 공유) |
+| B3 | LCM | 8 | step sweep |
 
-- Backend: CPU(FP32) / GPU / NPU
-- Precision: FP16 vs W8A8
-- CPU는 시간상 1 trial
+Phase 2 완료 후: B2(SD 50step)을 base image로 CLIP Score + LPIPS 계산 → step-quality 곡선 도출
 
-#### P1-5: Mixed Precision (컴포넌트별 조합)
+### 4.3 Phase 3 — Balanced Perf Mode
 
-- FP16 full / W8A8 full
-- FP16 + UNet W8A8 / W8A8 + VAE FP16
-- 컴포넌트별 precision이 KPI에 미치는 영향
+목적: burst 대비 balanced perf mode에서의 latency/power 차이 측정
+공통 설정: best config 고정 (Phase 1/2 결과 후 결정), 5 trials, 2 warmup, **balanced mode**, trial 간 cooldown 적용
+배경: background 추론 시나리오 — 사용자가 명시적으로 요청하지 않는 경우 기기가 balanced 상태일 수 있음
 
-#### P1-6: Parallel Init (Cold Start 최적화)
+| ID | Model | Steps | Precision | Perf Mode |
+|---|---|---|---|---|
+| C1 | SD v1.5 | best step | best precision | balanced |
+| C2 | LCM | best step | best precision | balanced |
 
-- Sequential init (baseline) vs Parallel init
-- 3개 ORT 세션(Text Enc, UNet, VAE Dec)의 순차/병렬 초기화 비교
-- 각 세션 로드 시간 + 전체 cold start 비교
-
-### 4.2 Phase 2 — Sustained Feasibility
-
-목적: 실제 사용 패턴에서 열/전력/성능 안정성 검증
-공통 설정: 10 trials, cooldown 없음, sustained_high mode
-
-#### P2-1: Sustained — SD v1.5
-
-- QNN NPU FP16 vs W8A8
-- 연속 10회 생성, Trial 1 vs Trial N drift 비교
-
-#### P2-2: Sustained — LCM-LoRA
-
-- QNN NPU FP16 vs W8A8, 4 steps
-- 연속 10회 생성
-
-수집 항목:
-
-- Inference drift (trial별 latency 변화)
-- UNet per-step drift
-- Thermal slope (°C/trial)
-- Energy per generation (idle baseline delta)
-- Memory stability
+> 앱에 balanced perf mode 추가 필요 (현재 burst / sustained_high만 구현됨)
 
 ---
 

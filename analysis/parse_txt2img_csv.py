@@ -74,6 +74,7 @@ class ParsedBenchmark:
     generate_summary: Optional[pd.DataFrame] = None
     unet_step_detail: Optional[pd.DataFrame] = None
     cold_start: Optional[pd.DataFrame] = None
+    label: str = ""  # experiment ID (e.g. A1, A2, ...); auto-set to "1","2",... if not specified
 
 
 SECTION_NAMES = {"GENERATE_SUMMARY", "UNET_STEP_DETAIL", "COLD_START"}
@@ -641,15 +642,15 @@ def format_comparison(benchmarks: list) -> str:
     lines.append("")
     lines.append("[1] Experiment Overview")
     lines.append(sep2)
-    lines.append(f"  {'#':<4} {'File':<50} {'Phase':<18} {'Variant':<10} {'Backend':<10} {'Prec':<8} {'Steps':>5}")
+    lines.append(f"  {'ID':<4} {'File':<50} {'Phase':<18} {'Variant':<10} {'Backend':<10} {'Prec':<8} {'Steps':>5}")
     lines.append(f"  {'-'*4} {'-'*50} {'-'*18} {'-'*10} {'-'*10} {'-'*8} {'-'*5}")
-    for i, b in enumerate(benchmarks, 1):
+    for b in benchmarks:
         m = b.metadata
         name = Path(b.filepath).stem[:49]
         prec = "mixed" if m.get('sd_precision_per_component') else m.get('sd_precision', '?')
-        lines.append(f"  {i:<4} {name:<50} {m.get('phase','?'):<18} {m.get('model_variant','?'):<10} "
+        lines.append(f"  {b.label:<4} {name:<50} {m.get('phase','?'):<18} {m.get('model_variant','?'):<10} "
                      f"{m.get('sd_backend','?'):<10} {prec:<8} {m.get('steps','?'):>5}")
-    mixed_entries = [(i, b) for i, b in enumerate(benchmarks, 1) if b.metadata.get('sd_precision_per_component')]
+    mixed_entries = [(b.label, b) for b in benchmarks if b.metadata.get('sd_precision_per_component')]
     if mixed_entries:
         lines.append(f"  Mixed precision breakdown:")
         for i, b in mixed_entries:
@@ -668,9 +669,9 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("")
         lines.append("  [2a] Idle Baseline  (pre-load, 5s 10-sample median)")
         lines.append(f"  {'-'*70}")
-        lines.append(f"  {'#':<4} {'File':<40} {'Thermal (°C)':>12} {'Power (mW)':>12} {'Memory (MB)':>12}")
+        lines.append(f"  {'ID':<4} {'File':<40} {'Thermal (°C)':>12} {'Power (mW)':>12} {'Memory (MB)':>12}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*12} {'-'*12}")
-        for i, b in enumerate(cold_benchmarks, 1):
+        for b in cold_benchmarks:
             cs   = b.cold_start.iloc[0]
             name = Path(b.filepath).stem[:39]
             idle_t = cs.get('idle_thermal_c', 0) or 0
@@ -681,17 +682,17 @@ def format_comparison(benchmarks: list) -> str:
             t_str = f"{idle_t:>12.1f}" if idle_t > 0 else f"{'--':>12}"
             p_str = f"{idle_p:>12.0f}" if idle_p > 0 else f"{'--':>12}"
             m_str = f"{idle_m:>12.0f}" if idle_m > 0 else f"{'--':>12}"
-            lines.append(f"  {i:<4} {name:<40} {t_str} {p_str} {m_str}")
+            lines.append(f"  {b.label:<4} {name:<40} {t_str} {p_str} {m_str}")
         lines.append("    Thermal: SoC temp before model load  |  Power: system-wide idle  |  Memory: VmRSS before model load")
 
         # [2b] Session Initialization
         lines.append("")
         lines.append("  [2b] Session Initialization")
         lines.append(f"  {'-'*70}")
-        lines.append(f"  {'#':<4} {'File':<40} {'TextEncLoad':>12} {'UNetLoad':>10} {'VAEDecLoad':>11} "
+        lines.append(f"  {'ID':<4} {'File':<40} {'TextEncLoad':>12} {'UNetLoad':>10} {'VAEDecLoad':>11} "
                      f"{'LoadSum':>9} {'InitWC':>9} {'Overhead':>10} {'Par':>4}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*10} {'-'*11} {'-'*9} {'-'*9} {'-'*10} {'-'*4}")
-        for i, b in enumerate(cold_benchmarks, 1):
+        for b in cold_benchmarks:
             cs = b.cold_start.iloc[0]
             name = Path(b.filepath).stem[:39]
             text_enc_load = cs.get('text_enc_load_ms', 0) or 0
@@ -704,7 +705,7 @@ def format_comparison(benchmarks: list) -> str:
             overhead      = (init_wc - load_sum) if (pd.notna(init_wc) and init_wc > 0 and load_sum > 0) else None
             overhead_str  = f"{overhead:>+10.0f}" if overhead is not None else f"{'--':>10}"
             par_str       = f"{'Y':>4}" if parallel else f"{'N':>4}"
-            lines.append(f"  {i:<4} {name:<40} "
+            lines.append(f"  {b.label:<4} {name:<40} "
                          f"{text_enc_load:>12.0f} {unet_load:>10.0f} {vae_dec_load:>11.0f} "
                          f"{load_sum:>9.0f} {init_wc_str} {overhead_str} {par_str}")
         lines.append("")
@@ -718,9 +719,9 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("")
         lines.append("  [2c] Cold First Inference Breakdown  (1st generate() — post-load, pre-warmup, ms)")
         lines.append(f"  {'-'*70}")
-        lines.append(f"  {'#':<4} {'File':<40} {'Tokenize':>10} {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'Postproc':>9} {'E2E':>10} {'WC':>9}")
+        lines.append(f"  {'ID':<4} {'File':<40} {'Tokenize':>10} {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'Postproc':>9} {'E2E':>10} {'WC':>9}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*10} {'-'*9}")
-        for i, b in enumerate(cold_benchmarks, 1):
+        for b in cold_benchmarks:
             cs   = b.cold_start.iloc[0]
             name = Path(b.filepath).stem[:39]
             tok     = cs.get('first_tokenize_ms', 0) or 0
@@ -737,7 +738,7 @@ def format_comparison(benchmarks: list) -> str:
             pp_str      = f"{postproc:>9.1f}" if postproc > 0 else f"{'--':>9}"
             e2e_str     = f"{e2e:>10.1f}"     if e2e     > 0 else f"{'--':>10}"
             wc_str      = f"{wc:>9.1f}"       if wc      > 0 else f"{'--':>9}"
-            lines.append(f"  {i:<4} {name:<40} {tok_str} {textenc_str} {unet_str} {vaedec_str} {pp_str} {e2e_str} {wc_str}")
+            lines.append(f"  {b.label:<4} {name:<40} {tok_str} {textenc_str} {unet_str} {vaedec_str} {pp_str} {e2e_str} {wc_str}")
         lines.append("    JIT compile + cold cache 포함 — warmup 이전 단 1회 측정")
         lines.append("    WC: generate() wall-clock  |  E2E: component sum (WC ≥ E2E — 버퍼 할당 등 overhead 포함)")
 
@@ -745,9 +746,9 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("")
         lines.append("  [2d] Cold Start E2E  (ms)")
         lines.append(f"  {'-'*70}")
-        lines.append(f"  {'#':<4} {'File':<40} {'SessionInit':>12} {'1stInfer':>10} {'ColdE2E':>10}")
+        lines.append(f"  {'ID':<4} {'File':<40} {'SessionInit':>12} {'1stInfer':>10} {'ColdE2E':>10}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*10} {'-'*10}")
-        for i, b in enumerate(cold_benchmarks, 1):
+        for b in cold_benchmarks:
             cs   = b.cold_start.iloc[0]
             name = Path(b.filepath).stem[:39]
             init_wc    = cs.get('init_wall_clock_ms', 0)
@@ -756,7 +757,7 @@ def format_comparison(benchmarks: list) -> str:
             init_str   = f"{init_wc:>12.0f}"   if pd.notna(init_wc)    and init_wc    > 0 else f"{'--':>12}"
             first_str  = f"{first_inf:>10.0f}"  if pd.notna(first_inf)  and first_inf  > 0 else f"{'--':>10}"
             cold_str   = f"{cold_total:>10.0f}" if pd.notna(cold_total) and cold_total > 0 else f"{'--':>10}"
-            lines.append(f"  {i:<4} {name:<40} {init_str} {first_str} {cold_str}")
+            lines.append(f"  {b.label:<4} {name:<40} {init_str} {first_str} {cold_str}")
         lines.append("    SessionInit  ORT 세션 생성 wall-clock (QNN HTP graph compile 포함)")
         lines.append("    1stInfer     첫 번째 generate() wall-clock (JIT compile + cold cache 포함; Postproc 포함)")
         lines.append("    ColdE2E      SessionInit + 1stInfer  (앱 최초 실행 → 첫 이미지 완성)")
@@ -770,10 +771,10 @@ def format_comparison(benchmarks: list) -> str:
         # [3a] Stage breakdown
         lines.append(f"  [3a] Stage Breakdown")
         lines.append(f"  {'-'*70}")
-        lines.append(f"  {'#':<4} {'File':<40} {'Steps':>6} {'Tokenize':>10} {'TextEnc':>10} "
+        lines.append(f"  {'ID':<4} {'File':<40} {'Steps':>6} {'Tokenize':>10} {'TextEnc':>10} "
                      f"{'UNet':>10} {'VAEDec':>10} {'Postproc':>10} {'E2E':>10} {'WallClk':>10}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*6} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
-        for i, b in enumerate(gen_benchmarks, 1):
+        for b in gen_benchmarks:
             df = b.generate_summary
             name = Path(b.filepath).stem[:39]
             e2e        = df["generate_e2e_ms"].mean()
@@ -786,7 +787,7 @@ def format_comparison(benchmarks: list) -> str:
             steps      = df["actual_steps"].iloc[0] if "actual_steps" in df.columns else "?"
             wc_str     = f"{wc:>10.1f}" if wc > 0 else f"{'--':>10}"
             pp_str     = f"{postproc:>10.1f}" if postproc > 0 else f"{'--':>10}"
-            lines.append(f"  {i:<4} {name:<40} {steps:>6} {tok:>10.1f} {textenc:>10.1f} "
+            lines.append(f"  {b.label:<4} {name:<40} {steps:>6} {tok:>10.1f} {textenc:>10.1f} "
                          f"{unet:>10.1f} {vaedec:>10.1f} {pp_str} {e2e:>10.1f} {wc_str}")
         lines.append("    E2E = Tokenize + TextEnc + UNet + VAEDec + Postproc  |  WallClk: generate() wall-clock")
 
@@ -794,15 +795,15 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("")
         lines.append(f"  [3b] UNet Per-Step  (ms/step)")
         lines.append(f"  {'-'*70}")
-        lines.append(f"  {'#':<4} {'File':<40} {'Mean':>10} {'P95':>10} {'SchedOH':>10}")
+        lines.append(f"  {'ID':<4} {'File':<40} {'Mean':>10} {'P95':>10} {'SchedOH':>10}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*10} {'-'*10}")
-        for i, b in enumerate(gen_benchmarks, 1):
+        for b in gen_benchmarks:
             df = b.generate_summary
             name = Path(b.filepath).stem[:39]
             ps_mean = df["unet_per_step_mean_ms"].mean() if "unet_per_step_mean_ms" in df.columns else 0
             ps_p95  = df["unet_per_step_p95_ms"].mean()  if "unet_per_step_p95_ms"  in df.columns else 0
             sched   = df["scheduler_overhead_ms"].mean()  if "scheduler_overhead_ms"  in df.columns else 0
-            lines.append(f"  {i:<4} {name:<40} {ps_mean:>10.2f} {ps_p95:>10.2f} {sched:>10.2f}")
+            lines.append(f"  {b.label:<4} {name:<40} {ps_mean:>10.2f} {ps_p95:>10.2f} {sched:>10.2f}")
         lines.append("    PerStep: mean ORT session.run() per denoising step  |  P95: 95th-percentile step time  |  SchedOH: EulerDiscrete scheduler overhead (total)")
 
     # --- [4] System Resources ---
@@ -816,12 +817,12 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("  Memory (MB)")
         has_cold_mem = any(b.cold_start is not None and not b.cold_start.empty for b in gen_benchmarks)
         if has_cold_mem:
-            lines.append(f"  {'#':<4} {'File':<40} {'Idle':>8} {'AfterLoad':>10} {'Peak(infer)':>12} {'NativeHeap':>12} {'PSS':>8}")
+            lines.append(f"  {'ID':<4} {'File':<40} {'Idle':>8} {'AfterLoad':>10} {'Peak(infer)':>12} {'NativeHeap':>12} {'PSS':>8}")
             lines.append(f"  {'-'*4} {'-'*40} {'-'*8} {'-'*10} {'-'*12} {'-'*12} {'-'*8}")
         else:
-            lines.append(f"  {'#':<4} {'File':<40} {'Peak(infer)':>12} {'NativeHeap':>12} {'PSS':>8}")
+            lines.append(f"  {'ID':<4} {'File':<40} {'Peak(infer)':>12} {'NativeHeap':>12} {'PSS':>8}")
             lines.append(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*12} {'-'*8}")
-        for i, b in enumerate(gen_benchmarks, 1):
+        for b in gen_benchmarks:
             df   = b.generate_summary
             name = Path(b.filepath).stem[:39]
             mem      = df["peak_memory_mb"].max() if "peak_memory_mb" in df.columns else 0
@@ -837,9 +838,9 @@ def format_comparison(benchmarks: list) -> str:
                     peak_load = cs.get('peak_memory_after_load_mb', 0) or 0
                 idle_str      = f"{idle_mem:>8.0f}"   if idle_mem  > 0 else f"{'--':>8}"
                 peak_load_str = f"{peak_load:>10.0f}" if peak_load > 0 else f"{'--':>10}"
-                lines.append(f"  {i:<4} {name:<40} {idle_str} {peak_load_str} {mem:>12} {nat_str} {pss_str}")
+                lines.append(f"  {b.label:<4} {name:<40} {idle_str} {peak_load_str} {mem:>12} {nat_str} {pss_str}")
             else:
-                lines.append(f"  {i:<4} {name:<40} {mem:>12} {nat_str} {pss_str}")
+                lines.append(f"  {b.label:<4} {name:<40} {mem:>12} {nat_str} {pss_str}")
         lines.append("    Idle: before model load  |  AfterLoad: after session creation  |  Peak(infer): peak RSS during inference")
         lines.append("    NativeHeap: ORT/QNN native allocations (Debug.getNativeHeapAllocatedSize)  |  PSS: proportional set size")
 
@@ -849,9 +850,9 @@ def format_comparison(benchmarks: list) -> str:
             lines.append("")
             lines.append("  Total Peak Memory  (App RSS + NPU estimate, MB)")
             lines.append("  Source: NPU values from QAI Hub on-device profiling (docs/weights_inventory.md)")
-            lines.append(f"  {'#':<4} {'File':<40} {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'NPU Sum':>9} {'App RSS':>9} {'Total':>9}")
+            lines.append(f"  {'ID':<4} {'File':<40} {'TextEnc':>9} {'UNet':>9} {'VAEDec':>9} {'NPU Sum':>9} {'App RSS':>9} {'Total':>9}")
             lines.append(f"  {'-'*4} {'-'*40} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*9} {'-'*9}")
-            for i, b in enumerate(npu_benchmarks, 1):
+            for b in npu_benchmarks:
                 df   = b.generate_summary
                 name = Path(b.filepath).stem[:39]
                 variant = b.metadata.get("model_variant", "")
@@ -869,7 +870,7 @@ def format_comparison(benchmarks: list) -> str:
                 total   = (npu_sum + app_mb) if (npu_sum is not None and app_mb > 0) else None
                 tot_str = f"{total:>9.0f}" if total is not None else f"{'?':>9}"
                 app_str = f"{app_mb:>9.0f}" if app_mb > 0 else f"{'--':>9}"
-                lines.append(f"  {i:<4} {name:<40} {te_str} {un_str} {vd_str} {npu_str} {app_str} {tot_str}")
+                lines.append(f"  {b.label:<4} {name:<40} {te_str} {un_str} {vd_str} {npu_str} {app_str} {tot_str}")
             lines.append("    TextEnc/UNet/VAEDec: QAI Hub on-device profiling 결과 (Snapdragon 8 Gen 2, S23)")
             lines.append("      NPU(HTP) 메모리 = 모델 가중치가 상주하는 HTP 전용 메모리 영역")
             lines.append("      App RSS(VmRSS)에는 미포함 — Android /proc/self/status 로 관측 불가")
@@ -884,9 +885,9 @@ def format_comparison(benchmarks: list) -> str:
         if has_power:
             lines.append("")
             lines.append("  Power (mW)")
-            lines.append(f"  {'#':<4} {'File':<40} {'Idle':>10} {'AvgInfer':>10} {'Delta':>10}")
+            lines.append(f"  {'ID':<4} {'File':<40} {'Idle':>10} {'AvgInfer':>10} {'Delta':>10}")
             lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*10} {'-'*10}")
-            for i, b in enumerate(gen_benchmarks, 1):
+            for b in gen_benchmarks:
                 df   = b.generate_summary
                 bm   = b.metadata
                 name = Path(b.filepath).stem[:39]
@@ -895,7 +896,7 @@ def format_comparison(benchmarks: list) -> str:
                 delta_pwr = power - idle_pwr if idle_pwr > 0 else 0
                 idle_str      = f"{idle_pwr:>10.0f}"  if idle_pwr > 0 else f"{'--':>10}"
                 delta_pwr_str = f"{delta_pwr:>+10.0f}" if idle_pwr > 0 else f"{'--':>10}"
-                lines.append(f"  {i:<4} {name:<40} {idle_str} {power:>10.0f} {delta_pwr_str}")
+                lines.append(f"  {b.label:<4} {name:<40} {idle_str} {power:>10.0f} {delta_pwr_str}")
             lines.append("    Idle: 5s median before model load  |  AvgInfer: mean during inference  |  Delta = AvgInfer − Idle (net inference power)")
             lines.append("    ⚠ BatteryManager.BATTERY_PROPERTY_CURRENT_NOW 기반 — 폰 전체 시스템 소비 전력 (SoC+디스플레이+라디오 포함)")
             lines.append("      앱 단독 / NPU 단독 전력 분리는 Snapdragon Profiler 또는 PMU 카운터 접근 필요")
@@ -906,9 +907,9 @@ def format_comparison(benchmarks: list) -> str:
         if has_thermal:
             lines.append("")
             lines.append("  Thermal (°C)")
-            lines.append(f"  {'#':<4} {'File':<40} {'Idle':>8} {'Post1stInf':>11} {'End':>8}")
+            lines.append(f"  {'ID':<4} {'File':<40} {'Idle':>8} {'Post1stInf':>11} {'End':>8}")
             lines.append(f"  {'-'*4} {'-'*40} {'-'*8} {'-'*11} {'-'*8}")
-            for i, b in enumerate(gen_benchmarks, 1):
+            for b in gen_benchmarks:
                 df   = b.generate_summary
                 name = Path(b.filepath).stem[:39]
                 cs_row = b.cold_start.iloc[0] if b.cold_start is not None and not b.cold_start.empty else {}
@@ -918,7 +919,7 @@ def format_comparison(benchmarks: list) -> str:
                 idle_s  = f"{idle_t:>8.1f}"       if idle_t      > 0 else f"{'--':>8}"
                 pinf_s  = f"{post_infer_t:>11.1f}" if post_infer_t > 0 else f"{'--':>11}"
                 end_s   = f"{t_end:>8.1f}"         if t_end       > 0 else f"{'--':>8}"
-                lines.append(f"  {i:<4} {name:<40} {idle_s} {pinf_s} {end_s}")
+                lines.append(f"  {b.label:<4} {name:<40} {idle_s} {pinf_s} {end_s}")
             lines.append("    Idle: before model load  |  Post1stInf: after cold first inference  |  End: after last warm trial")
 
     # --- [5] Graph Partitioning ---
@@ -927,16 +928,16 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("")
         lines.append("[5] Graph Partitioning")
         lines.append(sep2)
-        lines.append(f"  {'#':<4} {'File':<40} {'Total':>8} {'QNN':>8} {'CPU':>8} {'Coverage':>10}")
+        lines.append(f"  {'ID':<4} {'File':<40} {'Total':>8} {'QNN':>8} {'CPU':>8} {'Coverage':>10}")
         lines.append(f"  {'-'*4} {'-'*40} {'-'*8} {'-'*8} {'-'*8} {'-'*10}")
-        for i, b in enumerate(ort_benchmarks, 1):
+        for b in ort_benchmarks:
             m = b.metadata
             name = Path(b.filepath).stem[:39]
             total = int(m.get('ort_total_nodes', 0))
             qnn = int(m.get('ort_qnn_nodes', 0))
             cpu = int(m.get('ort_cpu_nodes', 0))
             cov = (qnn / total * 100) if total > 0 else 0
-            lines.append(f"  {i:<4} {name:<40} {total:>8} {qnn:>8} {cpu:>8} {cov:>9.1f}%")
+            lines.append(f"  {b.label:<4} {name:<40} {total:>8} {qnn:>8} {cpu:>8} {cov:>9.1f}%")
 
     # --- Methodology Notes ---
     lines.append("")
@@ -960,6 +961,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse txt2img benchmark CSV files")
     parser.add_argument("paths", nargs="+", help="CSV files or directories to analyze")
     parser.add_argument("--compare", "-c", action="store_true", help="Show comparison table")
+    parser.add_argument("--labels", nargs="+", help="Experiment ID labels in file order (e.g. A1 A2 A3 A4 A5 A6)")
     parser.add_argument("--output", "-o", help="Output file path")
     parser.add_argument("--output-dir", "-d", help="Output directory (default: outputs/exp in project root)")
     parser.add_argument("--print", "-p", action="store_true", help="Print to console only, do not save")
@@ -986,6 +988,12 @@ if __name__ == "__main__":
         sys.exit(1)
 
     benchmarks = [parse_csv(f) for f in csv_files]
+    if args.labels:
+        for b, lbl in zip(benchmarks, args.labels):
+            b.label = lbl
+    else:
+        for i, b in enumerate(benchmarks, 1):
+            b.label = str(i)
 
     if args.compare and len(benchmarks) > 1:
         report = format_comparison(benchmarks)

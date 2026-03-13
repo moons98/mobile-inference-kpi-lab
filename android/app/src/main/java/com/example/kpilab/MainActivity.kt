@@ -481,7 +481,7 @@ class MainActivity : AppCompatActivity() {
     private fun buildConfig(): BenchmarkConfig {
         val isSmoke = binding.radioGroupPhase.checkedRadioButtonId == R.id.radioPhaseSmoke
         val phase = when (binding.radioGroupPhase.checkedRadioButtonId) {
-            R.id.radioPhase2 -> BenchmarkPhase.SUSTAINED_GENERATE
+            R.id.radioPhase2 -> BenchmarkPhase.SUSTAINED
             else -> BenchmarkPhase.SINGLE_GENERATE
         }
 
@@ -496,7 +496,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val htpPerf = when (binding.radioGroupHtpPerf.checkedRadioButtonId) {
-            R.id.radioHtpSustained -> "sustained_high"
+            R.id.radioHtpSustained -> "balanced"
             else -> "burst"
         }
 
@@ -514,10 +514,14 @@ class MainActivity : AppCompatActivity() {
             prompt = buildCombinedPrompt(),
             trials = when {
                 isSmoke -> 1
-                phase == BenchmarkPhase.SUSTAINED_GENERATE -> 10
+                phase == BenchmarkPhase.SUSTAINED -> 10
                 else -> 5
             },
-            warmupTrials = if (isSmoke) 0 else 2,
+            warmupTrials = when {
+                isSmoke -> 0
+                phase == BenchmarkPhase.SUSTAINED -> 0
+                else -> 2
+            },
             htpPerformanceMode = htpPerf
         )
     }

@@ -41,8 +41,9 @@ data class BenchmarkProgress(
 
 /**
  * Text-to-image benchmark runner.
- * Phase 1 (SINGLE_GENERATE): 5 trials, cooldown between.
- * Phase 2 (SUSTAINED_GENERATE): 10 consecutive trials, no cooldown.
+ * SINGLE_GENERATE: 5 trials, cooldown between — for Phase 1/2/3 single-generation measurements.
+ * SUSTAINED: 10 trials, no cooldown — for thermal/sustained load testing.
+ * HTP performance mode (burst/balanced) is configured independently via BenchmarkConfig.htpPerformanceMode.
  * Outputs 3 CSV record types per experiment_design.md Appendix A.
  */
 class BenchmarkRunner(
@@ -279,7 +280,7 @@ class BenchmarkRunner(
     }
 
     /**
-     * Text-to-image benchmark: Phase 1 & 2.
+     * Text-to-image benchmark: Burst & Balanced modes.
      */
     private suspend fun runTxt2ImgBenchmark(config: BenchmarkConfig) {
         Log.i(TAG, "Initializing Txt2Img Pipeline: $config")
@@ -393,16 +394,16 @@ class BenchmarkRunner(
                 _progress.update { it.copy(currentStage = "trial_failed") }
             }
 
-            // Cooldown only in Phase 1
-            if (config.phase == BenchmarkPhase.SINGLE_GENERATE && i < config.trials - 1) {
+            // Cooldown between trials (SINGLE_GENERATE only; SUSTAINED runs continuously)
+            if (i < config.trials - 1 && config.phase == BenchmarkPhase.SINGLE_GENERATE) {
                 cooldown()
             }
         }
 
         _progress.update { it.copy(currentStage = "done") }
 
-        // Collect UNet profiling summary (SINGLE_GENERATE phase only).
-        if (config.phase == BenchmarkPhase.SINGLE_GENERATE) {
+        // Collect UNet profiling summary.
+        if (true) {
             withTimeoutOrNull(5000) {
                 pipe.getUnetProfilingSummary()?.let { summary ->
                     Log.i(TAG, "UNet profiling: total=${summary.totalRunUs}us, " +
@@ -718,7 +719,7 @@ class BenchmarkRunner(
             val cfg = config ?: lastExportConfig ?: return null
             val phaseTag = when (cfg.phase) {
                 BenchmarkPhase.SINGLE_GENERATE -> "single"
-                BenchmarkPhase.SUSTAINED_GENERATE -> "sustained"
+                BenchmarkPhase.SUSTAINED -> "sustained"
             }
             val variantTag = when (cfg.modelVariant) {
                 ModelVariant.SD_V15 -> "sd15"

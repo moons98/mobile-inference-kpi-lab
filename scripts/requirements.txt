@@ -12,3 +12,4 @@ onnxconverter-common
 scikit-image
 lpips
 Pillow
+torchmetrics[multimodal]

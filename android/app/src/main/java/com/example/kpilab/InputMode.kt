@@ -1,14 +1,16 @@
 package com.example.kpilab
 
 /**
- * Benchmark phase defining the execution strategy.
+ * Benchmark phase defining the trial/cooldown execution strategy.
+ * HTP performance mode (burst/balanced) is a separate independent setting.
+ * (App-internal — not to be confused with experiment document Phase 1/2/3.)
  */
 enum class BenchmarkPhase(val displayName: String) {
-    /** Phase 1: Single generation profiling — 5 trials, cooldown between */
-    SINGLE_GENERATE("Phase 1: Single Generate"),
+    /** Single: 5 trials, cooldown between — for Phase 1/2/3 single-generation measurements */
+    SINGLE_GENERATE("Single (5 trials, cooldown)"),
 
-    /** Phase 2: Sustained generation — 10 consecutive trials, no cooldown */
-    SUSTAINED_GENERATE("Phase 2: Sustained Generate")
+    /** Sustained: 10 trials, no cooldown — for thermal/sustained load testing (향후) */
+    SUSTAINED("Sustained (10 trials, no cooldown)")
 }
 
 /**

@@ -27,7 +27,7 @@ data class BenchmarkConfig(
     // Text prompt for generation
     val prompt: String = "a photo of a cat sitting on a windowsill",
 
-    // Phase 1: trials per config / Phase 2: total consecutive trials
+    // Trials per config (SINGLE_GENERATE: 5, SUSTAINED: 10)
     val trials: Int = 5,
 
     // Warmup generations before measurement
@@ -71,7 +71,7 @@ data class BenchmarkConfig(
     val totalTrials: Int
         get() = when (phase) {
             BenchmarkPhase.SINGLE_GENERATE -> trials
-            BenchmarkPhase.SUSTAINED_GENERATE -> trials
+            BenchmarkPhase.SUSTAINED -> 10
         }
 
     /** UNet model filename (variant-aware) */
@@ -90,7 +90,7 @@ data class BenchmarkConfig(
         }
         val phaseStr = when (phase) {
             BenchmarkPhase.SINGLE_GENERATE -> "single"
-            BenchmarkPhase.SUSTAINED_GENERATE -> "sustained"
+            BenchmarkPhase.SUSTAINED -> "sustained"
         }
         val variantStr = when (modelVariant) {
             ModelVariant.SD_V15 -> "sd15"
@@ -120,7 +120,7 @@ data class BenchmarkConfig(
         fun uniformPrecision(precision: SdPrecision): Map<SdComponent, SdPrecision> =
             SdComponent.values().associateWith { precision }
 
-        /** Phase 1: Single Generate Profiling */
+        /** Single: 5 trials, cooldown between — htpPerformanceMode set independently */
         fun singleGenerate(
             modelVariant: ModelVariant = ModelVariant.SD_V15,
             sdBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
@@ -137,27 +137,27 @@ data class BenchmarkConfig(
             guidanceScale = guidanceScale,
             prompt = prompt,
             trials = 5,
-            warmupTrials = 2,
-            htpPerformanceMode = "burst"
+            warmupTrials = 2
         )
 
-        /** Phase 2: Sustained Generate Test */
-        fun sustainedGenerate(
+        /** Sustained: 10 trials, no cooldown — htpPerformanceMode set independently (향후) */
+        fun sustained(
             modelVariant: ModelVariant = ModelVariant.SD_V15,
             sdBackend: ExecutionProvider = ExecutionProvider.QNN_NPU,
             sdPrecisionMap: Map<SdComponent, SdPrecision> = uniformPrecision(SdPrecision.FP16),
             steps: Int = 20,
-            guidanceScale: Float = 7.5f
+            guidanceScale: Float = 7.5f,
+            prompt: String = "a photo of a cat sitting on a windowsill"
         ) = BenchmarkConfig(
             modelVariant = modelVariant,
             sdBackend = sdBackend,
             sdPrecisionMap = sdPrecisionMap,
-            phase = BenchmarkPhase.SUSTAINED_GENERATE,
+            phase = BenchmarkPhase.SUSTAINED,
             steps = steps,
             guidanceScale = guidanceScale,
+            prompt = prompt,
             trials = 10,
-            warmupTrials = 2,
-            htpPerformanceMode = "sustained_high"
+            warmupTrials = 0
         )
     }
 }

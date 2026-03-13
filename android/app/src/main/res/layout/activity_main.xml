@@ -242,13 +242,13 @@
                         android:id="@+id/radioPhase1"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Phase1: Single Generate (5 trials, cooldown)" />
+                        android:text="Single (5 trials, cooldown)" />
 
                     <RadioButton
                         android:id="@+id/radioPhase2"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Phase2: Sustained (10 trials, no cooldown)" />
+                        android:text="Sustained (10 trials, no cooldown)" />
 
                 </RadioGroup>
 
@@ -460,7 +460,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="Sustained High" />
+                        android:text="Balanced" />
 
                 </RadioGroup>
 
