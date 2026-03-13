@@ -73,13 +73,11 @@ outputs/
 logs/
 runs/
 
-# exp outputs
-exp_outputs
-
 # Temporary
 tmp/
 temp/
 *.tmp
+docs/reference.md
 
 # weight
 weights/

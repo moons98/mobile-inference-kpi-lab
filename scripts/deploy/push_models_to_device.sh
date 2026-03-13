@@ -2,11 +2,12 @@
 # Push ONNX models to Android device for SD v1.5 txt2img benchmark.
 #
 # Usage:
-#   ./scripts/deploy/push_models_to_device.sh           # push all available models
+#   ./scripts/deploy/push_models_to_device.sh           # push all available models (raw ONNX)
 #   ./scripts/deploy/push_models_to_device.sh --fp16    # FP16 only (text_enc + unet_base + unet_lcm + vae_dec)
 #   ./scripts/deploy/push_models_to_device.sh --w8a8    # W8A8 only
 #   ./scripts/deploy/push_models_to_device.sh --w8a16   # W8A16 only
 #   ./scripts/deploy/push_models_to_device.sh --mixed   # Mixed PR only
+#   ./scripts/deploy/push_models_to_device.sh --deploy  # push precompiled EpContext (.onnx stub + .bin) from weights/deploy/
 #   ./scripts/deploy/push_models_to_device.sh --status  # check what's on device
 
 set -e
@@ -226,6 +227,32 @@ push_embeddings() {
 # ──────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────
+push_deploy() {
+    local deploy_dir="$PROJECT_DIR/weights/deploy"
+    echo "--- EpContext Models (stub .onnx + compiled .bin) ---"
+    echo "Source: $deploy_dir"
+    echo ""
+
+    if [ ! -d "$deploy_dir" ]; then
+        echo "  [ERROR] $deploy_dir not found. Run: python scripts/deploy/prepare_deploy_models.py"
+        return 1
+    fi
+
+    for onnx_file in "$deploy_dir"/*.onnx; do
+        [ -f "$onnx_file" ] || continue
+        local name
+        name="$(basename "$onnx_file")"
+        local bin_file="${onnx_file%.onnx}.bin"
+
+        push_file "$onnx_file" "$name"
+        if [ -f "$bin_file" ]; then
+            push_file "$bin_file" "${name%.onnx}.bin"
+        else
+            echo "  [WARN] .bin not found for $name"
+        fi
+    done
+}
+
 case "$1" in
     --fp16)
         push_fp16
@@ -240,6 +267,11 @@ case "$1" in
         ;;
     --mixed)
         push_mixed
+        ;;
+    --deploy)
+        push_deploy
+        echo ""
+        push_embeddings
         ;;
     *)
         push_fp16
