@@ -4,13 +4,20 @@ import java.nio.FloatBuffer
 import kotlin.math.pow
 
 /**
- * EulerDiscrete scheduler for SD v1.5 text-to-image and LCM-LoRA.
- * Handles noise schedule, initial noise generation, and per-step denoising.
+ * Noise scheduler for SD v1.5 text-to-image pipeline.
+ *
+ * isLcm=false (default): EulerDiscrete — SD v1.5 standard. Input scaled by 1/sqrt(sigma^2+1),
+ *   step: x_next = x + (sigma_next - sigma) * noise_pred.
+ *
+ * isLcm=true: DDIM-style — matches diffusers LCMScheduler. No input scaling.
+ *   step: predict x0 from noise, then blend toward next alpha level.
+ *   Initial noise is unit Gaussian (no sigma scaling).
  */
 class Scheduler(
     private val numTrainTimesteps: Int = 1000,
     betaStart: Float = 0.00085f,
-    betaEnd: Float = 0.012f
+    betaEnd: Float = 0.012f,
+    val isLcm: Boolean = false
 ) {
     // Precomputed noise schedule
     private val betas: FloatArray
@@ -78,41 +85,60 @@ class Scheduler(
 
     /**
      * Generate pure random noise as starting latent for text-to-image generation.
-     * Scales noise by the initial sigma for Euler scheduler compatibility.
-     * @param size Total number of floats (1 × 4 × H × W)
-     * @param seed Random seed for reproducibility
-     * @return Initial noisy latent scaled by sigma_0
+     *
+     * EulerDiscrete: scales by sigma_0 (≈14.6) — noise lives in sigma-scaled space.
+     * LCM: unit Gaussian — noise lives in DDIM/alpha-scaled space (x_T ~ N(0,I)).
      */
     fun generateInitialNoise(size: Int, seed: Long): FloatArray {
         if (timesteps.isEmpty()) error("Call setTimesteps() first")
         val noise = generateNoise(size, seed)
-        // Scale by initial sigma for Euler discrete scheduler
-        val sigma0 = sigmas[0]
-        for (i in noise.indices) {
-            noise[i] *= sigma0
+        if (!isLcm) {
+            val sigma0 = sigmas[0]
+            for (i in noise.indices) noise[i] *= sigma0
         }
         return noise
     }
 
     /**
-     * Euler step: compute next latent from UNet noise prediction.
-     * @param sample Current latent [1, 4, H, W]
-     * @param modelOutput UNet predicted noise [1, 4, H, W]
-     * @return Next latent (denoised one step)
+     * Compute next latent from UNet noise prediction (epsilon).
+     *
+     * EulerDiscrete: x_next = x + (sigma_next - sigma) * noise_pred
+     *
+     * LCM (DDIM-style, matches diffusers LCMScheduler):
+     *   alpha_t = alphasCumprod[t], sqrt_alpha = sqrt(alpha_t), sqrt_1ma = sqrt(1-alpha_t)
+     *   predicted_x0 = (sample - sqrt_1ma * noise_pred) / sqrt_alpha
+     *   If not last step: x_next = sqrt(alpha_prev) * predicted_x0 + sqrt(1-alpha_prev) * noise_pred
+     *   If last step:     x_next = predicted_x0
      */
     fun step(sample: FloatArray, modelOutput: FloatArray): FloatArray {
-        val sigma = sigmas[currentStep]
-        val sigmaNext = sigmas[currentStep + 1]
-
-        // Euler method: x_next = x + (sigma_next - sigma) * model_output / sigma
-        // Simplified: predicted original = sample - sigma * model_output
-        // Then: x_next = predicted + sigma_next * (sample - predicted) / sigma
-        val dt = sigmaNext - sigma
         val result = FloatArray(sample.size)
 
-        for (i in result.indices) {
-            // Euler discrete step
-            result[i] = sample[i] + dt * modelOutput[i]
+        if (isLcm) {
+            val alphaT = alphasCumprod[timesteps[currentStep]]
+            val sqrtAlphaT = kotlin.math.sqrt(alphaT)
+            val sqrtOneMinusAlphaT = kotlin.math.sqrt(1f - alphaT)
+            val isLastStep = (currentStep + 1 >= timesteps.size)
+
+            if (isLastStep) {
+                for (i in result.indices) {
+                    result[i] = (sample[i] - sqrtOneMinusAlphaT * modelOutput[i]) / sqrtAlphaT
+                }
+            } else {
+                val alphaPrev = alphasCumprod[timesteps[currentStep + 1]]
+                val sqrtAlphaPrev = kotlin.math.sqrt(alphaPrev)
+                val sqrtOneMinusAlphaPrev = kotlin.math.sqrt(1f - alphaPrev)
+                for (i in result.indices) {
+                    val predictedX0 = (sample[i] - sqrtOneMinusAlphaT * modelOutput[i]) / sqrtAlphaT
+                    result[i] = sqrtAlphaPrev * predictedX0 + sqrtOneMinusAlphaPrev * modelOutput[i]
+                }
+            }
+        } else {
+            val sigma = sigmas[currentStep]
+            val sigmaNext = sigmas[currentStep + 1]
+            val dt = sigmaNext - sigma
+            for (i in result.indices) {
+                result[i] = sample[i] + dt * modelOutput[i]
+            }
         }
 
         currentStep++
@@ -120,9 +146,12 @@ class Scheduler(
     }
 
     /**
-     * Scale model input (Euler scheduler requires scaling by sigma).
+     * Scale model input before UNet inference.
+     * EulerDiscrete: x / sqrt(sigma^2 + 1)  (sigma-scaling)
+     * LCM: no scaling (diffusers LCMScheduler.scale_model_input returns input unchanged)
      */
     fun scaleModelInput(sample: FloatArray): FloatArray {
+        if (isLcm) return sample.copyOf()
         val sigma = sigmas[currentStep]
         val scale = 1.0f / kotlin.math.sqrt(sigma * sigma + 1.0f)
         return FloatArray(sample.size) { sample[it] * scale }

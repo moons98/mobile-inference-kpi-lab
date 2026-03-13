@@ -39,6 +39,9 @@ data class BenchmarkConfig(
     // HTP performance mode
     val htpPerformanceMode: String = "burst",
 
+    // Parallel session initialization (load TextEnc + UNet + VAE concurrently)
+    val parallelInit: Boolean = false,
+
     // Model directory on device
     val modelDir: String = "/sdcard/sd_models"
 ) {

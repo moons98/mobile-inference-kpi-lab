@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "defaults": {
     "phase": "SINGLE_GENERATE",
     "modelVariant": "SD_V15",
@@ -10,29 +10,30 @@
     "warmupTrials": 2,
     "useNpuFp16": true,
     "htpPerformanceMode": "burst",
+    "parallelInit": false,
     "modelDir": "/sdcard/sd_models"
   },
   "experimentSets": [
     {
-      "id": "exp1_variant_comparison",
-      "name": "[Exp1] Model Variant 비교 (SD v1.5 vs LCM-LoRA)",
+      "id": "p1_variant",
+      "name": "[P1-1] Variant — SD v1.5 vs LCM-LoRA",
       "experiments": [
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "SD_V15", "steps": 20 },
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "LCM_LORA", "steps": 4, "guidanceScale": 1.0 }
       ]
     },
     {
-      "id": "exp2_step_sweep_sd15",
-      "name": "[Exp2a] Step Sweep — SD v1.5",
+      "id": "p1_step_sd15",
+      "name": "[P1-2] Step Sweep — SD v1.5 (20/30/50)",
       "experiments": [
-        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "SD_V15", "steps": 20 },
-        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "SD_V15", "steps": 30 },
-        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "SD_V15", "steps": 50 }
+        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "steps": 20 },
+        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "steps": 30 },
+        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "steps": 50 }
       ]
     },
     {
-      "id": "exp2_step_sweep_lcm",
-      "name": "[Exp2b] Step Sweep — LCM-LoRA",
+      "id": "p1_step_lcm",
+      "name": "[P1-3] Step Sweep — LCM-LoRA (2/4/8)",
       "experiments": [
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "LCM_LORA", "steps": 2, "guidanceScale": 1.0 },
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "LCM_LORA", "steps": 4, "guidanceScale": 1.0 },
@@ -40,8 +41,8 @@
       ]
     },
     {
-      "id": "exp3_backend_precision",
-      "name": "[Exp3] Backend × Precision Sweep",
+      "id": "p1_backend_prec",
+      "name": "[P1-4] Backend x Precision (NPU/GPU/CPU)",
       "experiments": [
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16" },
         { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8" },
@@ -50,8 +51,8 @@
       ]
     },
     {
-      "id": "exp4_mixed_precision",
-      "name": "[Exp4] Mixed Precision (컴포넌트별 조합)",
+      "id": "p1_mixed_prec",
+      "name": "[P1-5] Mixed Precision (component-level)",
       "experiments": [
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16" },
         { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8" },
@@ -60,16 +61,24 @@
       ]
     },
     {
-      "id": "phase2_sustained_sd15",
-      "name": "[Phase2] Sustained — SD v1.5",
+      "id": "p1_parallel_init",
+      "name": "[P1-6] Parallel Init (sequential vs parallel cold start)",
       "experiments": [
-        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "SD_V15", "steps": 20, "phase": "SUSTAINED_GENERATE", "trials": 10, "htpPerformanceMode": "sustained_high" },
-        { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8", "modelVariant": "SD_V15", "steps": 20, "phase": "SUSTAINED_GENERATE", "trials": 10, "htpPerformanceMode": "sustained_high" }
+        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "parallelInit": false },
+        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "parallelInit": true }
       ]
     },
     {
-      "id": "phase2_sustained_lcm",
-      "name": "[Phase2] Sustained — LCM-LoRA",
+      "id": "p2_sustained_sd15",
+      "name": "[P2-1] Sustained — SD v1.5 (FP16, W8A8)",
+      "experiments": [
+        { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "steps": 20, "phase": "SUSTAINED_GENERATE", "trials": 10, "htpPerformanceMode": "sustained_high" },
+        { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8", "steps": 20, "phase": "SUSTAINED_GENERATE", "trials": 10, "htpPerformanceMode": "sustained_high" }
+      ]
+    },
+    {
+      "id": "p2_sustained_lcm",
+      "name": "[P2-2] Sustained — LCM-LoRA (FP16, W8A8)",
       "experiments": [
         { "sdBackend": "QNN_NPU", "sdPrecision": "FP16", "modelVariant": "LCM_LORA", "steps": 4, "guidanceScale": 1.0, "phase": "SUSTAINED_GENERATE", "trials": 10, "htpPerformanceMode": "sustained_high" },
         { "sdBackend": "QNN_NPU", "sdPrecision": "W8A8", "modelVariant": "LCM_LORA", "steps": 4, "guidanceScale": 1.0, "phase": "SUSTAINED_GENERATE", "trials": 10, "htpPerformanceMode": "sustained_high" }

@@ -144,6 +144,8 @@ class BenchmarkRunner(
         val unetLoadMs: Long,
         val vaeDecLoadMs: Long,
         val totalLoadMs: Long,
+        val initWallClockMs: Long = 0,
+        val parallelInit: Boolean = false,
         val idleMemoryMb: Int,
         val peakMemoryAfterLoadMb: Int,
         val idleThermalC: Float,
@@ -273,7 +275,7 @@ class BenchmarkRunner(
         }
 
         val pipe = Txt2ImgPipeline(context, config)
-        val initialized = withContext(Dispatchers.IO) { pipe.initialize() }
+        val initialized = withContext(Dispatchers.IO) { pipe.initialize(config.parallelInit) }
         if (!initialized) {
             _progress.update { it.copy(state = BenchmarkState.ERROR, errorMessage = "Pipeline initialization failed: ${pipe.lastError ?: "unknown"}") }
             return
@@ -295,12 +297,14 @@ class BenchmarkRunner(
                 unetLoadMs = cs.unetLoadMs,
                 vaeDecLoadMs = cs.vaeDecLoadMs,
                 totalLoadMs = cs.totalLoadMs,
+                initWallClockMs = cs.initWallClockMs,
+                parallelInit = cs.parallelInit,
                 idleMemoryMb = idleMetrics.memoryMb,
                 peakMemoryAfterLoadMb = memAfterLoad,
                 idleThermalC = idleBaselineThermalC,
                 idlePowerMw = idleMetrics.powerMw,
                 firstInferenceWallClockMs = firstInferenceWallClockMs,
-                coldStartTotalMs = cs.totalLoadMs.toFloat() + firstInferenceWallClockMs,
+                coldStartTotalMs = cs.initWallClockMs.toFloat() + firstInferenceWallClockMs,
                 thermalZoneType = thermalZoneType,
                 isCharging = isCharging,
                 idleBaselinePowerMw = idleBaselinePowerMw
@@ -609,7 +613,7 @@ class BenchmarkRunner(
         sb.appendLine()
         sb.appendLine("# COLD_START")
         sb.appendLine("start_type,text_enc_load_ms," +
-                "unet_load_ms,vae_dec_load_ms,total_load_ms," +
+                "unet_load_ms,vae_dec_load_ms,total_load_ms,init_wall_clock_ms,parallel_init," +
                 "idle_memory_mb,peak_memory_after_load_mb,memory_delta_mb," +
                 "idle_thermal_c,idle_power_mw," +
                 "first_inference_wall_clock_ms,cold_start_total_ms,warmup_total_ms," +
@@ -618,7 +622,7 @@ class BenchmarkRunner(
             val memDelta = r.peakMemoryAfterLoadMb - r.idleMemoryMb
             sb.appendLine("${r.startType},${r.textEncLoadMs}," +
                     "${r.unetLoadMs},${r.vaeDecLoadMs}," +
-                    "${r.totalLoadMs}," +
+                    "${r.totalLoadMs},${r.initWallClockMs},${r.parallelInit}," +
                     "${r.idleMemoryMb},${r.peakMemoryAfterLoadMb},${memDelta}," +
                     "${"%.1f".format(r.idleThermalC)},${"%.1f".format(r.idlePowerMw)}," +
                     "${"%.2f".format(r.firstInferenceWallClockMs)},${"%.2f".format(r.coldStartTotalMs)},${r.warmupTotalMs}," +

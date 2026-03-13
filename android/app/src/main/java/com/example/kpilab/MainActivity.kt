@@ -45,7 +45,7 @@ class MainActivity : AppCompatActivity() {
 
     private var isBatchMode = false
     private var experimentSets: List<ExperimentSet> = emptyList()
-    private var selectedStylePreset: StylePreset = StylePreset.NONE
+    private var selectedStylePreset: StylePreset = StylePreset.WATERCOLOR
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,12 +110,13 @@ class MainActivity : AppCompatActivity() {
             updatePrecisionOptions(allowFp32 = !isNpu)
         }
 
-        // Model variant change → update step defaults
+        // Model variant change → update step defaults + rescan models
         binding.radioGroupVariant.setOnCheckedChangeListener { _, checkedId ->
             when (checkedId) {
                 R.id.radioVariantLcm -> binding.radioSteps4.isChecked = true
                 R.id.radioVariantSd15 -> binding.radioSteps20.isChecked = true
             }
+            refreshModelAvailability()
         }
 
         // Per-component precision spinners
@@ -133,7 +134,7 @@ class MainActivity : AppCompatActivity() {
             val chip = Chip(this).apply {
                 text = preset.displayName
                 isCheckable = true
-                isChecked = preset == StylePreset.NONE
+                isChecked = preset == StylePreset.WATERCOLOR
                 tag = preset
                 textSize = 12f
             }
@@ -177,53 +178,94 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    /** Precision options: NPU에서는 FP32가 실제로 FP16으로 실행되므로 제외 */
-    private val npuPrecOptions = SdPrecision.values().filter { it != SdPrecision.FP32 }
-    private val allPrecOptions = SdPrecision.values().toList()
-    private var currentPrecOptions = allPrecOptions
+    /** Per-component available precisions (updated by model scanner). */
+    private var textEncOptions: List<SdPrecision> = listOf(SdPrecision.FP16)
+    private var unetOptions: List<SdPrecision> = listOf(SdPrecision.FP16)
+    private var vaeDecOptions: List<SdPrecision> = listOf(SdPrecision.FP16)
 
     private fun setupPrecisionSpinners() {
-        updatePrecisionOptions(allowFp32 = binding.radioGroupEp.checkedRadioButtonId != R.id.radioEpNpu)
-
-        binding.btnPrecAllFp32.setOnClickListener { setAllPrecision(SdPrecision.FP32) }
-        binding.btnPrecAllFp16.setOnClickListener { setAllPrecision(SdPrecision.FP16) }
-        binding.btnPrecAllW8a8.setOnClickListener { setAllPrecision(SdPrecision.W8A8) }
-    }
-
-    private fun updatePrecisionOptions(allowFp32: Boolean) {
-        currentPrecOptions = if (allowFp32) allPrecOptions else npuPrecOptions
-        val displayNames = currentPrecOptions.map { it.displayName }
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, displayNames)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-
-        for (spinner in precisionSpinners) {
-            val prevPrecision = currentPrecOptions.getOrNull(spinner.selectedItemPosition)
-            spinner.adapter = adapter
-            val newIndex = currentPrecOptions.indexOf(prevPrecision).takeIf { it >= 0 }
-                ?: currentPrecOptions.indexOf(SdPrecision.FP16).takeIf { it >= 0 }
-                ?: 0
-            spinner.setSelection(newIndex)
+        // Initial scan on background thread, then refresh spinners
+        lifecycleScope.launch(Dispatchers.IO) {
+            val scanResult = ModelScanner.scan(BenchmarkConfig().modelDir, currentVariant())
+            val allowFp32 = binding.radioGroupEp.checkedRadioButtonId != R.id.radioEpNpu
+            launch(Dispatchers.Main) {
+                applyModelScanResult(scanResult, allowFp32)
+            }
         }
 
+        binding.btnPrecAllFp16.setOnClickListener { setAllPrecision(SdPrecision.FP16) }
+        binding.btnPrecAllW8a8.setOnClickListener { setAllPrecision(SdPrecision.W8A8) }
+        binding.btnPrecAllFp32.setOnClickListener { setAllPrecision(SdPrecision.FP32) }
+    }
+
+    /** Re-scan and update spinners when variant or EP changes. */
+    private fun refreshModelAvailability() {
+        val allowFp32 = binding.radioGroupEp.checkedRadioButtonId != R.id.radioEpNpu
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = ModelScanner.scan(BenchmarkConfig().modelDir, currentVariant())
+            launch(Dispatchers.Main) { applyModelScanResult(result, allowFp32) }
+        }
+    }
+
+    private fun applyModelScanResult(result: ModelScanner.Result, allowFp32: Boolean) {
+        fun filter(options: List<SdPrecision>): List<SdPrecision> {
+            val filtered = if (allowFp32) options else options.filter { it != SdPrecision.FP32 }
+            return filtered.ifEmpty { listOf(SdPrecision.FP16) }
+        }
+
+        textEncOptions = filter(result.precisionsFor(SdComponent.TEXT_ENCODER))
+        unetOptions    = filter(result.precisionsFor(SdComponent.UNET))
+        vaeDecOptions  = filter(result.precisionsFor(SdComponent.VAE_DECODER))
+
+        bindSpinner(binding.spinnerPrecTextEnc, textEncOptions)
+        bindSpinner(binding.spinnerPrecUnet, unetOptions)
+        bindSpinner(binding.spinnerPrecVaeDec, vaeDecOptions)
+
         binding.btnPrecAllFp32.visibility = if (allowFp32) View.VISIBLE else View.GONE
+
+        if (result.isEmpty) {
+            Toast.makeText(this, "모델 디렉터리에서 모델을 찾을 수 없습니다", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun bindSpinner(spinner: android.widget.Spinner, options: List<SdPrecision>) {
+        val prev = options.getOrNull(spinner.selectedItemPosition)
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, options.map { it.displayName })
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinner.adapter = adapter
+        val newIndex = options.indexOf(prev).takeIf { it >= 0 }
+            ?: options.indexOf(SdPrecision.FP16).takeIf { it >= 0 }
+            ?: 0
+        spinner.setSelection(newIndex)
     }
 
     private fun setAllPrecision(precision: SdPrecision) {
-        val index = currentPrecOptions.indexOf(precision)
-        if (index < 0) return
-        for (spinner in precisionSpinners) {
-            spinner.setSelection(index)
+        listOf(
+            binding.spinnerPrecTextEnc to textEncOptions,
+            binding.spinnerPrecUnet to unetOptions,
+            binding.spinnerPrecVaeDec to vaeDecOptions
+        ).forEach { (spinner, options) ->
+            val idx = options.indexOf(precision)
+            if (idx >= 0) spinner.setSelection(idx)
         }
     }
 
-    private fun buildPrecisionMap(): Map<SdComponent, SdPrecision> {
-        val precValues = currentPrecOptions.toTypedArray()
-        return mapOf(
-            SdComponent.TEXT_ENCODER to precValues[binding.spinnerPrecTextEnc.selectedItemPosition],
-            SdComponent.UNET to precValues[binding.spinnerPrecUnet.selectedItemPosition],
-            SdComponent.VAE_DECODER to precValues[binding.spinnerPrecVaeDec.selectedItemPosition]
+    private fun updatePrecisionOptions(allowFp32: Boolean) {
+        applyModelScanResult(
+            ModelScanner.scan(BenchmarkConfig().modelDir, currentVariant()),
+            allowFp32
         )
     }
+
+    private fun buildPrecisionMap(): Map<SdComponent, SdPrecision> = mapOf(
+        SdComponent.TEXT_ENCODER to textEncOptions[binding.spinnerPrecTextEnc.selectedItemPosition],
+        SdComponent.UNET         to unetOptions[binding.spinnerPrecUnet.selectedItemPosition],
+        SdComponent.VAE_DECODER  to vaeDecOptions[binding.spinnerPrecVaeDec.selectedItemPosition]
+    )
+
+    private fun currentVariant(): ModelVariant =
+        if (binding.radioGroupVariant.checkedRadioButtonId == R.id.radioVariantLcm)
+            ModelVariant.LCM_LORA else ModelVariant.SD_V15
 
     private fun setupBatchMode() {
         val adapter = ArrayAdapter(

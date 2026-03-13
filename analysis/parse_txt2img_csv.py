@@ -137,7 +137,20 @@ def format_report(bench: ParsedBenchmark) -> str:
                 lines.append(f"  {label:<25} {val:>12,.0f}")
 
         lines.append(f"  {'='*25} {'='*12}")
-        lines.append(f"  {'Total':<25} {cs.get('total_load_ms', 0):>12,.0f}")
+        lines.append(f"  {'Total (sum)':<25} {cs.get('total_load_ms', 0):>12,.0f}")
+
+        # Init wall-clock vs sum comparison
+        init_wc = cs.get('init_wall_clock_ms', None)
+        if pd.notna(init_wc) and init_wc > 0:
+            parallel = cs.get('parallel_init', False)
+            mode = "parallel" if parallel else "sequential"
+            lines.append(f"  {'Init wall-clock':<25} {init_wc:>12,.0f}  ({mode})")
+            total_sum = cs.get('total_load_ms', 0)
+            if total_sum > 0:
+                savings = total_sum - init_wc
+                pct = savings / total_sum * 100 if total_sum > 0 else 0
+                if abs(savings) > 50:  # only show if meaningful difference
+                    lines.append(f"  {'Parallel savings':<25} {savings:>12,.0f}  ({pct:.1f}%)")
 
         # Memory baseline vs after load
         idle_mem = cs.get('idle_memory_mb', 0)
@@ -155,7 +168,7 @@ def format_report(bench: ParsedBenchmark) -> str:
             lines.append(f"  First inference (cold):     {first_inf:,.0f} ms")
             cs_total = cs.get('cold_start_total_ms', 0)
             if pd.notna(cs_total) and cs_total > 0:
-                lines.append(f"  Cold start total:           {cs_total:,.0f} ms  (load + first inference)")
+                lines.append(f"  Cold start total:           {cs_total:,.0f} ms  (init wall-clock + first inference)")
         warmup_ms = cs.get('warmup_total_ms', None)
         if pd.notna(warmup_ms) and warmup_ms > 0:
             lines.append(f"  Warmup total:               {warmup_ms:,.0f} ms")
@@ -487,14 +500,15 @@ def format_comparison(benchmarks: list) -> str:
         lines.append("[3] Cold Start Breakdown (ms)")
         lines.append(sep2)
         lines.append(f"  {'#':<4} {'File':<40} {'TextEnc':>10} {'UNet':>10} {'VAEDec':>10} "
-                     f"{'LoadTotal':>10} {'1stInfer':>10} {'ColdTotal':>10} {'IdleMem':>8} {'LoadMem':>8}")
-        lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*8} {'-'*8}")
+                     f"{'LoadSum':>10} {'InitWC':>10} {'Par':>4} {'1stInfer':>10} {'ColdTotal':>10}")
+        lines.append(f"  {'-'*4} {'-'*40} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*4} {'-'*10} {'-'*10}")
         for i, b in enumerate(cold_benchmarks, 1):
             cs = b.cold_start.iloc[0]
             name = Path(b.filepath).stem[:39]
-            idle_mem = cs.get('idle_memory_mb', 0)
-            peak_mem = cs.get('peak_memory_after_load_mb', 0)
-            idle_str = f"{idle_mem:>8}" if pd.notna(idle_mem) and idle_mem > 0 else f"{'--':>8}"
+            init_wc = cs.get('init_wall_clock_ms', 0)
+            init_wc_str = f"{init_wc:>10.0f}" if pd.notna(init_wc) and init_wc > 0 else f"{'--':>10}"
+            parallel = cs.get('parallel_init', False)
+            par_str = f"{'Y':>4}" if parallel else f"{'N':>4}"
             first_inf = cs.get('first_inference_wall_clock_ms', 0)
             first_inf_str = f"{first_inf:>10.0f}" if pd.notna(first_inf) and first_inf > 0 else f"{'--':>10}"
             cold_total = cs.get('cold_start_total_ms', 0)
@@ -502,10 +516,10 @@ def format_comparison(benchmarks: list) -> str:
             lines.append(f"  {i:<4} {name:<40} "
                          f"{cs.get('text_enc_load_ms',0):>10.0f} {cs.get('unet_load_ms',0):>10.0f} "
                          f"{cs.get('vae_dec_load_ms',0):>10.0f} {cs.get('total_load_ms',0):>10.0f} "
-                         f"{first_inf_str} {cold_total_str} "
-                         f"{idle_str} {peak_mem:>8}")
+                         f"{init_wc_str} {par_str} {first_inf_str} {cold_total_str}")
 
         lines.append("")
+        lines.append("    LoadSum: 컴포넌트별 시간 합산 | InitWC: 실제 초기화 wall-clock | Par: 병렬 초기화 여부")
         lines.append("    TextEnc~VAEDec: 각 컴포넌트 세션 생성 시간 (QNN EP = HTP 그래프 컴파일 포함)")
 
     # --- [4] System Resources ---
@@ -577,7 +591,7 @@ if __name__ == "__main__":
     parser.add_argument("paths", nargs="+", help="CSV files or directories to analyze")
     parser.add_argument("--compare", "-c", action="store_true", help="Show comparison table")
     parser.add_argument("--output", "-o", help="Output file path")
-    parser.add_argument("--output-dir", "-d", help="Output directory (default: outputs/ in project root)")
+    parser.add_argument("--output-dir", "-d", help="Output directory (default: outputs/exp in project root)")
     parser.add_argument("--print", "-p", action="store_true", help="Print to console only, do not save")
 
     args = parser.parse_args()
@@ -616,7 +630,7 @@ if __name__ == "__main__":
         if args.output:
             out_path = Path(args.output)
         else:
-            out_dir = Path(args.output_dir) if args.output_dir else Path(__file__).resolve().parent.parent / "outputs"
+            out_dir = Path(args.output_dir) if args.output_dir else Path(__file__).resolve().parent.parent / "outputs" / "exp"
             out_dir.mkdir(parents=True, exist_ok=True)
 
             from datetime import datetime

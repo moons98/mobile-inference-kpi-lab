@@ -6,6 +6,10 @@ import ai.onnxruntime.OrtLoggingLevel
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import java.io.File
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
 
@@ -48,8 +52,11 @@ class Txt2ImgPipeline(
     data class ColdStartTiming(
         val textEncLoadMs: Long = 0,
         val unetLoadMs: Long = 0,
-        val vaeDecLoadMs: Long = 0
+        val vaeDecLoadMs: Long = 0,
+        val initWallClockMs: Long = 0,
+        val parallelInit: Boolean = false
     ) {
+        /** Sum of individual component load times (always same regardless of sequential/parallel) */
         val totalLoadMs: Long get() = textEncLoadMs + unetLoadMs + vaeDecLoadMs
     }
 
@@ -96,9 +103,11 @@ class Txt2ImgPipeline(
 
     /**
      * Initialize 3 SD sessions. Call once at benchmark start.
+     * @param parallelInit If true, create all 3 sessions concurrently.
      */
-    fun initialize(): Boolean {
-        Log.i(TAG, "=== Initializing Txt2Img Pipeline ===")
+    fun initialize(parallelInit: Boolean = false): Boolean {
+        val wallClockStart = System.nanoTime()
+        Log.i(TAG, "=== Initializing Txt2Img Pipeline (parallel=$parallelInit) ===")
         Log.i(TAG, "Config: $config")
 
         try {
@@ -108,7 +117,7 @@ class Txt2ImgPipeline(
             Log.e(TAG, "$lastError. Run scripts/deploy/extract_tokenizer_assets.py to generate vocab.json + merges.txt")
             return false
         }
-        scheduler = Scheduler()
+        scheduler = Scheduler(isLcm = config.modelVariant == ModelVariant.LCM_LORA)
 
         val ep = config.sdBackend
         val fp16 = config.useNpuFp16
@@ -120,12 +129,38 @@ class Txt2ImgPipeline(
         val env = OrtEnvironment.getEnvironment(OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE)
         ortEnv = env
 
-        // Text Encoder
+        val ok = if (parallelInit) {
+            initializeParallel(ep, fp16, perf, modelDir, enableProfiling, env)
+        } else {
+            initializeSequential(ep, fp16, perf, modelDir, enableProfiling, env)
+        }
+        if (!ok) return false
+
+        val wallClockMs = (System.nanoTime() - wallClockStart) / 1_000_000
+
+        coldStartTiming = ColdStartTiming(
+            textEncLoadMs = textEncoder!!.modelLoadMs + textEncoder!!.sessionCreateMs,
+            unetLoadMs = unet!!.modelLoadMs + unet!!.sessionCreateMs,
+            vaeDecLoadMs = vaeDecoder!!.modelLoadMs + vaeDecoder!!.sessionCreateMs,
+            initWallClockMs = wallClockMs,
+            parallelInit = parallelInit
+        )
+        Log.i(TAG, "Cold start: sum=${coldStartTiming!!.totalLoadMs}ms, " +
+                "wall-clock=${wallClockMs}ms, parallel=$parallelInit")
+        Log.i(TAG, "=== Txt2Img Pipeline Ready ===")
+        return true
+    }
+
+    private fun initializeSequential(
+        ep: ExecutionProvider, fp16: Boolean, perf: String,
+        modelDir: String, enableProfiling: Boolean, env: OrtEnvironment
+    ): Boolean {
         textEncoder = createTextEncoder(ep, fp16, perf, env) ?: return false
 
-        // UNet (4ch, variant-aware filename)
         unet = OrtRunner(context).also {
-            val path = "$modelDir/${config.unetFilename()}"
+            val prec = config.sdPrecisionFor(SdComponent.UNET)
+            val unetBase = config.modelVariant.unetPrefix
+            val path = resolveModelPath(modelDir, SdComponent.UNET, prec, unetBase)
             if (!it.initialize(path, ep, fp16, true, perf, enableProfiling, env)) {
                 lastError = "UNet init failed: ${it.lastError}"
                 Log.e(TAG, lastError!!)
@@ -133,25 +168,62 @@ class Txt2ImgPipeline(
             }
         }
 
-        // VAE Decoder
         vaeDecoder = OrtRunner(context).also {
             val prec = config.sdPrecisionFor(SdComponent.VAE_DECODER)
-            val path = "$modelDir/${SdComponent.VAE_DECODER.filename(prec)}"
+            val path = resolveModelPath(modelDir, SdComponent.VAE_DECODER, prec)
             if (!it.initialize(path, ep, fp16, true, perf, false, env)) {
                 lastError = "VAE Decoder init failed: ${it.lastError}"
                 Log.e(TAG, lastError!!)
                 return false
             }
         }
-
-        coldStartTiming = ColdStartTiming(
-            textEncLoadMs = textEncoder!!.modelLoadMs + textEncoder!!.sessionCreateMs,
-            unetLoadMs = unet!!.modelLoadMs + unet!!.sessionCreateMs,
-            vaeDecLoadMs = vaeDecoder!!.modelLoadMs + vaeDecoder!!.sessionCreateMs
-        )
-        Log.i(TAG, "Cold start: ${coldStartTiming!!.totalLoadMs}ms total")
-        Log.i(TAG, "=== Txt2Img Pipeline Ready ===")
         return true
+    }
+
+    private fun initializeParallel(
+        ep: ExecutionProvider, fp16: Boolean, perf: String,
+        modelDir: String, enableProfiling: Boolean, env: OrtEnvironment
+    ): Boolean {
+        return runBlocking(Dispatchers.IO) {
+            val dTextEnc = async {
+                val runner = OrtRunner(context)
+                val prec = config.sdPrecisionFor(SdComponent.TEXT_ENCODER)
+                val path = resolveModelPath(modelDir, SdComponent.TEXT_ENCODER, prec)
+                if (runner.initialize(path, ep, fp16, true, perf, false, env)) runner else null
+            }
+            val dUnet = async {
+                val runner = OrtRunner(context)
+                val prec = config.sdPrecisionFor(SdComponent.UNET)
+                val unetBase = config.modelVariant.unetPrefix
+                val path = resolveModelPath(modelDir, SdComponent.UNET, prec, unetBase)
+                if (runner.initialize(path, ep, fp16, true, perf, enableProfiling, env)) runner else null
+            }
+            val dVae = async {
+                val runner = OrtRunner(context)
+                val prec = config.sdPrecisionFor(SdComponent.VAE_DECODER)
+                val path = resolveModelPath(modelDir, SdComponent.VAE_DECODER, prec)
+                if (runner.initialize(path, ep, fp16, true, perf, false, env)) runner else null
+            }
+
+            val te = dTextEnc.await()
+            val un = dUnet.await()
+            val vd = dVae.await()
+
+            if (te == null || un == null || vd == null) {
+                lastError = listOfNotNull(
+                    if (te == null) "Text Encoder" else null,
+                    if (un == null) "UNet" else null,
+                    if (vd == null) "VAE Decoder" else null
+                ).joinToString(", ") + " init failed"
+                Log.e(TAG, lastError!!)
+                false
+            } else {
+                textEncoder = te
+                unet = un
+                vaeDecoder = vd
+                true
+            }
+        }
     }
 
     private fun createTextEncoder(
@@ -159,13 +231,35 @@ class Txt2ImgPipeline(
     ): OrtRunner? {
         return OrtRunner(context).also {
             val prec = config.sdPrecisionFor(SdComponent.TEXT_ENCODER)
-            val path = "${config.modelDir}/${SdComponent.TEXT_ENCODER.filename(prec)}"
+            val path = resolveModelPath(config.modelDir, SdComponent.TEXT_ENCODER, prec)
             if (!it.initialize(path, ep, fp16, true, perf, false, env)) {
                 lastError = "Text Encoder init failed: ${it.lastError}"
                 Log.e(TAG, lastError!!)
                 return null
             }
         }
+    }
+
+    /**
+     * Resolve on-device model path: try primary filename first, then alt filenames.
+     * Handles W8A8 naming divergence (_int8_qdq.onnx primary vs _w8a8.onnx deploy convention).
+     */
+    private fun resolveModelPath(
+        dir: String,
+        component: SdComponent,
+        precision: SdPrecision,
+        customBase: String = component.baseName
+    ): String {
+        val primary = "$dir/${component.filename(precision, customBase)}"
+        if (File(primary).exists()) return primary
+        for (alt in component.altFilenames(precision, customBase)) {
+            val altPath = "$dir/$alt"
+            if (File(altPath).exists()) {
+                Log.i(TAG, "resolveModelPath: primary not found, using alt: $altPath")
+                return altPath
+            }
+        }
+        return primary  // let OrtRunner report the missing-file error
     }
 
     /**
@@ -355,9 +449,12 @@ class Txt2ImgPipeline(
             FloatBuffer.wrap(currentLatent),
             longArrayOf(1, LATENT_CHANNELS.toLong(), latentSize.toLong(), latentSize.toLong())
         ) ?: run { Log.e(TAG, "generate: vaeDecoder.run returned null"); return null }
+        // W8A16 compiled model has /Div+/Clip baked in → [0,1] output. All others → [-1,1].
+        val vaePrec = config.sdPrecisionFor(SdComponent.VAE_DECODER)
         val outputImage = ImagePreprocessor.postprocess(
             decResult.outputs.values.first() as FloatArray,
-            config.resolution, config.resolution
+            config.resolution, config.resolution,
+            normalized = (vaePrec == SdPrecision.W8A16)
         )
         val vaeDecMs = nsToMs(System.nanoTime() - vaeDecStart)
 

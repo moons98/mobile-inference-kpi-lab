@@ -26,6 +26,7 @@ data class ExperimentConfig(
     val trials: Int? = null,
     val useNpuFp16: Boolean? = null,
     val htpPerformanceMode: String? = null,
+    val parallelInit: Boolean? = null,
     val modelDir: String? = null,
     // Per-component precision overrides (optional)
     val precTextEnc: String? = null,
@@ -73,6 +74,7 @@ data class ExperimentConfig(
             warmupTrials = defaults.warmupTrials,
             useNpuFp16 = useNpuFp16 ?: defaults.useNpuFp16,
             htpPerformanceMode = htpPerformanceMode ?: defaults.htpPerformanceMode,
+            parallelInit = parallelInit ?: defaults.parallelInit,
             modelDir = modelDir ?: defaults.modelDir
         )
     }

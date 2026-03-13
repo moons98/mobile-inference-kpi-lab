@@ -13,5 +13,6 @@ data class ExperimentDefaults(
     val warmupTrials: Int = 2,
     val useNpuFp16: Boolean = true,
     val htpPerformanceMode: String = "burst",
+    val parallelInit: Boolean = false,
     val modelDir: String = "/sdcard/sd_models"
 )
