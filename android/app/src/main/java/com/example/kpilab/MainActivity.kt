@@ -6,6 +6,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.view.LayoutInflater
@@ -42,6 +44,25 @@ class MainActivity : AppCompatActivity() {
     private lateinit var kpiCollector: KpiCollector
     private lateinit var benchmarkRunner: BenchmarkRunner
     private lateinit var experimentSetLoader: ExperimentSetLoader
+
+    private val idlePollHandler = Handler(Looper.getMainLooper())
+    private val idlePollRunnable = object : Runnable {
+        override fun run() {
+            if (!benchmarkRunner.isRunning && !benchmarkRunner.isBatchRunning) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val t = kpiCollector.readThermal()
+                    val p = kpiCollector.readPower()
+                    launch(Dispatchers.Main) {
+                        if (!benchmarkRunner.isRunning && !benchmarkRunner.isBatchRunning) {
+                            binding.tvThermal.text = if (t >= 0) "%.1f °C".format(t) else "-- °C"
+                            binding.tvPower.text = if (p >= 0) "%.0f mW".format(p) else "-- mW"
+                        }
+                    }
+                }
+            }
+            idlePollHandler.postDelayed(this, 3000)
+        }
+    }
 
     private var isBatchMode = false
     private var experimentSets: List<ExperimentSet> = emptyList()
@@ -787,8 +808,19 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    override fun onResume() {
+        super.onResume()
+        idlePollHandler.post(idlePollRunnable)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        idlePollHandler.removeCallbacks(idlePollRunnable)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        idlePollHandler.removeCallbacks(idlePollRunnable)
         benchmarkRunner.release()
     }
 }
