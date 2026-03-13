@@ -3,6 +3,7 @@ package com.example.kpilab
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Environment
+import android.os.PowerManager
 import android.util.Log
 import com.example.kpilab.batch.BatchProgress
 import com.example.kpilab.batch.ExperimentDefaults
@@ -85,6 +86,10 @@ class BenchmarkRunner(
     private val logcatCapture = LogcatCapture()
     private var lastOrtLogInfo: OrtLogInfo? = null
 
+    // WakeLock — prevents CPU sleep during long benchmark runs
+    private val wakeLock: PowerManager.WakeLock = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "kpilab:benchmark")
+
     val isRunning: Boolean
         get() = _progress.value.state in listOf(
             BenchmarkState.RUNNING, BenchmarkState.WARMING_UP, BenchmarkState.INITIALIZING)
@@ -163,6 +168,7 @@ class BenchmarkRunner(
     fun start(config: BenchmarkConfig, scope: CoroutineScope) {
         if (isRunning || isBatchRunning || benchmarkJob?.isActive == true) return
         this.config = config
+        wakeLock.acquire(30 * 60 * 1000L)  // 30 min max
 
         benchmarkJob = scope.launch(Dispatchers.Default) {
             try {
@@ -649,7 +655,14 @@ class BenchmarkRunner(
                 ModelVariant.SD_V15 -> "sd15"
                 ModelVariant.LCM_LORA -> "lcm"
             }
-            val baseFilename = "txt2img_${variantTag}_${cfg.sdPrecision.dirSuffix}_${cfg.sdBackend.name.lowercase()}_" +
+            val precTag = if (cfg.isMixedPrecision) {
+                "mixed_" + SdComponent.values().joinToString("_") {
+                    "${it.baseName[0]}${cfg.sdPrecisionFor(it).dirSuffix}"
+                }
+            } else {
+                cfg.sdPrecision.dirSuffix
+            }
+            val baseFilename = "txt2img_${variantTag}_${precTag}_${cfg.sdBackend.name.lowercase()}_" +
                     "s${cfg.steps}_${phaseTag}_${timestamp}"
 
             val exportDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
@@ -687,6 +700,7 @@ class BenchmarkRunner(
         onExperimentComplete: (csvPath: String) -> Unit = {}
     ) {
         if (isRunning || isBatchRunning) return
+        wakeLock.acquire(3 * 60 * 60 * 1000L)  // 3 hours max for batch
 
         _batchProgress.value = BatchProgress(
             isRunning = true,
@@ -763,6 +777,7 @@ class BenchmarkRunner(
 
         pipeline?.release()
         pipeline = null
+        if (wakeLock.isHeld) wakeLock.release()
         Log.i(TAG, "Cleanup complete")
     }
 

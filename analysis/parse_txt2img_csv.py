@@ -123,6 +123,9 @@ def format_report(bench: ParsedBenchmark) -> str:
         lines.append("")
         lines.append("[2] Cold Start Breakdown")
         lines.append(sep2)
+
+        # Phase 1: Session creation (component breakdown)
+        lines.append("  Phase 1 — Session Creation (ORT session.create + QNN HTP graph compile)")
         lines.append(f"  {'Component':<25} {'Time (ms)':>12}")
         lines.append(f"  {'-'*25} {'-'*12}")
 
@@ -137,49 +140,77 @@ def format_report(bench: ParsedBenchmark) -> str:
                 lines.append(f"  {label:<25} {val:>12,.0f}")
 
         lines.append(f"  {'='*25} {'='*12}")
-        lines.append(f"  {'Total (sum)':<25} {cs.get('total_load_ms', 0):>12,.0f}")
+        total_sum = cs.get('total_load_ms', 0)
+        lines.append(f"  {'Component sum':<25} {total_sum:>12,.0f}")
 
-        # Init wall-clock vs sum comparison
         init_wc = cs.get('init_wall_clock_ms', None)
         if pd.notna(init_wc) and init_wc > 0:
             parallel = cs.get('parallel_init', False)
             mode = "parallel" if parallel else "sequential"
-            lines.append(f"  {'Init wall-clock':<25} {init_wc:>12,.0f}  ({mode})")
-            total_sum = cs.get('total_load_ms', 0)
+            lines.append(f"  {'Wall-clock (' + mode + ')':<25} {init_wc:>12,.0f}")
             if total_sum > 0:
-                savings = total_sum - init_wc
-                pct = savings / total_sum * 100 if total_sum > 0 else 0
-                if abs(savings) > 50:  # only show if meaningful difference
-                    lines.append(f"  {'Parallel savings':<25} {savings:>12,.0f}  ({pct:.1f}%)")
+                diff = init_wc - total_sum
+                if abs(diff) > 50:
+                    if parallel:
+                        pct = (total_sum - init_wc) / total_sum * 100
+                        lines.append(f"  {'  → parallel savings':<25} {total_sum - init_wc:>+12,.0f}  ({pct:.1f}% of sum)")
+                    else:
+                        pct = diff / total_sum * 100
+                        lines.append(f"  {'  → inter-session overhead':<25} {diff:>+12,.0f}  ({pct:.1f}% of sum)")
 
-        # Memory baseline vs after load
+        # Memory
         idle_mem = cs.get('idle_memory_mb', 0)
         peak_mem = cs.get('peak_memory_after_load_mb', 0)
         if pd.notna(idle_mem) and idle_mem > 0:
             mem_delta = cs.get('memory_delta_mb', peak_mem - idle_mem)
-            lines.append(f"  Idle memory (before load):  {idle_mem} MB")
-            lines.append(f"  Memory after load:          {peak_mem} MB  (model delta: +{mem_delta} MB)")
+            lines.append(f"  Memory: {idle_mem} MB (idle) → {peak_mem} MB (after load)  [+{mem_delta} MB models]")
         else:
-            lines.append(f"  Peak memory after load:     {peak_mem} MB")
+            lines.append(f"  Memory after load: {peak_mem} MB")
 
-        # First inference + cold start total
-        first_inf = cs.get('first_inference_wall_clock_ms', None)
-        if pd.notna(first_inf) and first_inf > 0:
-            lines.append(f"  First inference (cold):     {first_inf:,.0f} ms")
-            cs_total = cs.get('cold_start_total_ms', 0)
-            if pd.notna(cs_total) and cs_total > 0:
-                lines.append(f"  Cold start total:           {cs_total:,.0f} ms  (init wall-clock + first inference)")
-        warmup_ms = cs.get('warmup_total_ms', None)
-        if pd.notna(warmup_ms) and warmup_ms > 0:
-            lines.append(f"  Warmup total:               {warmup_ms:,.0f} ms")
-
-        # Idle thermal/power
+        # Idle conditions
         idle_thermal = cs.get('idle_thermal_c', 0)
         idle_power = cs.get('idle_power_mw', 0)
+        idle_info = []
         if pd.notna(idle_thermal) and idle_thermal > 0:
-            lines.append(f"  Idle thermal:               {idle_thermal:.1f} C")
+            idle_info.append(f"thermal {idle_thermal:.1f}°C")
         if pd.notna(idle_power) and idle_power > 0:
-            lines.append(f"  Idle power:                 {idle_power:.0f} mW")
+            idle_info.append(f"power {idle_power:.0f} mW")
+        if idle_info:
+            lines.append(f"  Idle conditions: {', '.join(idle_info)}")
+
+        # Phase 2: First (cold) inference
+        first_inf = cs.get('first_inference_wall_clock_ms', None)
+        steady_mean = None
+        if bench.generate_summary is not None and not bench.generate_summary.empty:
+            steady_mean = bench.generate_summary["generate_e2e_ms"].mean()
+
+        if pd.notna(first_inf) and first_inf > 0:
+            lines.append("")
+            lines.append("  Phase 2 — First Inference (pre-warmup, JIT + cache cold)")
+            delta_str = ""
+            if steady_mean:
+                delta = first_inf - steady_mean
+                delta_pct = delta / steady_mean * 100
+                delta_str = f"  (vs steady-state {steady_mean:,.0f} ms: {delta:+,.0f} ms / {delta_pct:+.1f}%)"
+            lines.append(f"  First inference:  {first_inf:,.0f} ms{delta_str}")
+
+        # Cold start total timeline
+        cs_total = cs.get('cold_start_total_ms', 0)
+        if pd.notna(cs_total) and cs_total > 0 and pd.notna(init_wc) and init_wc > 0:
+            lines.append("")
+            lines.append("  Timeline  (app launch → first image ready)")
+            lines.append(f"  [Session load {init_wc:,.0f} ms] + [1st inference {first_inf:,.0f} ms]"
+                         f" = {cs_total:,.0f} ms total")
+
+        # Warmup
+        warmup_ms = cs.get('warmup_total_ms', None)
+        if pd.notna(warmup_ms) and warmup_ms > 0:
+            m = bench.metadata
+            warmup_trials = 2  # default
+            per_trial = warmup_ms / warmup_trials if warmup_trials > 0 else 0
+            warmup_note = f"  (~{per_trial:,.0f} ms/trial)" if per_trial > 0 else ""
+            lines.append(f"  Warmup ({warmup_trials} trials): {warmup_ms:,.0f} ms{warmup_note}"
+                         + (f"  [steady-state established]" if steady_mean else ""))
 
     # --- [3] Generation Summary ---
     if bench.generate_summary is not None and not bench.generate_summary.empty:
@@ -205,12 +236,14 @@ def format_report(bench: ParsedBenchmark) -> str:
             "generate_e2e_ms": "Generate E2E",
         }
 
-        lines.append(f"  {'Stage':<25} {'Mean':>10} {'P50':>10} {'P95':>10} {'Min':>10} {'Max':>10} {'Std':>10}")
-        lines.append(f"  {'-'*25} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
+        e2e_mean = df["generate_e2e_ms"].mean() if "generate_e2e_ms" in df.columns else 0
+        lines.append(f"  {'Stage':<25} {'Mean':>10} {'%E2E':>6} {'P50':>10} {'P95':>10} {'Min':>10} {'Max':>10} {'Std':>10}")
+        lines.append(f"  {'-'*25} {'-'*10} {'-'*6} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
         for col, label in stage_cols.items():
             if col in df.columns and df[col].mean() > 0.001:
                 s = df[col]
-                lines.append(f"  {label:<25} {s.mean():>10.1f} {s.median():>10.1f} "
+                pct_str = f"{s.mean()/e2e_mean*100:5.1f}%" if e2e_mean > 0 and col != "generate_e2e_ms" else f"{'100%':>6}"
+                lines.append(f"  {label:<25} {s.mean():>10.1f} {pct_str:>6} {s.median():>10.1f} "
                              f"{s.quantile(0.95):>10.1f} {s.min():>10.1f} {s.max():>10.1f} {s.std():>10.1f}")
 
         # Sum check
@@ -452,8 +485,14 @@ def format_comparison(benchmarks: list) -> str:
     for i, b in enumerate(benchmarks, 1):
         m = b.metadata
         name = Path(b.filepath).stem[:49]
+        prec = "mixed" if m.get('sd_precision_per_component') else m.get('sd_precision', '?')
         lines.append(f"  {i:<4} {name:<50} {m.get('phase','?'):<18} {m.get('model_variant','?'):<10} "
-                     f"{m.get('sd_backend','?'):<10} {m.get('sd_precision','?'):<8} {m.get('steps','?'):>5}")
+                     f"{m.get('sd_backend','?'):<10} {prec:<8} {m.get('steps','?'):>5}")
+    mixed_entries = [(i, b) for i, b in enumerate(benchmarks, 1) if b.metadata.get('sd_precision_per_component')]
+    if mixed_entries:
+        lines.append(f"  Mixed precision breakdown:")
+        for i, b in mixed_entries:
+            lines.append(f"    #{i}: {b.metadata['sd_precision_per_component']}")
 
     # --- [2] Generation E2E Comparison ---
     gen_benchmarks = [b for b in benchmarks if b.generate_summary is not None and not b.generate_summary.empty]
