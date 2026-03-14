@@ -8,25 +8,26 @@
 ## Table of Contents
 
 - [1. 프로젝트 개요](#1-프로젝트-개요)
-- [2. 전체 시스템 구조](#2-전체-시스템-구조)
-- [3. Android 앱 아키텍처](#3-android-앱-아키텍처)
-  - [3.1 Layer 구조](#31-layer-구조)
-  - [3.2 핵심 클래스 관계](#32-핵심-클래스-관계)
-  - [3.3 Text-to-Image 파이프라인](#33-text-to-image-파이프라인)
-  - [3.4 OrtRunner — ONNX Runtime 세션 래퍼](#34-ortrunner--onnx-runtime-세션-래퍼)
-  - [3.5 Scheduler — 노이즈 스케줄러](#35-scheduler--노이즈-스케줄러)
-  - [3.6 KpiCollector — 시스템 메트릭 수집](#36-kpicollector--시스템-메트릭-수집)
-- [4. 실험 프레임워크](#4-실험-프레임워크)
-  - [4.1 배치 실험 구조](#41-배치-실험-구조)
-  - [4.2 BenchmarkRunner — 실험 오케스트레이터](#42-benchmarkrunner--실험-오케스트레이터)
-  - [4.3 Cooldown 및 Thermal 관리](#43-cooldown-및-thermal-관리)
-  - [4.4 CSV 데이터 수집](#44-csv-데이터-수집)
-- [5. 모델 배포 파이프라인](#5-모델-배포-파이프라인)
-  - [5.1 Export → Quantize → Compile → Deploy](#51-export--quantize--compile--deploy)
-  - [5.2 Per-Component Precision Map](#52-per-component-precision-map)
-  - [5.3 QNN HTP 실행 흐름](#53-qnn-htp-실행-흐름)
-- [6. 분석 파이프라인](#6-분석-파이프라인)
-- [7. 프로젝트 디렉토리 구조](#7-프로젝트-디렉토리-구조)
+- [2. 기술 스택](#2-기술-스택)
+- [3. 전체 시스템 구조](#3-전체-시스템-구조)
+- [4. Android 앱 아키텍처](#4-android-앱-아키텍처)
+  - [4.1 Layer 구조](#41-layer-구조)
+  - [4.2 핵심 클래스 관계](#42-핵심-클래스-관계)
+  - [4.3 Text-to-Image 파이프라인](#43-text-to-image-파이프라인)
+  - [4.4 OrtRunner — ONNX Runtime 세션 래퍼](#44-ortrunner--onnx-runtime-세션-래퍼)
+  - [4.5 Scheduler — 노이즈 스케줄러](#45-scheduler--노이즈-스케줄러)
+  - [4.6 KpiCollector — 시스템 메트릭 수집](#46-kpicollector--시스템-메트릭-수집)
+- [5. 실험 프레임워크](#5-실험-프레임워크)
+  - [5.1 배치 실험 구조](#51-배치-실험-구조)
+  - [5.2 BenchmarkRunner — 실험 오케스트레이터](#52-benchmarkrunner--실험-오케스트레이터)
+  - [5.3 Cooldown 및 Thermal 관리](#53-cooldown-및-thermal-관리)
+  - [5.4 CSV 데이터 수집](#54-csv-데이터-수집)
+- [6. 모델 배포 파이프라인](#6-모델-배포-파이프라인)
+  - [6.1 Export → Quantize → Compile → Deploy](#61-export--quantize--compile--deploy)
+  - [6.2 Per-Component Precision Map](#62-per-component-precision-map)
+  - [6.3 QNN HTP 실행 흐름](#63-qnn-htp-실행-흐름)
+- [7. 분석 파이프라인](#7-분석-파이프라인)
+- [8. 프로젝트 디렉토리 구조](#8-프로젝트-디렉토리-구조)
 
 ---
 
@@ -43,7 +44,32 @@
 
 ---
 
-## 2. 전체 시스템 구조
+## 2. 기술 스택
+
+| 영역 | 기술 | 버전/비고 |
+|------|------|-----------|
+| **Android 앱** | Kotlin | Android 앱 전체 구현 |
+| | ONNX Runtime Mobile | 1.24.3 — on-device 추론 엔진 |
+| | QNN Execution Provider | Qualcomm NPU 백엔드 |
+| | QAIRT (QNN SDK) | 2.42.0 — precompiled context binary 실행 |
+| **타겟 디바이스** | Samsung Galaxy S23 Ultra | Snapdragon 8 Gen 2 (SM8550) |
+| | Qualcomm Hexagon HTP | NPU 하드웨어 가속기 |
+| **모델** | Stable Diffusion v1.5 | text-to-image baseline |
+| | LCM-LoRA | few-step distillation variant |
+| | CLIP ViT-L/14 | text encoder (77 token, 768-dim) |
+| **모델 최적화** | QAI Hub | 클라우드 compile (ONNX → QNN binary) |
+| | AIMET | op-selective mixed-precision 양자화 (MIXED_PR) |
+| | PyTorch → ONNX | FP32 export (opset 18) |
+| **분석/평가** | Python (NumPy, Pandas) | CSV 파싱, 통계 분석 |
+| | CLIP Score | 프롬프트-이미지 정렬도 평가 |
+| | LPIPS | 지각적 이미지 유사도 평가 |
+| **인프라/도구** | ADB | 모델 배포, 결과 수집 |
+| | RunPod | AIMET 양자화용 클라우드 GPU (x86 Linux 의존성) |
+| | Conda | Python 환경 관리 |
+
+---
+
+## 3. 전체 시스템 구조
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -100,9 +126,9 @@
 
 ---
 
-## 3. Android 앱 아키텍처
+## 4. Android 앱 아키텍처
 
-### 3.1 Layer 구조
+### 4.1 Layer 구조
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -135,7 +161,7 @@
             ONNX Runtime + QNN EP → Hexagon HTP (NPU)
 ```
 
-### 3.2 핵심 클래스 관계
+### 4.2 핵심 클래스 관계
 
 ```
 MainActivity
@@ -155,7 +181,7 @@ MainActivity
 
 **`Txt2ImgPipeline`**: 3개의 OrtRunner(TextEncoder, UNet, VAEDecoder)를 소유하며, 하나의 `generate()` 호출로 텍스트 프롬프트에서 이미지까지의 전체 추론을 수행.
 
-### 3.3 Text-to-Image 파이프라인
+### 4.3 Text-to-Image 파이프라인
 
 하나의 이미지를 생성하는 `Txt2ImgPipeline.generate()` 호출의 전체 흐름:
 
@@ -210,7 +236,7 @@ generate(prompt: String, seed: Long = 42)
 
 SD는 CFG(Classifier-Free Guidance) 때문에 step당 UNet을 **두 번** 호출한다. LCM은 guidance_scale=1.0으로 CFG를 비활성화하여 한 번만 호출. 이것이 step당 latency 차이(SD ~547ms vs LCM ~341ms)의 주요 원인 중 하나다.
 
-### 3.4 OrtRunner — ONNX Runtime 세션 래퍼
+### 4.4 OrtRunner — ONNX Runtime 세션 래퍼
 
 각 컴포넌트(TextEncoder, UNet, VAEDecoder)마다 하나의 OrtRunner 인스턴스가 생성된다.
 
@@ -240,7 +266,7 @@ OrtRunner(modelPath, executionProvider, options)
 **QNN context binary란?**
 QAI Hub에서 ONNX 모델을 target device(Galaxy S23)에 맞게 미리 컴파일한 결과물이다. `.onnx` 파일은 graph 구조만 담은 stub이고, `.bin` 파일이 실제 NPU에서 실행되는 precompiled graph다. 이렇게 하면 디바이스에서 JIT 컴파일 없이 바로 실행 가능하지만, 첫 세션 로드 시 HTP graph initialization이 발생한다(cold start의 주요 원인).
 
-### 3.5 Scheduler — 노이즈 스케줄러
+### 4.5 Scheduler — 노이즈 스케줄러
 
 Scheduler는 UNet의 noise prediction을 받아 latent를 점진적으로 denoising하는 역할이다. 모델 variant에 따라 다른 알고리즘을 사용한다.
 
@@ -264,7 +290,7 @@ for step in 0..<N:
 
 두 스케줄러 모두 Kotlin으로 CPU에서 실행된다. 전체 E2E에서 스케줄러 자체의 overhead는 미미하다(수 ms).
 
-### 3.6 KpiCollector — 시스템 메트릭 수집
+### 4.6 KpiCollector — 시스템 메트릭 수집
 
 ```
 KpiCollector
@@ -295,9 +321,9 @@ KpiCollector
 
 ---
 
-## 4. 실험 프레임워크
+## 5. 실험 프레임워크
 
-### 4.1 배치 실험 구조
+### 5.1 배치 실험 구조
 
 실험은 JSON으로 선언적으로 정의된다 (`assets/experiment_sets_txt2img.json`):
 
@@ -340,7 +366,7 @@ KpiCollector
 - **defaults 상속**: 공통 설정은 defaults에 두고, 개별 실험에서 override만 선언.
 - **Phase 분리**: SINGLE_GENERATE(burst, cooldown 있음) vs SUSTAINED(연속, cooldown 없음)를 phase 필드로 구분.
 
-### 4.2 BenchmarkRunner — 실험 오케스트레이터
+### 5.2 BenchmarkRunner — 실험 오케스트레이터
 
 ```
 BenchmarkRunner.runExperiment(config)
@@ -384,7 +410,7 @@ BenchmarkRunner.runExperiment(config)
 - Warmup 2회 후의 "warm" trial이 steady-state 성능을 대표한다.
 - 실험 리포트의 수치는 모두 warm trial mean이다.
 
-### 4.3 Cooldown 및 Thermal 관리
+### 5.3 Cooldown 및 Thermal 관리
 
 모바일 기기에서의 정확한 벤치마크를 위해 trial 간 thermal 상태를 통제한다:
 
@@ -409,7 +435,7 @@ waitForThermalTarget(targetTemp=35°C)
 - 배터리 40% 이상 (저배터리 throttling 방지)
 - 기기 온도 ≤ 35°C (초기 상태 통제)
 
-### 4.4 CSV 데이터 수집
+### 5.4 CSV 데이터 수집
 
 앱은 3종의 CSV 파일을 생성한다:
 
@@ -446,9 +472,9 @@ waitForThermalTarget(targetTemp=35°C)
 
 ---
 
-## 5. 모델 배포 파이프라인
+## 6. 모델 배포 파이프라인
 
-### 5.1 Export → Quantize → Compile → Deploy
+### 6.1 Export → Quantize → Compile → Deploy
 
 ```
                     PC (Python)                              QAI Hub Cloud
@@ -479,7 +505,7 @@ waitForThermalTarget(targetTemp=35°C)
                      └─ ... (precision variant별)
 ```
 
-### 5.2 Per-Component Precision Map
+### 6.2 Per-Component Precision Map
 
 이 프로젝트의 핵심 설계 중 하나는 **컴포넌트별 독립 precision 설정**이다. 하나의 파이프라인 내에서 각 컴포넌트가 서로 다른 precision으로 동작한다:
 
@@ -501,7 +527,7 @@ waitForThermalTarget(targetTemp=35°C)
 - HTP 제약이 다르다: LayerNorm full INT8 미지원으로 UNet은 MIXED_PR 필수, VAE는 W8A8 가능
 - 이 설계로 "어떤 컴포넌트에 어떤 precision을 적용하면 KPI가 얼마나 변하는가"를 개별 측정 가능
 
-### 5.3 QNN HTP 실행 흐름
+### 6.3 QNN HTP 실행 흐름
 
 ```
 ONNX Runtime Session
@@ -526,7 +552,7 @@ ONNX Runtime Session
 
 ---
 
-## 6. 분석 파이프라인
+## 7. 분석 파이프라인
 
 디바이스에서 수집된 CSV를 PC에서 분석한다:
 
@@ -564,7 +590,7 @@ analysis/
 
 ---
 
-## 7. 프로젝트 디렉토리 구조
+## 8. 프로젝트 디렉토리 구조
 
 ```
 mobile-inference-kpi-lab/
