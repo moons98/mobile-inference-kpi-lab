@@ -79,7 +79,7 @@ temp/
 *.tmp
 
 # docs
-docs/reference.md
+docs/reference_*.md
 
 # weight
 weights/
