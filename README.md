@@ -9,29 +9,16 @@ Snapdragon 기반 Android 단말에서 **SD v1.5 text-to-image 파이프라인**
 
 ---
 
-## 핵심 실험
+## 실험 개요
 
-### Phase 1 — Single-Run Feasibility
+Cloud에서 실행 중인 이미지 생성 기능(~10s)을 on-device로 전환할 수 있는지 판단하기 위해, 다음을 단계적으로 검증한다:
 
-조건별 latency/memory/power/quality baseline 확보 (5 trials, burst mode).
+1. **Precision 비교** — FP16 / Mixed Precision / W8A8 조합별 latency·전력·품질 tradeoff 측정, best precision 선정
+2. **Step Sweep** — step 수(SD 20/30/50, LCM 4/8) 변화에 따른 latency-quality 곡선 도출
+3. **Perf Mode 비교** — burst vs balanced HTP mode에서의 latency/전력/thermal 변화 측정
+4. **연속 추론 안정성** — 쿨다운 없이 10회 연속 실행 시 latency drift와 thermal 안정성 검증
 
-| ID | 실험 | 목적 |
-|---|---|---|
-| P1-1 | SD v1.5 (20 step) vs LCM-LoRA (4 step) | variant 비교 |
-| P1-2 | SD v1.5 step sweep (20/30/50) | latency-step 관계 |
-| P1-3 | LCM-LoRA step sweep (2/4/8) | few-step 하한 탐색 |
-| P1-4 | Backend × Precision (NPU/GPU/CPU, FP16/W8A8) | execution path 비교 |
-| P1-5 | Mixed Precision (component-level FP16/W8A8/MIXED_PR) | UNet/VAE 개별 영향 |
-| P1-6 | Parallel Init vs Sequential Init | cold start 최적화 |
-
-### Phase 2 — Sustained Feasibility
-
-연속 10회 생성으로 thermal/power/latency drift 검증 (cooldown 없음, sustained_high mode).
-
-| ID | 실험 |
-|---|---|
-| P2-1 | SD v1.5 sustained (FP16 vs W8A8) |
-| P2-2 | LCM-LoRA sustained (FP16 vs W8A8, 4 steps) |
+실험 설계 상세: [`docs/experiment_design.md`](docs/experiment_design.md), 결과 리포트: [`docs/experiment_report.md`](docs/experiment_report.md)
 
 ---
 
@@ -51,7 +38,7 @@ float32[1, 77, 768]  (text embeddings)
   │
   ▼ [UNet Denoising Loop × N steps — NPU]
   │   SD v1.5: EulerDiscrete, CFG 7.5, N=20–50
-  │   LCM-LoRA: DDIM-style, CFG 1.0, N=2–8
+  │   LCM-LoRA: DDIM-style, CFG 1.0, N=4–8
   │   UNet: 859M params (1,651MB FP16 / 1,151MB MIXED_PR)
   │
   ▼ [VAE Decoder — NPU]    (189MB FP32 / 62MB W8A16)
@@ -157,8 +144,10 @@ mobile-inference-kpi-lab/
 │   └── runs/                             # on-device 측정 결과 CSV
 ├── weights/                              # 모델 파일 (gitignore)
 └── docs/
-    ├── experiment_design.md              # 실험 설계 (이 프로젝트의 핵심 문서)
-    ├── experiment_report.md              # 결과 리포트 (실측 후 채워짐)
+    ├── experiment_design.md              # 실험 설계
+    ├── experiment_report.md              # 결과 리포트
+    ├── experiment_runs.md               # 실험 목록 및 진행 상태
+    ├── model_optimization.md            # 양자화 전략 및 품질 검증 (기술 내러티브)
     └── weights_inventory.md              # 모델 파일 목록 및 품질 현황
 ```
 
@@ -184,9 +173,10 @@ mobile-inference-kpi-lab/
 
 | 문서 | 설명 |
 |---|---|
-| [experiment_design.md](docs/experiment_design.md) | 실험 설계, 모델 준비, 체크리스트 |
-| [experiment_report.md](docs/experiment_report.md) | 결과 리포트 (실측 후 업데이트) |
-| [model_optimization.md](docs/model_optimization.md) | 양자화 전략 설계 및 품질 검증 과정 (기술 내러티브) |
+| [experiment_design.md](docs/experiment_design.md) | 실험 설계, KPI 정의, 체크리스트 |
+| [experiment_report.md](docs/experiment_report.md) | 실험 결과 리포트 |
+| [experiment_runs.md](docs/experiment_runs.md) | 실험 목록 및 진행 상태 |
+| [model_optimization.md](docs/model_optimization.md) | 양자화 전략 설계 및 품질 검증 (기술 내러티브) |
 | [weights_inventory.md](docs/weights_inventory.md) | 모델 파일 목록, compile/profile/품질 현황 |
 
 ## 참고 자료
